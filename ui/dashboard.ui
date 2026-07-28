@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1366</width><height>800</height></rect>
+  </property>
+  <property name="minimumSize">
+   <size><width>1024</width><height>640</height></size>
+  </property>
+  <property name="windowTitle">
+   <string>Medical ERP Dashboard</string>
+  </property>
+
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainVerticalLayout">
+
+    <!-- ================= TOP HEADER / TOOLBAR ================= -->
+    <item>
+     <widget class="QFrame" name="frmTopHeader">
+      <layout class="QHBoxLayout" name="topHeaderLayout">
+       <item><widget class="QLabel" name="lblCompanyLogoSmall"><property name="text"><string>[Logo]</string></property></widget></item>
+       <item><widget class="QLabel" name="lblCompanyNameHeader"><property name="text"><string>Company Name</string></property></widget></item>
+
+       <item>
+        <spacer name="topHeaderSpacer">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </spacer>
+       </item>
+
+       <item><widget class="QLineEdit" name="txtSearchMenu"><property name="placeholderText"><string>Search menu...</string></property></widget></item>
+
+       <item><widget class="QLabel" name="lblLoggedInUser"><property name="text"><string>User</string></property></widget></item>
+       <item><widget class="QLabel" name="lblUserRole"><property name="text"><string>Role</string></property></widget></item>
+       <item><widget class="QLabel" name="lblCurrentFinancialYearHeader"><property name="text"><string>FY</string></property></widget></item>
+       <item><widget class="QLabel" name="lblDashboardClock"><property name="text"><string>00:00:00</string></property></widget></item>
+
+       <item><widget class="QPushButton" name="btnNotifications"><property name="text"><string>Alerts (0)</string></property></widget></item>
+       <item><widget class="QPushButton" name="btnTheme"><property name="text"><string>Theme</string></property></widget></item>
+       <item><widget class="QPushButton" name="btnLogout"><property name="text"><string>Logout</string></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+
+    <!-- ================= BODY (Sidebar + Main) ================= -->
+    <item>
+     <widget class="QSplitter" name="bodySplitter">
+      <property name="orientation"><enum>Qt::Horizontal</enum></property>
+
+      <!-- LEFT SIDEBAR NAVIGATION -->
+      <widget class="QFrame" name="frmSidebar">
+       <layout class="QVBoxLayout" name="sidebarLayout">
+        <item><widget class="QLabel" name="lblFavoritesTitle"><property name="text"><string>Favorites</string></property></widget></item>
+        <item><widget class="QListWidget" name="lstFavorites"/></item>
+
+        <item><widget class="QLabel" name="lblRecentTitle"><property name="text"><string>Recently Opened</string></property></widget></item>
+        <item><widget class="QListWidget" name="lstRecentlyOpened"/></item>
+
+        <item><widget class="QLabel" name="lblMenuTitle"><property name="text"><string>Modules</string></property></widget></item>
+        <item><widget class="QTreeWidget" name="treeSidebarMenu">
+          <column><property name="text"><string>Menu</string></property></column>
+        </widget></item>
+       </layout>
+      </widget>
+
+      <!-- MAIN DASHBOARD AREA -->
+      <widget class="QScrollArea" name="scrollMainArea">
+       <property name="widgetResizable"><bool>true</bool></property>
+       <widget class="QWidget" name="scrollAreaContents">
+        <layout class="QVBoxLayout" name="mainAreaLayout">
+
+         <!-- KPI CARDS -->
+         <item>
+          <widget class="QGroupBox" name="grpKpiCards">
+           <property name="title"><string>Overview</string></property>
+           <layout class="QGridLayout" name="kpiGridLayout">
+            <item row="0" column="0"><widget class="QFrame" name="cardTodaySales"><layout class="QVBoxLayout" name="cardTodaySalesLayout"><item><widget class="QLabel" name="lblTodaySalesTitle"><property name="text"><string>Today's Sales</string></property></widget></item><item><widget class="QLabel" name="lblTodaySalesValue"><property name="text"><string>0.00</string></property></widget></item></layout></widget></item>
+            <item row="0" column="1"><widget class="QFrame" name="cardTodayPurchase"><layout class="QVBoxLayout" name="cardTodayPurchaseLayout"><item><widget class="QLabel" name="lblTodayPurchaseTitle"><property name="text"><string>Today's Purchase</string></property></widget></item><item><widget class="QLabel" name="lblTodayPurchaseValue"><property name="text"><string>0.00</string></property></widget></item></layout></widget></item>
+            <item row="0" column="2"><widget class="QFrame" name="cardStockValue"><layout class="QVBoxLayout" name="cardStockValueLayout"><item><widget class="QLabel" name="lblStockValueTitle"><property name="text"><string>Stock Value</string></property></widget></item><item><widget class="QLabel" name="lblStockValueValue"><property name="text"><string>0.00</string></property></widget></item></layout></widget></item>
+            <item row="0" column="3"><widget class="QFrame" name="cardLowStock"><layout class="QVBoxLayout" name="cardLowStockLayout"><item><widget class="QLabel" name="lblLowStockTitle"><property name="text"><string>Low Stock Items</string></property></widget></item><item><widget class="QLabel" name="lblLowStockValue"><property name="text"><string>0</string></property></widget></item></layout></widget></item>
+            <item row="1" column="0"><widget class="QFrame" name="cardExpiring"><layout class="QVBoxLayout" name="cardExpiringLayout"><item><widget class="QLabel" name="lblExpiringTitle"><property name="text"><string>Expiring Medicines</string></property></widget></item><item><widget class="QLabel" name="lblExpiringValue"><property name="text"><string>0</string></property></widget></item></layout></widget></item>
+            <item row="1" column="1"><widget class="QFrame" name="cardPendingPayments"><layout class="QVBoxLayout" name="cardPendingPaymentsLayout"><item><widget class="QLabel" name="lblPendingPaymentsTitle"><property name="text"><string>Pending Payments</string></property></widget></item><item><widget class="QLabel" name="lblPendingPaymentsValue"><property name="text"><string>0.00</string></property></widget></item></layout></widget></item>
+            <item row="1" column="2"><widget class="QFrame" name="cardPendingReceipts"><layout class="QVBoxLayout" name="cardPendingReceiptsLayout"><item><widget class="QLabel" name="lblPendingReceiptsTitle"><property name="text"><string>Pending Receipts</string></property></widget></item><item><widget class="QLabel" name="lblPendingReceiptsValue"><property name="text"><string>0.00</string></property></widget></item></layout></widget></item>
+            <item row="1" column="3"><widget class="QFrame" name="cardActiveUsers"><layout class="QVBoxLayout" name="cardActiveUsersLayout"><item><widget class="QLabel" name="lblActiveUsersTitle"><property name="text"><string>Active Users</string></property></widget></item><item><widget class="QLabel" name="lblActiveUsersValue"><property name="text"><string>0</string></property></widget></item></layout></widget></item>
+           </layout>
+          </widget>
+         </item>
+
+         <!-- QUICK ACTIONS -->
+         <item>
+          <widget class="QGroupBox" name="grpQuickActions">
+           <property name="title"><string>Quick Actions</string></property>
+           <layout class="QHBoxLayout" name="quickActionsLayout">
+            <item><widget class="QPushButton" name="btnNewSale"><property name="text"><string>New Sale</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnNewPurchase"><property name="text"><string>New Purchase</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnAddCustomer"><property name="text"><string>Add Customer</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnAddSupplier"><property name="text"><string>Add Supplier</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnAddItem"><property name="text"><string>Add Item</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnBackupDatabase"><property name="text"><string>Backup Database</string></property></widget></item>
+           </layout>
+          </widget>
+         </item>
+
+         <!-- ALERTS + RECENT ACTIVITY -->
+         <item>
+          <layout class="QHBoxLayout" name="lowerAreaLayout">
+           <item>
+            <widget class="QGroupBox" name="grpAlerts">
+             <property name="title"><string>Alerts</string></property>
+             <layout class="QVBoxLayout" name="alertsLayout">
+              <item><widget class="QListWidget" name="lstAlerts"/></item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="grpRecentActivity">
+             <property name="title"><string>Recent Activities</string></property>
+             <layout class="QVBoxLayout" name="recentActivityLayout">
+              <item><widget class="QListWidget" name="lstRecentActivity"/></item>
+             </layout>
+            </widget>
+           </item>
+          </layout>
+         </item>
+
+        </layout>
+       </widget>
+      </widget>
+
+     </widget>
+    </item>
+
+   </layout>
+  </widget>
+
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

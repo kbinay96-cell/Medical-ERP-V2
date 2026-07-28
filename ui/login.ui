@@ -1,0 +1,241 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1200</width><height>720</height></rect>
+  </property>
+  <property name="minimumSize">
+   <size><width>1024</width><height>640</height></size>
+  </property>
+  <property name="windowTitle">
+   <string>Medical ERP Login</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainVerticalLayout">
+    <property name="spacing"><number>0</number></property>
+    <property name="leftMargin"><number>0</number></property>
+    <property name="topMargin"><number>0</number></property>
+    <property name="rightMargin"><number>0</number></property>
+    <property name="bottomMargin"><number>0</number></property>
+
+    <!-- ================= HEADER ================= -->
+    <item>
+     <widget class="QFrame" name="frmHeader">
+      <property name="minimumSize"><size><width>0</width><height>42</height></size></property>
+      <layout class="QHBoxLayout" name="headerLayout">
+       <property name="leftMargin"><number>16</number></property>
+       <property name="rightMargin"><number>16</number></property>
+       <item><widget class="QLabel" name="lblERPName"><property name="text"><string>Medical ERP</string></property></widget></item>
+       <item><widget class="QLabel" name="lblVersion"><property name="text"><string>v2.0.0</string></property></widget></item>
+       <item><widget class="QLabel" name="lblLicense"><property name="text"><string>License: --</string></property></widget></item>
+       <item><widget class="QLabel" name="lblDatabase"><property name="text"><string>Database: --</string></property></widget></item>
+       <item>
+        <spacer name="headerSpacer">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </spacer>
+       </item>
+       <item><widget class="QLabel" name="lblCurrentTime"><property name="text"><string>00:00:00</string></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+
+    <!-- ================= BODY ================= -->
+    <item>
+     <layout class="QHBoxLayout" name="bodyLayout">
+      <property name="spacing"><number>0</number></property>
+
+      <!-- LEFT BRANDING PANEL -->
+      <item>
+       <widget class="QFrame" name="frmLeftPanel">
+        <property name="minimumSize"><size><width>360</width><height>0</height></size></property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
+          <horstretch>4</horstretch><verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <layout class="QVBoxLayout" name="leftPanelLayout">
+         <property name="leftMargin"><number>40</number></property>
+         <property name="topMargin"><number>50</number></property>
+         <property name="rightMargin"><number>40</number></property>
+         <property name="bottomMargin"><number>30</number></property>
+         <property name="spacing"><number>6</number></property>
+         <item><widget class="QLabel" name="lblCompanyLogo"><property name="minimumSize"><size><width>64</width><height>64</height></size></property><property name="text"><string>[Logo]</string></property></widget></item>
+         <item><widget class="QLabel" name="lblErpLogo"><property name="text"><string>[ERP Logo]</string></property></widget></item>
+         <item><widget class="QLabel" name="lblWelcomeMessage"><property name="text"><string>Welcome to Medical ERP</string></property></widget></item>
+         <item><widget class="QLabel" name="lblOrganizationName"><property name="text"><string>Organization Name</string></property></widget></item>
+         <item><widget class="QLabel" name="lblBranchName"><property name="text"><string>Branch Name</string></property></widget></item>
+         <item><widget class="QLabel" name="lblErpVersionInfo"><property name="text"><string>ERP Version 2.0.0</string></property></widget></item>
+         <item><widget class="QLabel" name="lblTagline"><property name="text"><string>Design Once, Build Forever</string></property></widget></item>
+         <item>
+          <spacer name="leftPanelSpacer">
+           <property name="orientation"><enum>Qt::Vertical</enum></property>
+          </spacer>
+         </item>
+         <item><widget class="QLabel" name="lblQuickInfoTitle"><property name="text"><string>QUICK INFORMATION</string></property></widget></item>
+         <item><widget class="QLabel" name="lblDatabaseStatus"><property name="text"><string>Database: Connected</string></property></widget></item>
+         <item><widget class="QLabel" name="lblLicenseStatus"><property name="text"><string>License: Active</string></property></widget></item>
+         <item><widget class="QLabel" name="lblSubscriptionStatus"><property name="text"><string>Subscription: -- Days Left</string></property></widget></item>
+         <item><widget class="QLabel" name="lblTodayDate"><property name="text"><string>Today: --</string></property></widget></item>
+         <item><widget class="QLabel" name="lblCurrentFinancialYear"><property name="text"><string>Financial Year: --</string></property></widget></item>
+         <item><widget class="QLabel" name="lblCopyright"><property name="text"><string>© Medical ERP</string></property></widget></item>
+        </layout>
+       </widget>
+      </item>
+
+      <!-- RIGHT SIDE: centers the login card -->
+      <item>
+       <widget class="QWidget" name="loginRightContainer">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
+          <horstretch>6</horstretch><verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <layout class="QVBoxLayout" name="loginRightVLayout">
+         <item>
+          <spacer name="loginCardTopSpacer">
+           <property name="orientation"><enum>Qt::Vertical</enum></property>
+          </spacer>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="loginCardHLayout">
+           <item>
+            <spacer name="loginCardLeftSpacer">
+             <property name="orientation"><enum>Qt::Horizontal</enum></property>
+            </spacer>
+           </item>
+
+           <!-- LOGIN CARD -->
+           <item>
+            <widget class="QFrame" name="frmLoginPanel">
+             <property name="minimumSize"><size><width>420</width><height>0</height></size></property>
+             <property name="maximumSize"><size><width>460</width><height>16777215</height></size></property>
+             <layout class="QVBoxLayout" name="loginPanelLayout">
+              <property name="leftMargin"><number>36</number></property>
+              <property name="topMargin"><number>36</number></property>
+              <property name="rightMargin"><number>36</number></property>
+              <property name="bottomMargin"><number>28</number></property>
+              <property name="spacing"><number>14</number></property>
+
+              <item><widget class="QLabel" name="lblLoginIcon"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="minimumSize"><size><width>0</width><height>48</height></size></property><property name="text"><string>[Icon]</string></property></widget></item>
+              <item><widget class="QLabel" name="lblLoginTitle"><property name="alignment"><set>Qt::AlignHCenter</set></property><property name="text"><string>Sign in to your account</string></property></widget></item>
+
+              <item>
+               <layout class="QFormLayout" name="loginFormLayout">
+                <property name="verticalSpacing"><number>14</number></property>
+                <property name="horizontalSpacing"><number>10</number></property>
+                <property name="labelAlignment"><set>Qt::AlignLeft</set></property>
+
+                <item row="0" column="0"><widget class="QLabel" name="lblUsername"><property name="text"><string>&amp;Username</string></property><property name="buddy"><cstring>txtUsername</cstring></property></widget></item>
+                <item row="0" column="1"><widget class="QLineEdit" name="txtUsername"><property name="minimumSize"><size><width>0</width><height>36</height></size></property></widget></item>
+
+                <item row="1" column="0"><widget class="QLabel" name="lblPassword"><property name="text"><string>&amp;Password</string></property><property name="buddy"><cstring>txtPassword</cstring></property></widget></item>
+                <item row="1" column="1"><widget class="QLineEdit" name="txtPassword"><property name="minimumSize"><size><width>0</width><height>36</height></size></property><property name="echoMode"><enum>QLineEdit::Password</enum></property></widget></item>
+
+                <item row="2" column="0"><widget class="QLabel" name="lblCompany"><property name="text"><string>&amp;Company</string></property><property name="buddy"><cstring>cmbCompany</cstring></property></widget></item>
+                <item row="2" column="1"><widget class="QComboBox" name="cmbCompany"><property name="minimumSize"><size><width>0</width><height>36</height></size></property></widget></item>
+
+                <item row="3" column="0"><widget class="QLabel" name="lblFinancialYear"><property name="text"><string>Financial &amp;Year</string></property><property name="buddy"><cstring>cmbFinancialYear</cstring></property></widget></item>
+                <item row="3" column="1"><widget class="QComboBox" name="cmbFinancialYear"><property name="minimumSize"><size><width>0</width><height>36</height></size></property></widget></item>
+               </layout>
+              </item>
+
+              <item>
+               <layout class="QHBoxLayout" name="checkboxRowLayout">
+                <item><widget class="QCheckBox" name="chkRememberMe"><property name="text"><string>Remember Me</string></property></widget></item>
+                <item>
+                 <spacer name="checkboxRowSpacer">
+                  <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                 </spacer>
+                </item>
+                <item><widget class="QCheckBox" name="chkShowPassword"><property name="text"><string>Show Password</string></property></widget></item>
+               </layout>
+              </item>
+
+              <item><widget class="QLabel" name="lblCapsLock"><property name="text"><string></string></property></widget></item>
+              <item><widget class="QLabel" name="lblConnectionStatus"><property name="text"><string></string></property></widget></item>
+              <item><widget class="QLabel" name="lblLoginMessage"><property name="wordWrap"><bool>true</bool></property><property name="text"><string></string></property></widget></item>
+
+              <item>
+               <layout class="QHBoxLayout" name="loginButtonRowLayout">
+                <item><widget class="QPushButton" name="btnLogin"><property name="minimumSize"><size><width>0</width><height>40</height></size></property><property name="text"><string>Login</string></property><property name="default"><bool>true</bool></property></widget></item>
+                <item><widget class="QPushButton" name="btnExit"><property name="minimumSize"><size><width>0</width><height>40</height></size></property><property name="text"><string>Exit</string></property></widget></item>
+               </layout>
+              </item>
+
+              <item>
+               <layout class="QHBoxLayout" name="loginExtraButtonRowLayout">
+                <item><widget class="QPushButton" name="btnForgotPassword"><property name="flat"><bool>true</bool></property><property name="text"><string>Forgot Password?</string></property></widget></item>
+                <item>
+                 <spacer name="extraButtonSpacer">
+                  <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                 </spacer>
+                </item>
+                <item><widget class="QPushButton" name="btnChangeLanguage"><property name="flat"><bool>true</bool></property><property name="text"><string>Language</string></property></widget></item>
+                <item><widget class="QPushButton" name="btnTheme"><property name="flat"><bool>true</bool></property><property name="text"><string>Theme</string></property></widget></item>
+               </layout>
+              </item>
+
+             </layout>
+            </widget>
+           </item>
+
+           <item>
+            <spacer name="loginCardRightSpacer">
+             <property name="orientation"><enum>Qt::Horizontal</enum></property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <spacer name="loginCardBottomSpacer">
+           <property name="orientation"><enum>Qt::Vertical</enum></property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+      </item>
+
+     </layout>
+    </item>
+
+    <!-- ================= FOOTER ================= -->
+    <item>
+     <widget class="QFrame" name="frmFooter">
+      <property name="minimumSize"><size><width>0</width><height>34</height></size></property>
+      <layout class="QHBoxLayout" name="footerLayout">
+       <property name="leftMargin"><number>16</number></property>
+       <property name="rightMargin"><number>16</number></property>
+       <item><widget class="QLabel" name="lblFooterVersion"><property name="text"><string>Version 2.0.0</string></property></widget></item>
+       <item><widget class="QLabel" name="lblFooterBuild"><property name="text"><string>Build 1</string></property></widget></item>
+       <item><widget class="QLabel" name="lblFooterDbVersion"><property name="text"><string>DB v1</string></property></widget></item>
+       <item><widget class="QLabel" name="lblFooterServer"><property name="text"><string>Server: localhost</string></property></widget></item>
+       <item>
+        <spacer name="footerSpacer">
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </spacer>
+       </item>
+       <item><widget class="QLabel" name="lblFooterDeveloper"><property name="text"><string>Developer</string></property></widget></item>
+       <item><widget class="QLabel" name="lblFooterSupport"><property name="text"><string>support@example.com</string></property></widget></item>
+       <item><widget class="QLabel" name="lblFooterWebsite"><property name="text"><string>www.example.com</string></property></widget></item>
+       <item><widget class="QLabel" name="lblFooterCopyright"><property name="text"><string>© Medical ERP</string></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+
+   </layout>
+  </widget>
+ </widget>
+ <tabstops>
+  <tabstop>txtUsername</tabstop>
+  <tabstop>txtPassword</tabstop>
+  <tabstop>cmbCompany</tabstop>
+  <tabstop>cmbFinancialYear</tabstop>
+  <tabstop>chkRememberMe</tabstop>
+  <tabstop>chkShowPassword</tabstop>
+  <tabstop>btnLogin</tabstop>
+  <tabstop>btnExit</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>

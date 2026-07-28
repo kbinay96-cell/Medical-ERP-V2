@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SupplierListWidget</class>
+ <widget class="QWidget" name="SupplierListWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1100</width>
+    <height>650</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Supplier Master</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayoutRoot">
+   <property name="spacing">
+    <number>10</number>
+   </property>
+   <property name="leftMargin">
+    <number>12</number>
+   </property>
+   <property name="topMargin">
+    <number>12</number>
+   </property>
+   <property name="rightMargin">
+    <number>12</number>
+   </property>
+   <property name="bottomMargin">
+    <number>12</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="lblTitle">
+     <property name="font">
+      <font>
+       <pointsize>14</pointsize>
+       <bold>true</bold>
+      </font>
+     </property>
+     <property name="text">
+      <string>Supplier Master</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="frmToolbar">
+     <property name="frameShape">
+      <enum>QFrame::StyledPanel</enum>
+     </property>
+     <layout class="QHBoxLayout" name="horizontalLayoutToolbar">
+      <item>
+       <widget class="QLabel" name="lblSearch">
+        <property name="text">
+         <string>Search:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="txtSearch">
+        <property name="placeholderText">
+         <string>Search by Code, Name, Mobile or PAN/VAT...</string>
+        </property>
+        <property name="clearButtonEnabled">
+         <bool>true</bool>
+        </property>
+        <property name="toolTip">
+         <string>Search Suppliers (Ctrl+F)</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="lblStatusFilter">
+        <property name="text">
+         <string>Status:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="cmbStatusFilter">
+        <property name="toolTip">
+         <string>Filter suppliers by status</string>
+        </property>
+        <item>
+         <property name="text">
+          <string>All</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Active</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Inactive</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="chkShowDeleted">
+        <property name="text">
+         <string>Show Deleted</string>
+        </property>
+        <property name="toolTip">
+         <string>Include soft-deleted suppliers (needed to Restore one)</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="horizontalSpacerToolbar">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="btnRefresh">
+        <property name="text">
+         <string>Refresh</string>
+        </property>
+        <property name="toolTip">
+         <string>Reload supplier list (F5)</string>
+        </property>
+        <property name="icon">
+         <iconset>
+          <normaloff>:/icons/refresh.svg</normaloff>
+         </iconset>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="tblSupplier">
+     <property name="alternatingRowColors">
+      <bool>true</bool>
+     </property>
+     <property name="selectionBehavior">
+      <enum>QAbstractItemView::SelectRows</enum>
+     </property>
+     <property name="selectionMode">
+      <enum>QAbstractItemView::SingleSelection</enum>
+     </property>
+     <property name="editTriggers">
+      <set>QAbstractItemView::NoEditTriggers</set>
+     </property>
+     <property name="sortingEnabled">
+      <bool>true</bool>
+     </property>
+     <attribute name="horizontalHeaderStretchLastSection">
+      <bool>true</bool>
+     </attribute>
+     <column>
+      <property name="text">
+       <string>Code</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Supplier Name</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Contact Person</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Mobile No.</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>City</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>PAN/VAT No.</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Opening Balance</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Type</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Credit Limit</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Credit Days</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>Status</string>
+      </property>
+     </column>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lblRecordCount">
+     <property name="text">
+      <string>0 supplier(s) found</string>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">color: #666666;</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutButtons">
+     <item>
+      <widget class="QPushButton" name="btnAdd">
+       <property name="text">
+        <string>Add Supplier</string>
+       </property>
+       <property name="toolTip">
+        <string>Add a new supplier (Ctrl+N)</string>
+       </property>
+       <property name="icon">
+        <iconset>
+         <normaloff>:/icons/add.svg</normaloff>
+        </iconset>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnEdit">
+       <property name="text">
+        <string>Edit</string>
+       </property>
+       <property name="toolTip">
+        <string>Edit the selected supplier (Enter)</string>
+       </property>
+       <property name="icon">
+        <iconset>
+         <normaloff>:/icons/edit.svg</normaloff>
+        </iconset>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnDelete">
+       <property name="text">
+        <string>Delete</string>
+       </property>
+       <property name="toolTip">
+        <string>Soft-delete the selected supplier (Del)</string>
+       </property>
+       <property name="icon">
+        <iconset>
+         <normaloff>:/icons/delete.svg</normaloff>
+        </iconset>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnRestore">
+       <property name="text">
+        <string>Restore</string>
+       </property>
+       <property name="toolTip">
+        <string>Restore the selected deleted supplier</string>
+       </property>
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="icon">
+        <iconset>
+         <normaloff>:/icons/restore.svg</normaloff>
+        </iconset>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="horizontalSpacerButtons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btnClose">
+       <property name="text">
+        <string>Close</string>
+       </property>
+       <property name="toolTip">
+        <string>Close this screen (Esc)</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <tabstops>
+  <tabstop>txtSearch</tabstop>
+  <tabstop>cmbStatusFilter</tabstop>
+  <tabstop>chkShowDeleted</tabstop>
+  <tabstop>btnRefresh</tabstop>
+  <tabstop>tblSupplier</tabstop>
+  <tabstop>btnAdd</tabstop>
+  <tabstop>btnEdit</tabstop>
+  <tabstop>btnDelete</tabstop>
+  <tabstop>btnRestore</tabstop>
+  <tabstop>btnClose</tabstop>
+ </tabstops>
+ <resources/>
+ <connections/>
+</ui>
