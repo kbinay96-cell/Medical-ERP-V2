@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CompanyFormDialog</class>
+ <widget class="QDialog" name="CompanyFormDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>560</width><height>560</height></rect>
+  </property>
+  <property name="windowTitle"><string>Company</string></property>
+  <layout class="QVBoxLayout" name="verticalLayout_root">
+
+   <item><widget class="QLabel" name="lblFormTitle">
+     <property name="text"><string>Add Company</string></property>
+     <property name="styleSheet"><string notr="true">font-size: 16px; font-weight: 600;</string></property>
+   </widget></item>
+
+   <item><widget class="QFrame" name="lineTopSep">
+     <property name="frameShape"><enum>QFrame::HLine</enum></property>
+   </widget></item>
+
+   <item><layout class="QFormLayout" name="formLayout">
+
+    <item row="0" column="0"><widget class="QLabel" name="lblCompanyCode"><property name="text"><string>Company ID</string></property></widget></item>
+    <item row="0" column="1"><widget class="QLineEdit" name="txtCompanyCode"><property name="readOnly"><bool>true</bool></property><property name="placeholderText"><string>(auto-generated)</string></property></widget></item>
+
+    <item row="1" column="0"><widget class="QLabel" name="lblCompanyName"><property name="text"><string>Company Name*</string></property></widget></item>
+    <item row="1" column="1"><widget class="QLineEdit" name="txtCompanyName"/></item>
+
+    <item row="2" column="0"><widget class="QLabel" name="lblAddress"><property name="text"><string>Address</string></property></widget></item>
+    <item row="2" column="1"><widget class="QLineEdit" name="txtAddress"/></item>
+
+    <item row="3" column="0"><widget class="QLabel" name="lblContactPerson"><property name="text"><string>Contact Person</string></property></widget></item>
+    <item row="3" column="1"><widget class="QLineEdit" name="txtContactPerson"/></item>
+
+    <item row="4" column="0"><widget class="QLabel" name="lblMobileNo"><property name="text"><string>Mobile No.</string></property></widget></item>
+    <item row="4" column="1"><widget class="QLineEdit" name="txtMobileNo"/></item>
+
+    <item row="5" column="0"><widget class="QLabel" name="lblPhoneNo"><property name="text"><string>Phone No.</string></property></widget></item>
+    <item row="5" column="1"><widget class="QLineEdit" name="txtPhoneNo"/></item>
+
+    <item row="6" column="0"><widget class="QLabel" name="lblEmail"><property name="text"><string>Email</string></property></widget></item>
+    <item row="6" column="1"><widget class="QLineEdit" name="txtEmail"/></item>
+
+    <item row="7" column="0"><widget class="QLabel" name="lblPanVatNo"><property name="text"><string>PAN/VAT No.</string></property></widget></item>
+    <item row="7" column="1"><widget class="QLineEdit" name="txtPanVatNo"/></item>
+
+    <item row="8" column="0"><widget class="QLabel" name="lblRegistrationNo"><property name="text"><string>Registration No.</string></property></widget></item>
+    <item row="8" column="1"><widget class="QLineEdit" name="txtRegistrationNo"/></item>
+
+    <item row="9" column="0"><widget class="QLabel" name="lblStatus"><property name="text"><string>Status</string></property></widget></item>
+    <item row="9" column="1"><widget class="QComboBox" name="cmbStatus">
+      <item><property name="text"><string>Active</string></property></item>
+      <item><property name="text"><string>Inactive</string></property></item>
+    </widget></item>
+
+    <item row="10" column="0"><widget class="QLabel" name="lblRemarks"><property name="text"><string>Remarks</string></property></widget></item>
+    <item row="10" column="1"><widget class="QPlainTextEdit" name="txtRemarks"><property name="maximumHeight"><number>60</number></property></widget></item>
+
+   </layout></item>
+
+   <item><widget class="QLabel" name="lblValidationMessage">
+     <property name="text"><string></string></property>
+     <property name="styleSheet"><string notr="true">color: #C0392B;</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+   </widget></item>
+
+   <item><widget class="QFrame" name="lineBottomSep">
+     <property name="frameShape"><enum>QFrame::HLine</enum></property>
+   </widget></item>
+
+   <item><widget class="QFrame" name="frameButtons">
+    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+     <item><spacer name="horizontalSpacer_buttons">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+     </spacer></item>
+     <item><widget class="QPushButton" name="btnCancel"><property name="text"><string>Cancel</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnSave"><property name="text"><string>Save</string></property></widget></item>
+    </layout>
+   </widget></item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

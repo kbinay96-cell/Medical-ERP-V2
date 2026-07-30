@@ -1,0 +1,16 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file>icons/new_user.svg</file>
+        <file>icons/edit.svg</file>
+        <file>icons/delete.svg</file>
+        <file>icons/restore.svg</file>
+        <file>icons/toggle_active.svg</file>
+        <file>icons/reset_password.svg</file>
+        <file>icons/export.svg</file>
+        <file>icons/print.svg</file>
+        <file>icons/refresh.svg</file>
+        <file>icons/search.svg</file>
+        <file>icons/save.svg</file>
+        <file>icons/cancel.svg</file>
+    </qresource>
+</RCC>

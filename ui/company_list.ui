@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CompanyListWidget</class>
+ <widget class="QWidget" name="CompanyListWidget">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1000</width><height>650</height></rect>
+  </property>
+  <property name="windowTitle"><string>Company Master</string></property>
+  <layout class="QVBoxLayout" name="verticalLayout_root">
+
+   <item><widget class="QLabel" name="lblTitle">
+     <property name="text"><string>Company Master</string></property>
+     <property name="styleSheet"><string notr="true">font-size: 18px; font-weight: 600;</string></property>
+   </widget></item>
+
+   <item><widget class="QFrame" name="frameFilters">
+    <layout class="QHBoxLayout" name="horizontalLayout_filters">
+     <item><widget class="QLabel" name="lblSearch"><property name="text"><string>Search:</string></property></widget></item>
+     <item><widget class="QLineEdit" name="txtSearch">
+       <property name="placeholderText"><string>Search by name, contact person, mobile, or email...</string></property>
+     </widget></item>
+     <item><widget class="QLabel" name="lblStatusFilter"><property name="text"><string>Status:</string></property></widget></item>
+     <item><widget class="QComboBox" name="cmbStatusFilter">
+       <item><property name="text"><string>All</string></property></item>
+       <item><property name="text"><string>Active</string></property></item>
+       <item><property name="text"><string>Inactive</string></property></item>
+     </widget></item>
+     <item><widget class="QCheckBox" name="chkShowDeleted"><property name="text"><string>Show Deleted</string></property></widget></item>
+     <item><spacer name="horizontalSpacer_filters">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+     </spacer></item>
+     <item><widget class="QPushButton" name="btnRefresh"><property name="text"><string>Refresh</string></property></widget></item>
+    </layout>
+   </widget></item>
+
+   <item><widget class="QFrame" name="frameActions">
+    <layout class="QHBoxLayout" name="horizontalLayout_actions">
+     <item><widget class="QPushButton" name="btnAdd"><property name="text"><string>Add</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnEdit"><property name="text"><string>Edit</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnDelete"><property name="text"><string>Delete</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnRestore"><property name="text"><string>Restore</string></property></widget></item>
+     <item><widget class="QFrame" name="lineActionsSep"><property name="frameShape"><enum>QFrame::VLine</enum></property></widget></item>
+     <item><widget class="QPushButton" name="btnExport"><property name="text"><string>Export Excel</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnPrint"><property name="text"><string>Print</string></property></widget></item>
+     <item><spacer name="horizontalSpacer_actions">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+     </spacer></item>
+     <item><widget class="QPushButton" name="btnClose"><property name="text"><string>Close</string></property></widget></item>
+    </layout>
+   </widget></item>
+
+   <item><widget class="QTableWidget" name="tblCompany">
+     <property name="sortingEnabled"><bool>true</bool></property>
+     <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
+     <property name="selectionMode"><enum>QAbstractItemView::SingleSelection</enum></property>
+     <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+     <property name="alternatingRowColors"><bool>true</bool></property>
+     <column><property name="text"><string>Company ID</string></property></column>
+     <column><property name="text"><string>Company Name</string></property></column>
+     <column><property name="text"><string>Contact Person</string></property></column>
+     <column><property name="text"><string>Mobile No.</string></property></column>
+     <column><property name="text"><string>Phone No.</string></property></column>
+     <column><property name="text"><string>Email</string></property></column>
+     <column><property name="text"><string>Status</string></property></column>
+   </widget></item>
+
+   <item><widget class="QStatusBar" name="statusBar">
+     <property name="sizeGripEnabled"><bool>false</bool></property>
+   </widget></item>
+   <item><widget class="QLabel" name="lblRecordCount">
+     <property name="text"><string>0 company(s) found</string></property>
+   </widget></item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>UserFormView</class>
+ <widget class="QDialog" name="UserFormView">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>620</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size><width>480</width><height>580</height></size>
+  </property>
+  <property name="windowTitle">
+   <string>User Form</string>
+  </property>
+  <property name="modal"><bool>true</bool></property>
+  <layout class="QVBoxLayout" name="verticalLayout_root">
+   <property name="leftMargin"><number>20</number></property>
+   <property name="topMargin"><number>20</number></property>
+   <property name="rightMargin"><number>20</number></property>
+   <property name="bottomMargin"><number>16</number></property>
+   <property name="spacing"><number>12</number></property>
+   <item>
+    <widget class="QLabel" name="lbl_form_title">
+     <property name="font">
+      <font>
+       <pointsize>14</pointsize>
+       <weight>75</weight>
+       <bold>true</bold>
+      </font>
+     </property>
+     <property name="text">
+      <string>New User</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="Line" name="line_top_sep">
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QScrollArea" name="scroll_area">
+     <property name="widgetResizable"><bool>true</bool></property>
+     <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+     <widget class="QWidget" name="scroll_area_contents">
+      <property name="geometry">
+       <rect><x>0</x><y>0</y><width>478</width><height>460</height></rect>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_scroll">
+       <property name="leftMargin"><number>2</number></property>
+       <property name="topMargin"><number>2</number></property>
+       <property name="rightMargin"><number>2</number></property>
+       <property name="bottomMargin"><number>2</number></property>
+       <property name="spacing"><number>14</number></property>
+       <item>
+        <widget class="QGroupBox" name="group_identity">
+         <property name="title"><string>Identity</string></property>
+         <layout class="QGridLayout" name="gridLayout_identity">
+          <property name="leftMargin"><number>12</number></property>
+          <property name="topMargin"><number>16</number></property>
+          <property name="rightMargin"><number>12</number></property>
+          <property name="bottomMargin"><number>12</number></property>
+          <property name="horizontalSpacing"><number>12</number></property>
+          <property name="verticalSpacing"><number>10</number></property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_username">
+            <property name="text"><string>Username *</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="input_username">
+            <property name="minimumSize"><size><width>0</width><height>30</height></size></property>
+            <property name="placeholderText"><string>e.g. jsmith</string></property>
+            <property name="maxLength"><number>50</number></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_display_name">
+            <property name="text"><string>Display Name *</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="input_display_name">
+            <property name="minimumSize"><size><width>0</width><height>30</height></size></property>
+            <property name="placeholderText"><string>e.g. John Smith</string></property>
+            <property name="maxLength"><number>150</number></property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_email">
+            <property name="text"><string>Email</string></property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLineEdit" name="input_email">
+            <property name="minimumSize"><size><width>0</width><height>30</height></size></property>
+            <property name="placeholderText"><string>name@example.com</string></property>
+            <property name="maxLength"><number>150</number></property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QLabel" name="lbl_phone">
+            <property name="text"><string>Phone</string></property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QLineEdit" name="input_phone">
+            <property name="minimumSize"><size><width>0</width><height>30</height></size></property>
+            <property name="placeholderText"><string>e.g. 98XXXXXXXX</string></property>
+            <property name="maxLength"><number>20</number></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="group_access">
+         <property name="title"><string>Access &amp; Mapping</string></property>
+         <layout class="QGridLayout" name="gridLayout_access">
+          <property name="leftMargin"><number>12</number></property>
+          <property name="topMargin"><number>16</number></property>
+          <property name="rightMargin"><number>12</number></property>
+          <property name="bottomMargin"><number>12</number></property>
+          <property name="horizontalSpacing"><number>12</number></property>
+          <property name="verticalSpacing"><number>10</number></property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_role">
+            <property name="text"><string>Role</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="combo_role">
+            <property name="minimumSize"><size><width>0</width><height>30</height></size></property>
+            <item><property name="text"><string>-- Select Role --</string></property></item>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_company">
+            <property name="text"><string>Company</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QComboBox" name="combo_company">
+            <property name="minimumSize"><size><width>0</width><height>30</height></size></property>
+            <item><property name="text"><string>-- Select Company --</string></property></item>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="group_password">
+         <property name="title"><string>Password</string></property>
+         <layout class="QGridLayout" name="gridLayout_password">
+          <property name="leftMargin"><number>12</number></property>
+          <property name="topMargin"><number>16</number></property>
+          <property name="rightMargin"><number>12</number></property>
+          <property name="bottomMargin"><number>12</number></property>
+          <property name="horizontalSpacing"><number>12</number></property>
+          <property name="verticalSpacing"><number>10</number></property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_password">
+            <property name="text"><string>Password *</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLineEdit" name="input_password">
+            <property name="minimumSize"><size><width>0</width><height>30</height></size></property>
+            <property name="echoMode"><enum>QLineEdit::Password</enum></property>
+            <property name="placeholderText"><string>Minimum 8 characters</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_confirm_password">
+            <property name="text"><string>Confirm Password *</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLineEdit" name="input_confirm_password">
+            <property name="minimumSize"><size><width>0</width><height>30</height></size></property>
+            <property name="echoMode"><enum>QLineEdit::Password</enum></property>
+            <property name="placeholderText"><string>Re-enter password</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QFrame" name="frame_flags">
+         <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+         <layout class="QHBoxLayout" name="horizontalLayout_flags">
+          <property name="leftMargin"><number>0</number></property>
+          <property name="topMargin"><number>0</number></property>
+          <property name="rightMargin"><number>0</number></property>
+          <property name="bottomMargin"><number>0</number></property>
+          <property name="spacing"><number>20</number></property>
+          <item>
+           <widget class="QCheckBox" name="chk_must_change_password">
+            <property name="text"><string>Must change password at next login</string></property>
+            <property name="checked"><bool>true</bool></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chk_is_active">
+            <property name="text"><string>Active</string></property>
+            <property name="checked"><bool>true</bool></property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="horizontalSpacer_flags">
+            <property name="orientation"><enum>Qt::Horizontal</enum></property>
+            <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+           </spacer>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lbl_validation_message">
+     <property name="styleSheet">
+      <string notr="true">color: #C62828;</string>
+     </property>
+     <property name="wordWrap"><bool>true</bool></property>
+     <property name="text"><string/></property>
+     <property name="visible"><bool>false</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="Line" name="line_bottom_sep">
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QFrame" name="frame_buttons">
+     <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+     <layout class="QHBoxLayout" name="horizontalLayout_buttons">
+      <property name="leftMargin"><number>0</number></property>
+      <property name="topMargin"><number>0</number></property>
+      <property name="rightMargin"><number>0</number></property>
+      <property name="bottomMargin"><number>0</number></property>
+      <property name="spacing"><number>10</number></property>
+      <item>
+       <spacer name="horizontalSpacer_buttons">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="btn_cancel">
+        <property name="minimumSize"><size><width>100</width><height>34</height></size></property>
+        <property name="text"><string>Cancel</string></property>
+        <property name="icon">
+         <iconset>
+          <normaloff>resources/icons/cancel.svg</normaloff>resources/icons/cancel.svg</iconset>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="btn_save">
+        <property name="minimumSize"><size><width>110</width><height>34</height></size></property>
+        <property name="default"><bool>true</bool></property>
+        <property name="text"><string> Save</string></property>
+        <property name="icon">
+         <iconset>
+          <normaloff>resources/icons/save.svg</normaloff>resources/icons/save.svg</iconset>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

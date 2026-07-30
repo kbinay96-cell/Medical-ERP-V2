@@ -8,7 +8,7 @@ everything goes through engines.dashboard_engine.
 =========================================================
 """
 
-from PySide6.QtCore import QTimer, QTime, QDate, QSize
+from PySide6.QtCore import Qt, QTimer, QTime, QDate, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from PySide6.QtWidgets import QMainWindow, QTreeWidgetItem
 
@@ -22,6 +22,8 @@ from engines.date_engine import ad_to_bs, DateEngineError
 
 from screens.supplier_list_screen import SupplierListScreen
 from screens.supplier_form_screen import SupplierFormScreen
+
+from screens.company_list_screen import CompanyListScreen
 
 logger = get_logger()
 
@@ -224,7 +226,7 @@ class DashboardScreen(QMainWindow):
     def open_module_from_sidebar(self, item, column):
         """
         Opens modules from Sidebar.
-        Currently only Supplier is enabled.
+        Currently Supplier and Company are enabled.
         """
         if item.parent() is None:
             return
@@ -233,7 +235,14 @@ class DashboardScreen(QMainWindow):
 
         if module_name == "supplier":
             self.supplier_list = SupplierListScreen(self)
+            self.supplier_list.setWindowFlag(Qt.Window)
             self.supplier_list.show()
+
+        elif module_name == "company":
+            
+            self.company_list = CompanyListScreen(self)
+            self.company_list.setWindowFlag(Qt.Window)
+            self.company_list.show()
 
     # -----------------------------------------------------
     # LOGOUT
