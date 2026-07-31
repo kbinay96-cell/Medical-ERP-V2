@@ -1,0 +1,309 @@
+/* =========================================================
+   Medical ERP V2 - BLACK THEME (Firefox-inspired palette)
+   ---------------------------------------------------------
+   Near-black background, soft violet/purple accent, subtle
+   rounded cards. Third theme alongside Light and Dark(Blue).
+   Same rule as the other themes: every background pairs with
+   an explicit foreground - nothing inherits from the OS
+   palette.
+   ========================================================= */
+
+* {
+    font-family: "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 10.5pt;
+    color: #E8E8ED;
+}
+
+QMainWindow, QDialog, QWidget {
+    background-color: #1A1A22;
+    color: #E8E8ED;
+}
+
+/* ---------- Brand header / footer bars ---------- */
+QFrame#frmHeader, QFrame#frmTopHeader, QFrame#frmFooter {
+    background-color: #0F0F14;
+    color: #E8E8ED;
+}
+QFrame#frmHeader QLabel, QFrame#frmTopHeader QLabel, QFrame#frmFooter QLabel {
+    color: #E8E8ED;
+    background: transparent;
+}
+
+/* ---------- Left branding panel (Login) ---------- */
+QFrame#frmLeftPanel {
+    background-color: #201F29;
+    color: #C7C7D6;
+}
+QFrame#frmLeftPanel QLabel {
+    color: #C7C7D6;
+    background: transparent;
+}
+QLabel#lblWelcomeMessage {
+    color: #FFFFFF;
+    font-size: 16pt;
+    font-weight: 700;
+}
+QLabel#lblTagline {
+    color: #9B8CD6;
+    font-style: italic;
+}
+
+/* ---------- Login card / Sidebar / cards (dark surfaces) ---------- */
+QFrame#frmLoginPanel, QFrame#frmSidebar, QFrame#loginCard {
+    background-color: #26252F;
+    color: #E8E8ED;
+    border-radius: 12px;
+    border: 1px solid #35333F;
+}
+QFrame#frmLoginPanel QLabel, QFrame#frmSidebar QLabel, QFrame#loginCard QLabel {
+    color: #E8E8ED;
+    background: transparent;
+}
+
+QLabel {
+    color: #E8E8ED;
+    background: transparent;
+}
+
+/* ---------- Buttons (violet accent, like the reference) ---------- */
+QPushButton {
+    background-color: #7C4DFF;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background-color: #9370FF;
+    color: #FFFFFF;
+}
+QPushButton:pressed {
+    background-color: #6236D9;
+    color: #FFFFFF;
+}
+QPushButton:disabled {
+    background-color: #35333F;
+    color: #6E6C7A;
+}
+
+QPushButton[flat="true"] {
+    background-color: transparent;
+    color: #B49AFF;
+    text-decoration: underline;
+    padding: 4px 6px;
+}
+QPushButton[flat="true"]:hover {
+    color: #D0BFFF;
+    background-color: transparent;
+}
+
+/* ---------- Inputs ---------- */
+QLineEdit, QComboBox, QSpinBox, QDateEdit {
+    padding: 7px;
+    border: 1px solid #35333F;
+    border-radius: 6px;
+    background-color: #201F29;
+    color: #E8E8ED;
+    selection-background-color: #7C4DFF;
+    selection-color: #FFFFFF;
+}
+QLineEdit:focus, QComboBox:focus {
+    border: 1.5px solid #7C4DFF;
+}
+QLineEdit::placeholder {
+    color: #7A7887;
+}
+QComboBox QAbstractItemView {
+    background-color: #26252F;
+    color: #E8E8ED;
+    border: 1px solid #35333F;
+    selection-background-color: #7C4DFF;
+    selection-color: #FFFFFF;
+}
+
+/* ---------- Checkboxes / Radio ---------- */
+QCheckBox, QRadioButton {
+    color: #E8E8ED;
+    background: transparent;
+    spacing: 6px;
+}
+
+/* ---------- Group boxes ---------- */
+QGroupBox {
+    color: #E8E8ED;
+    font-weight: 700;
+    border: 1px solid #35333F;
+    border-radius: 10px;
+    margin-top: 10px;
+    padding-top: 14px;
+    background-color: #201F29;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    color: #E8E8ED;
+    background-color: #201F29;
+}
+
+/* ---------- KPI cards / setting cards ---------- */
+QFrame[cssClass="kpiCard"] {
+    background-color: #26252F;
+    border: 1px solid #35333F;
+    border-radius: 12px;
+}
+QFrame[cssClass="kpiCard"] QLabel[cssClass="kpiTitle"] {
+    color: #A9A7B8;
+    font-weight: 600;
+    font-size: 9.5pt;
+}
+QFrame[cssClass="kpiCard"] QLabel[cssClass="kpiValue"] {
+    color: #FFFFFF;
+    font-weight: 700;
+    font-size: 16pt;
+}
+
+/* ---------- Lists / Trees / Tables ---------- */
+QListWidget, QTreeWidget, QTableWidget {
+    background-color: #201F29;
+    color: #E8E8ED;
+    border: 1px solid #35333F;
+    border-radius: 8px;
+    alternate-background-color: #26252F;
+}
+QListWidget::item, QTreeWidget::item, QTableWidget::item {
+    color: #E8E8ED;
+    padding: 4px;
+}
+QListWidget::item:selected, QTreeWidget::item:selected, QTableWidget::item:selected {
+    background-color: #7C4DFF;
+    color: #FFFFFF;
+}
+QHeaderView::section {
+    background-color: #0F0F14;
+    color: #E8E8ED;
+    padding: 6px;
+    border: none;
+    font-weight: 600;
+}
+
+/* ---------- ScrollArea / Splitter ---------- */
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+QSplitter::handle {
+    background-color: #35333F;
+}
+
+/* ---------- Status bar ---------- */
+QStatusBar {
+    background-color: #0F0F14;
+    color: #E8E8ED;
+}
+QStatusBar QLabel {
+    color: #E8E8ED;
+}
+
+/* ---------- Menu ---------- */
+QMenuBar {
+    background-color: #0F0F14;
+    color: #E8E8ED;
+}
+QMenuBar::item {
+    background: transparent;
+    color: #E8E8ED;
+}
+QMenuBar::item:selected {
+    background-color: #7C4DFF;
+    color: #FFFFFF;
+}
+QMenu {
+    background-color: #26252F;
+    color: #E8E8ED;
+    border: 1px solid #35333F;
+}
+QMenu::item:selected {
+    background-color: #7C4DFF;
+    color: #FFFFFF;
+}
+
+/* ---------- Feedback labels ---------- */
+QLabel#lblLoginMessage {
+    color: #FF7B9C;
+    font-weight: 600;
+}
+QLabel#lblCapsLock {
+    color: #E0B84D;
+    font-weight: 600;
+}
+QLabel#lblConnectionStatus {
+    color: #5FDD9D;
+    font-weight: 600;
+}
+
+/* ---------- Tooltips ---------- */
+QToolTip {
+    background-color: #0F0F14;
+    color: #E8E8ED;
+    border: 1px solid #7C4DFF;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+/* =========================================================
+   SETTINGS SCREEN (Black theme)
+   ---------------------------------------------------------
+   Hook names kept identical to the Blue dark theme
+   (settingRow/settingLabel/settingDescription) so both
+   themes style the same settings.ui structure consistently.
+   ========================================================= */
+
+/* ---------- Settings module: dynamic setting rows ---------- */
+QFrame[cssClass="settingRow"] {
+    background-color: #201F29;
+    border: 1px solid #2C2A36;
+    border-radius: 10px;
+}
+QFrame[cssClass="settingRow"]:hover {
+    border: 1px solid #7C4DFF;
+}
+QLabel[cssClass="settingLabel"] {
+    color: #FFFFFF;
+    font-weight: 600;
+}
+QLabel[cssClass="settingDescription"] {
+    color: #9391A0;
+    font-size: 9pt;
+}
+
+/* ---------- Settings module: header search box ---------- */
+QFrame[cssClass="searchBox"] {
+    background-color: #26252F;
+    border: 1px solid #35333F;
+    border-radius: 8px;
+}
+QFrame[cssClass="searchBox"] QLineEdit {
+    background: transparent;
+    border: none;
+    padding: 0px;
+}
+
+/* ---------- Settings module: primary Save button ---------- */
+QPushButton[cssClass="primaryButton"] {
+    background-color: #7C4DFF;
+    color: #FFFFFF;
+}
+QPushButton[cssClass="primaryButton"]:hover {
+    background-color: #9370FF;
+}
+QPushButton[cssClass="primaryButton"]:pressed {
+    background-color: #6236D9;
+}
+
+/* ---------- Settings module: unsaved-changes indicator ---------- */
+QLabel[cssClass="unsavedIndicator"] {
+    color: #E0B84D;
+    font-weight: 600;
+}

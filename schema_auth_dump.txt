@@ -1,4 +1,4 @@
--- =========================================================
+﻿-- =========================================================
 -- Medical ERP V2 - Module 01: Login & Dashboard
 -- Authentication / Authorization Schema
 -- =========================================================
@@ -241,7 +241,7 @@ CREATE TABLE IF NOT EXISTS settings_history (
 );
 
 -- ---------------------------------------------------------
--- SEED DATA (safe to re-run — ON CONFLICT DO NOTHING)
+-- SEED DATA (safe to re-run â€” ON CONFLICT DO NOTHING)
 -- Scope for now: General, Company, User & Security, Date &
 -- Calendar, Print, Backup. Purchase/Sales/Item/Customer/
 -- Supplier-specific settings are added when those modules
@@ -294,3 +294,4 @@ INSERT INTO settings (setting_key, setting_value, setting_group, data_type, defa
     ('backup.auto_backup_enabled', 'false', 'Backup', 'boolean', 'false', 'Automatically back up the database on a schedule', 10),
     ('backup.folder_path', '', 'Backup', 'path', '', 'Folder where backups are saved', 20)
 ON CONFLICT (setting_key) WHERE companyid IS NULL AND userid IS NULL DO NOTHING;
+

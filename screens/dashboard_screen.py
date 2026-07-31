@@ -25,6 +25,8 @@ from screens.supplier_form_screen import SupplierFormScreen
 
 from screens.company_list_screen import CompanyListScreen
 
+from screens.settings_screen import SettingsScreen
+
 logger = get_logger()
 
 REFRESH_INTERVAL_MS = 60_000  # KPI auto-refresh, configurable later via Settings
@@ -244,6 +246,14 @@ class DashboardScreen(QMainWindow):
             self.company_list.setWindowFlag(Qt.Window)
             self.company_list.show()
 
+        elif module_name == "settings":
+            self.settings_screen = SettingsScreen(
+                current_username=self.login_result.username or "system",
+                is_admin=self.login_result.is_admin,
+                parent=self,
+            )
+            self.settings_screen.setWindowFlag(Qt.Window)
+            self.settings_screen.show()
     # -----------------------------------------------------
     # LOGOUT
     # -----------------------------------------------------

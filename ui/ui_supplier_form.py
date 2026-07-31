@@ -28,16 +28,18 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpacerItem,
     QVBoxLayout,
+    QWidget,
 )
 
 
 class Ui_SupplierFormDialog(object):
     def setupUi(self, SupplierFormDialog):
         SupplierFormDialog.setObjectName("SupplierFormDialog")
-        SupplierFormDialog.resize(560, 640)
+        SupplierFormDialog.resize(560, 600)
         SupplierFormDialog.setWindowTitle("Supplier")
         SupplierFormDialog.setModal(True)
 
@@ -55,8 +57,17 @@ class Ui_SupplierFormDialog(object):
         self.lblFormTitle.setText("Supplier Details")
         self.verticalLayoutRoot.addWidget(self.lblFormTitle)
 
+        # ---------------- Scroll Area (wraps all form groups) ----------------
+        self.scrollArea = QScrollArea(SupplierFormDialog)
+        self.scrollArea.setObjectName("scrollArea")
+        self.scrollArea.setWidgetResizable(True)
+        self.scrollAreaContents = QWidget()
+        self.scrollAreaContents.setObjectName("scrollAreaContents")
+        self.verticalLayoutScroll = QVBoxLayout(self.scrollAreaContents)
+        self.verticalLayoutScroll.setObjectName("verticalLayoutScroll")
+
         # ---------------- Basic Information ----------------
-        self.grpBasicInfo = QGroupBox(SupplierFormDialog)
+        self.grpBasicInfo = QGroupBox(self.scrollAreaContents)
         self.grpBasicInfo.setObjectName("grpBasicInfo")
         self.grpBasicInfo.setTitle("Basic Information")
         self.formLayoutBasic = QFormLayout(self.grpBasicInfo)
@@ -128,10 +139,10 @@ class Ui_SupplierFormDialog(object):
         self.lblPanVatNo.setBuddy(self.txtPanVatNo)
         self.formLayoutBasic.addRow(self.lblPanVatNo, self.txtPanVatNo)
 
-        self.verticalLayoutRoot.addWidget(self.grpBasicInfo)
+        self.verticalLayoutScroll.addWidget(self.grpBasicInfo)
 
         # ---------------- Financial Information ----------------
-        self.grpFinancial = QGroupBox(SupplierFormDialog)
+        self.grpFinancial = QGroupBox(self.scrollAreaContents)
         self.grpFinancial.setObjectName("grpFinancial")
         self.grpFinancial.setTitle("Financial Information")
         self.formLayoutFinancial = QFormLayout(self.grpFinancial)
@@ -167,10 +178,10 @@ class Ui_SupplierFormDialog(object):
         self.lblCreditDays.setBuddy(self.txtCreditDays)
         self.formLayoutFinancial.addRow(self.lblCreditDays, self.txtCreditDays)
 
-        self.verticalLayoutRoot.addWidget(self.grpFinancial)
+        self.verticalLayoutScroll.addWidget(self.grpFinancial)
 
         # ---------------- Status ----------------
-        self.grpStatus = QGroupBox(SupplierFormDialog)
+        self.grpStatus = QGroupBox(self.scrollAreaContents)
         self.grpStatus.setObjectName("grpStatus")
         self.grpStatus.setTitle("Status")
         self.formLayoutStatus = QFormLayout(self.grpStatus)
@@ -191,8 +202,10 @@ class Ui_SupplierFormDialog(object):
         self.lblRemarks.setBuddy(self.txtRemarks)
         self.formLayoutStatus.addRow(self.lblRemarks, self.txtRemarks)
 
-        self.verticalLayoutRoot.addWidget(self.grpStatus)
+        self.verticalLayoutScroll.addWidget(self.grpStatus)
 
+        self.scrollArea.setWidget(self.scrollAreaContents)
+        self.verticalLayoutRoot.addWidget(self.scrollArea)
         self.lblValidationMessage = QLabel(SupplierFormDialog)
         self.lblValidationMessage.setObjectName("lblValidationMessage")
         self.lblValidationMessage.setText("")

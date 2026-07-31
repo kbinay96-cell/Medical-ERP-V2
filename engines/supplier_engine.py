@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import date,datetime, timezone
 from typing import Any, Optional
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
@@ -130,7 +130,15 @@ class SupplierEngine:
     def _now_bs(self) -> Optional[str]:
         if self._date_engine is None:
             return None
-        return self._date_engine.today_bs()
+        try:
+            return self._date_engine.ad_to_bs(date.today())
+        except self._date_engine.DateEngineError:
+            logger.warning(
+                "date_engine.ad_to_bs() could not find today's date in the "
+                "bscalendar reference table; created_at_bs/updated_at_bs will "
+                "be left blank for this operation."
+            )
+            return None
 
     def _code_prefix(self) -> str:
         if self._settings_engine is not None:

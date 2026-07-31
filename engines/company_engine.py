@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from models import company_model
 from models.company_model import CompanyModelError
-from utils.company_validator import validate_company_data
+from validators.company_validator import validate_company_data
 
 
 @dataclass

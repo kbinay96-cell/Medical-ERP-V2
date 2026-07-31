@@ -220,7 +220,7 @@ class SupplierModel:
         with _get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
-                return cur.fetchone()[0]
+                return cur.fetchone()["max_seq"]
 
     def search(self, filters: SupplierSearchFilters) -> tuple[list[dict], int]:
         """Returns (rows, total_count) honoring search text, status filter and paging."""
