@@ -8,7 +8,7 @@
 ################################################################################
 
 from PySide6.QtCore import (QCoreApplication, QMetaObject, QRect, QSize, Qt)
-from PySide6.QtGui import (QIcon)
+from PySide6.QtGui import (QIcon, QFont)
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QSpacerItem,
     QStatusBar, QTableView, QVBoxLayout, QWidget)
@@ -36,7 +36,7 @@ class Ui_UserListView(object):
         font = self.lbl_title.font()
         font.setPointSize(15)
         font.setBold(True)
-        font.setWeight(75)
+        font.setWeight(QFont.Weight.Bold)
         self.lbl_title.setFont(font)
         self.verticalLayout_root.addWidget(self.lbl_title)
 

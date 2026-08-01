@@ -1,0 +1,4287 @@
+﻿
+
+===== FILE: engines\audit_logger.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Audit Logger Engine
+---------------------------------------------------------
+Responsibilities:
+    - Login / Logout history
+    - Failed attempts
+    - Security events
+
+Audit log rows are INSERT-only. The application never
+provides an UPDATE or DELETE for audit_log.
+=========================================================
+"""
+
+from datetime import datetime
+import socket
+
+from database.db import get_connection
+
+
+def write_audit_log(action: str, userid: int | None = None, username: str | None = None, details: str = "") -> None:
+    """
+    Writes one row to audit_log. `action` should be one of the
+    AUDIT_* constants in config.settings (Login, Logout,
+    PasswordChanged, PasswordReset, UserLocked, UserUnlocked,
+    RoleChanged, PermissionChanged), but any short label works.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO audit_log (userid, username, action, details, createdat)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (userid, username, action, details, datetime.now())
+            )
+        conn.commit()
+
+
+def write_login_history(userid: int, username: str, companyid: str, financialyear: str, session_id: str) -> None:
+    """
+    Writes one row to login_history for a successful login.
+    """
+    machine_name = socket.gethostname()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO login_history (
+                    userid, username, companyid, financialyear,
+                    logintime, machinename, appversion, sessionid
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    userid, username, companyid, financialyear,
+                    datetime.now(), machine_name, "2.0.0", session_id,
+                )
+            )
+        conn.commit()
+
+
+def write_logout_time(session_id: str) -> None:
+    """
+    Marks the logout time on the matching login_history row.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE login_history SET logouttime = %s WHERE sessionid = %s",
+                (datetime.now(), session_id)
+            )
+        conn.commit()
+
+
+def write_failed_login(username: str, reason: str) -> None:
+    """
+    Writes one row to failed_login_history.
+    """
+    machine_name = socket.gethostname()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO failed_login_history (username, attemptdate, machinename, failurereason)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (username, datetime.now(), machine_name, reason)
+            )
+        conn.commit()
+
+
+
+===== FILE: engines\authentication_engine.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Authentication Engine
+---------------------------------------------------------
+Responsibilities:
+    - User authentication (the full Login workflow)
+    - Logout workflow
+
+Flow (per Blueprint Part-2 / Part-3):
+    Validate Input
+    -> Check User Exists
+    -> Verify Password
+    -> Check User Status
+    -> Check License
+    -> Check Subscription
+    -> Load Role / Permissions
+    -> Create Session
+    -> Write Login History
+    -> Write Audit Log
+
+No SQL is written directly in this file - it calls into
+Models and other Engines. No UI code here.
+=========================================================
+"""
+
+import socket
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from config.settings import (
+    STATUS_LOCKED, STATUS_DISABLED, STATUS_SUSPENDED,
+    STATUS_EXPIRED, STATUS_DELETED,
+    AUDIT_LOGIN, AUDIT_LOGOUT,
+)
+from utils.app_logger import get_logger
+from utils.login_validator import validate_login_input
+from engines.password_manager import verify_password
+from engines.license_manager import validate_license
+from engines.subscription_manager import validate_subscription
+from engines.session_manager import create_session, destroy_session
+from engines.authorization_engine import get_accessible_menus
+from engines.audit_logger import write_audit_log, write_login_history, write_logout_time, write_failed_login
+from models.user_model import get_user_by_username, register_failed_attempt, reset_failed_attempts, auto_unlock_if_due
+from models.role_model import get_role_name
+
+logger = get_logger()
+
+ADMIN_ROLE_NAME = "Administrator"
+
+
+@dataclass
+class LoginResult:
+    success: bool
+    message: str
+    userid: int | None = None
+    username: str | None = None
+    fullname: str | None = None
+    roleid: int | None = None
+    rolename: str | None = None
+    is_admin: bool = False
+    companyid: str | None = None
+    financialyear: str | None = None
+    session_id: str | None = None
+    login_time: datetime | None = None
+    machine_name: str | None = None
+    accessible_menus: list = field(default_factory=list)
+
+
+def login(username: str, password: str, company_id: str, financial_year: str) -> LoginResult:
+    """
+    Runs the complete Login workflow and returns a LoginResult.
+    This is the ONLY function the Login Screen should call.
+
+    Global exception handling: any unexpected error (e.g. a
+    database outage) is caught, logged in full, and turned
+    into a safe, generic message for the user - the app must
+    never crash here and must never leak internal error
+    details to the UI.
+    """
+    try:
+        return _login_workflow(username, password, company_id, financial_year)
+    except Exception as e:
+        logger.exception(f"Unexpected error during login for username='{username}': {e}")
+        return LoginResult(success=False, message="An unexpected error occurred. Please try again or contact support.")
+
+
+def _login_workflow(username: str, password: str, company_id: str, financial_year: str) -> LoginResult:
+
+    # ---------- 1. Validate Input ----------
+    is_valid, message = validate_login_input(username, password, company_id, financial_year)
+    if not is_valid:
+        return LoginResult(success=False, message=message)
+
+    # ---------- 2. Check User Exists ----------
+    user = get_user_by_username(username)
+    if user is None:
+        write_failed_login(username, "User not found.")
+        return LoginResult(success=False, message="Invalid username or password.")
+
+    # ---------- Auto-unlock if lock period has passed ----------
+    user = auto_unlock_if_due(user)
+
+    # ---------- 3. Check User Status (before password, so a
+    #              locked/disabled account never leaks whether
+    #              the password was right) ----------
+    if user["status"] == STATUS_LOCKED:
+        write_failed_login(username, "Account is locked.")
+        return LoginResult(success=False, message="User account is locked. Please try again later or contact the administrator.")
+
+    if user["status"] == STATUS_DISABLED:
+        write_failed_login(username, "Account is disabled.")
+        return LoginResult(success=False, message="User account is disabled.")
+
+    if user["status"] == STATUS_SUSPENDED:
+        write_failed_login(username, "Account is suspended.")
+        return LoginResult(success=False, message="User account is suspended.")
+
+    if user["status"] in (STATUS_EXPIRED, STATUS_DELETED):
+        write_failed_login(username, "Account is expired or deleted.")
+        return LoginResult(success=False, message="Invalid username or password.")
+
+    # ---------- 4. Verify Password ----------
+    if not verify_password(password, user["passwordhash"], user["passwordsalt"]):
+        register_failed_attempt(username)
+        write_failed_login(username, "Incorrect password.")
+        return LoginResult(success=False, message="Invalid username or password.")
+
+    # Correct password -> clear any failed-attempt counter
+    reset_failed_attempts(username)
+
+    # ---------- 5. Check License ----------
+    license_ok, license_message = validate_license()
+    if not license_ok:
+        write_audit_log(AUDIT_LOGIN, user["userid"], username, f"Blocked - {license_message}")
+        return LoginResult(success=False, message=license_message)
+
+    # ---------- 6. Check Subscription ----------
+    subscription_ok, subscription_message = validate_subscription()
+    if not subscription_ok:
+        write_audit_log(AUDIT_LOGIN, user["userid"], username, f"Blocked - {subscription_message}")
+        return LoginResult(success=False, message=subscription_message)
+
+    # ---------- 7. Load Role / Permissions ----------
+    accessible_menus = get_accessible_menus(user["roleid"])
+    role_name = get_role_name(user["roleid"])
+    is_admin = role_name == ADMIN_ROLE_NAME
+
+    # ---------- 8. Create Session ----------
+    session = create_session(user["userid"], company_id, financial_year)
+    login_time = datetime.now()
+    machine_name = socket.gethostname()
+
+    # ---------- 9. Write Login History ----------
+    write_login_history(user["userid"], username, company_id, financial_year, session["sessionid"])
+
+    # ---------- 10. Write Audit Log ----------
+    write_audit_log(AUDIT_LOGIN, user["userid"], username, "Successful login.")
+
+    logger.info(f"Login successful: user='{username}' role='{role_name}' machine='{machine_name}'")
+
+    return LoginResult(
+        success=True,
+        message="Login successful.",
+        userid=user["userid"],
+        username=username,
+        fullname=user["fullname"],
+        roleid=user["roleid"],
+        rolename=role_name,
+        is_admin=is_admin,
+        companyid=company_id,
+        financialyear=financial_year,
+        session_id=session["sessionid"],
+        login_time=login_time,
+        machine_name=machine_name,
+        accessible_menus=accessible_menus,
+    )
+
+
+def logout(userid: int, username: str, session_id: str) -> None:
+    """
+    Runs the Logout workflow: ends the session, records the
+    logout time, and writes an audit entry. Never raises -
+    logout should always succeed from the user's perspective
+    even if a background write fails (the failure is logged).
+    """
+    try:
+        destroy_session(session_id)
+        write_logout_time(session_id)
+        write_audit_log(AUDIT_LOGOUT, userid, username, "User logged out.")
+        logger.info(f"Logout: user='{username}' session='{session_id}'")
+    except Exception as e:
+        logger.exception(f"Unexpected error during logout for username='{username}': {e}")
+
+
+
+===== FILE: engines\authorization_engine.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Authorization Engine
+---------------------------------------------------------
+Responsibilities:
+    - Role validation
+    - Permission validation
+    - Screen access
+    - Menu access
+    - Button permissions
+=========================================================
+"""
+
+from database.db import get_connection
+
+PERMISSION_COLUMNS = (
+    "can_view", "can_add", "can_edit", "can_delete", "can_restore",
+    "can_print", "can_export", "can_import", "can_approve",
+    "can_cancel", "can_lock", "can_unlock",
+)
+
+
+def get_permissions_for_screen(roleid: int, screenname: str) -> dict:
+    """
+    Returns the full permission row for a role+screen as a
+    dict, e.g. {"can_view": True, "can_add": False, ...}.
+    If no row exists for this role+screen, every permission
+    defaults to False (deny by default).
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM role_permissions WHERE roleid = %s AND screenname = %s",
+                (roleid, screenname)
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return {col: False for col in PERMISSION_COLUMNS}
+
+    return {col: bool(row[col]) for col in PERMISSION_COLUMNS}
+
+
+def has_permission(roleid: int, screenname: str, action: str) -> bool:
+    """
+    Checks a single permission, e.g.
+    has_permission(roleid, "PurchaseScreen", "can_delete")
+    """
+    if action not in PERMISSION_COLUMNS:
+        raise ValueError(f"Unknown permission action: {action}")
+
+    permissions = get_permissions_for_screen(roleid, screenname)
+    return permissions[action]
+
+
+def get_accessible_menus(roleid: int) -> list[str]:
+    """
+    Returns the list of distinct screen names this role has
+    at least View access to - used to build the Dashboard's
+    navigation menu.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT screenname FROM role_permissions WHERE roleid = %s AND can_view = TRUE",
+                (roleid,)
+            )
+            rows = cur.fetchall()
+
+    return [row["screenname"] for row in rows]
+
+
+
+===== FILE: engines\company_engine.py =====
+
+"""
+engines/company_engine.py
+
+Company Master business logic - Medical ERP V2.
+Mirrors engines/supplier_engine.py's shape exactly (DTO in/out,
+shared exceptions from engines/exceptions.py, no SQL, no UI).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
+from models import company_model
+from models.company_model import CompanyModelError
+from validators.company_validator import validate_company_data
+
+
+@dataclass
+class CompanyDTO:
+    company_id: str
+    company_name: str
+    address: Optional[str]
+    contact_person: Optional[str]
+    mobile_no: Optional[str]
+    phone_no: Optional[str]
+    email: Optional[str]
+    pan_vat_no: Optional[str]
+    registration_no: Optional[str]
+    country: Optional[str]
+    remarks: Optional[str]
+    status: str
+    is_deleted: bool
+
+
+def _row_to_dto(row: dict) -> CompanyDTO:
+    return CompanyDTO(
+        company_id=row.get("companyid"),
+        company_name=row.get("companyname"),
+        address=row.get("address"),
+        contact_person=row.get("contactperson"),
+        mobile_no=row.get("mobileno"),
+        phone_no=row.get("phone"),
+        email=row.get("email"),
+        pan_vat_no=row.get("panno"),
+        registration_no=row.get("registrationno"),
+        country=row.get("country"),
+        remarks=row.get("remarks"),
+        status=row.get("status") or "Active",
+        is_deleted=bool(row.get("isdeleted")),
+    )
+
+
+class CompanyEngine:
+    """Business logic for the Company Master. Screens call ONLY this class."""
+
+    def create_company(self, data: dict, current_user_id) -> CompanyDTO:
+        errors = validate_company_data(data)
+        if errors:
+            raise ValidationError(errors)
+
+        try:
+            if company_model.company_name_exists(data["companyname"]):
+                raise DuplicateRecordError(
+                    f"A company named '{data['companyname']}' already exists."
+                )
+            company_id = company_model.insert_company(data, created_by=str(current_user_id))
+            row = company_model.get_company_by_id(company_id)
+            return _row_to_dto(row)
+        except CompanyModelError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def update_company(self, company_id: str, data: dict, current_user_id) -> CompanyDTO:
+        errors = validate_company_data(data)
+        if errors:
+            raise ValidationError(errors)
+
+        try:
+            existing = company_model.get_company_by_id(company_id)
+            if not existing or existing.get("isdeleted"):
+                raise RecordNotFoundError(f"Company '{company_id}' not found.")
+
+            if company_model.company_name_exists(data["companyname"], exclude_companyid=company_id):
+                raise DuplicateRecordError(
+                    f"A company named '{data['companyname']}' already exists."
+                )
+
+            company_model.update_company(company_id, data, modified_by=str(current_user_id))
+
+            status = data.get("status")
+            if status in ("Active", "Inactive") and status != existing.get("status"):
+                company_model.set_company_status(company_id, status, modified_by=str(current_user_id))
+
+            row = company_model.get_company_by_id(company_id)
+            return _row_to_dto(row)
+        except CompanyModelError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def delete_company(self, company_id: str, current_user_id) -> None:
+        existing = company_model.get_company_by_id(company_id)
+        if not existing or existing.get("isdeleted"):
+            raise RecordNotFoundError(f"Company '{company_id}' not found.")
+        try:
+            company_model.soft_delete_company(company_id, deleted_by=str(current_user_id))
+        except CompanyModelError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def restore_company(self, company_id: str, current_user_id) -> CompanyDTO:
+        existing = company_model.get_company_by_id(company_id)
+        if not existing or not existing.get("isdeleted"):
+            raise RecordNotFoundError(f"Company '{company_id}' not found or not deleted.")
+        try:
+            company_model.restore_company(company_id, modified_by=str(current_user_id))
+            row = company_model.get_company_by_id(company_id)
+            return _row_to_dto(row)
+        except CompanyModelError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def get_company(self, company_id: str) -> CompanyDTO:
+        row = company_model.get_company_by_id(company_id)
+        if not row:
+            raise RecordNotFoundError(f"Company '{company_id}' not found.")
+        return _row_to_dto(row)
+
+    def search_companies(
+        self,
+        search_text: Optional[str] = None,
+        status: Optional[str] = None,
+        include_deleted: bool = False,
+        page: int = 1,
+        page_size: int = 500,
+    ) -> Tuple[List[CompanyDTO], int]:
+        status_filter = "all"
+        if status == "Active":
+            status_filter = "active"
+        elif status == "Inactive":
+            status_filter = "inactive"
+
+        try:
+            rows = company_model.list_companies(
+                search_term=search_text,
+                status_filter=status_filter,
+                include_deleted=include_deleted,
+            )
+        except CompanyModelError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        total = len(rows)
+        start = (page - 1) * page_size
+        page_rows = rows[start:start + page_size]
+        return [_row_to_dto(r) for r in page_rows], total
+
+
+__all__ = ["CompanyEngine", "CompanyDTO"]
+
+
+
+===== FILE: engines\dashboard_engine.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Dashboard Engine
+---------------------------------------------------------
+Purpose:
+    Business logic for the Dashboard - combines KPI data,
+    permission-based menu visibility, and alert generation.
+    No SQL here directly - delegates to models/dashboard_model.
+=========================================================
+"""
+
+from dataclasses import dataclass, field
+
+from utils.app_logger import get_logger
+from models import dashboard_model
+from engines.authorization_engine import get_accessible_menus
+from engines.license_manager import validate_license
+from engines.subscription_manager import validate_subscription
+
+logger = get_logger()
+
+LOW_STOCK_ALERT_THRESHOLD = 10
+EXPIRY_ALERT_WINDOW_DAYS = 90
+
+
+@dataclass
+class DashboardData:
+    today_sales: float = 0
+    today_purchase: float = 0
+    stock_value: float = 0
+    low_stock_count: float = 0
+    expiring_count: float = 0
+    pending_payments: float = 0
+    pending_receipts: float = 0
+    active_users: float = 0
+    alerts: list = field(default_factory=list)
+    accessible_menus: list = field(default_factory=list)
+
+
+# Default sidebar structure (per Blueprint Part-4). A module
+# only appears if the logged-in role has View access to it
+# (per get_accessible_menus) OR is Administrator (sees all).
+SIDEBAR_MODULES = {
+    "Masters": ["Company", "Supplier", "Customer", "Item"],
+    "Purchase": ["New Purchase", "Purchase List"],
+    "Sales": ["New Sale", "Sale List"],
+    "Inventory": ["Stock Ledger", "Stock Master"],
+    "Accounts": ["Payment", "Receipt"],
+    "Reports": ["Reports"],
+    "Settings": ["Settings"],
+}
+
+
+def build_dashboard(roleid: int, is_admin: bool) -> DashboardData:
+    """
+    Loads everything the Dashboard Screen needs to display.
+    Never raises - any individual piece failing degrades
+    gracefully rather than blocking the whole Dashboard.
+    """
+    try:
+        accessible_menus = get_accessible_menus(roleid) if not is_admin else _all_menu_names()
+    except Exception as e:
+        logger.exception(f"build_dashboard: could not load accessible menus: {e}")
+        accessible_menus = []
+
+    data = DashboardData(
+        today_sales=dashboard_model.get_today_sales_total(),
+        today_purchase=dashboard_model.get_today_purchase_total(),
+        stock_value=dashboard_model.get_stock_value(),
+        low_stock_count=dashboard_model.get_low_stock_count(LOW_STOCK_ALERT_THRESHOLD),
+        expiring_count=dashboard_model.get_expiring_medicines_count(EXPIRY_ALERT_WINDOW_DAYS),
+        pending_payments=dashboard_model.get_pending_payments_total(),
+        pending_receipts=dashboard_model.get_pending_receipts_total(),
+        active_users=dashboard_model.get_active_users_count(),
+        accessible_menus=accessible_menus,
+    )
+
+    data.alerts = _build_alerts(data)
+
+    return data
+
+
+def _all_menu_names() -> list[str]:
+    names = []
+    for module, screens in SIDEBAR_MODULES.items():
+        names.append(module)
+        names.extend(screens)
+    return names
+
+
+def _build_alerts(data: DashboardData) -> list[str]:
+    alerts = []
+
+    if data.low_stock_count > 0:
+        alerts.append(f"{int(data.low_stock_count)} item(s) are low on stock.")
+
+    if data.expiring_count > 0:
+        alerts.append(f"{int(data.expiring_count)} batch(es) are expiring within {EXPIRY_ALERT_WINDOW_DAYS} days.")
+
+    try:
+        license_ok, license_message = validate_license()
+        if not license_ok:
+            alerts.append(f"License: {license_message}")
+    except Exception as e:
+        logger.exception(f"_build_alerts: license check failed: {e}")
+
+    try:
+        subscription_ok, subscription_message = validate_subscription()
+        if not subscription_ok:
+            alerts.append(f"Subscription: {subscription_message}")
+    except Exception as e:
+        logger.exception(f"_build_alerts: subscription check failed: {e}")
+
+    return alerts
+
+
+
+===== FILE: engines\date_engine.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Date Engine (Centralized - LOCKED)
+---------------------------------------------------------
+This is the ONLY module in the entire ERP allowed to
+perform BS <-> AD conversion. No Screen, Model, or other
+Engine may do this conversion itself.
+
+BS (Bikram Sambat) is the PRIMARY business date. AD is the
+secondary/internal date (used for PostgreSQL storage,
+sorting, calculations, reports).
+
+Why this needs a reference table:
+    The Nepali (BS) calendar does not have a fixed number
+    of days per month - month lengths vary irregularly
+    from year to year according to the official calendar.
+    A day-count formula cannot be accurate. This engine
+    therefore uses the `bscalendar` reference table (the
+    same real, verified data already built and populated
+    in the V1 project) rather than an invented formula.
+    See migrate_bscalendar.py for how to copy that data
+    into this V2 database.
+
+Functions this Engine provides (per Blueprint):
+    - bs_to_ad
+    - ad_to_bs
+    - validate_bs_date
+    - get_financial_year
+    - date_diff
+    - calculate_age
+    - get_month_name
+    - format_for_report
+=========================================================
+"""
+
+import re
+from datetime import date
+
+from database.db import get_connection
+from utils.app_logger import get_logger
+
+logger = get_logger()
+
+MONTH_NAMES_EN = [
+    "Baishakh", "Jestha", "Ashadh", "Shrawan", "Bhadra", "Ashwin",
+    "Kartik", "Mangsir", "Poush", "Magh", "Falgun", "Chaitra",
+]
+
+
+class DateEngineError(Exception):
+    """Raised when a date operation cannot be completed."""
+
+
+# ---------------------------------------------------------
+# VALIDATION
+# ---------------------------------------------------------
+
+def validate_bs_date(bs_date_text: str) -> tuple[bool, str]:
+    """
+    Validates a BS date string typed by the user. Accepts any
+    common separator (/, -, .) - e.g. "2083/4/5", "2083-04-05".
+
+    Returns
+    -------
+    (is_valid, normalized_or_error) : tuple[bool, str]
+        On success, normalized_or_error is the date in the
+        standard "YYYY-MM-DD" form. On failure, it is the
+        error message.
+    """
+    if not bs_date_text or not bs_date_text.strip():
+        return False, "Date is required."
+
+    parts = [p for p in re.split(r"[^0-9]+", bs_date_text.strip()) if p != ""]
+
+    if len(parts) != 3:
+        return False, "Date must have Year, Month, and Day (e.g. 2083-04-05)."
+
+    try:
+        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return False, "Date must contain only numbers and separators."
+
+    if not (1900 <= year <= 2200):
+        return False, "Year looks invalid."
+
+    if not (1 <= month <= 12):
+        return False, "Month must be between 1 and 12."
+
+    if not (1 <= day <= 32):
+        return False, "Day must be between 1 and 32."
+
+    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+
+    # If the bscalendar reference table has been imported,
+    # also confirm this exact BS date actually exists in it.
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM bscalendar WHERE bsdate = %s", (normalized,))
+                if cur.fetchone() is None:
+                    return False, "This BS date does not exist in the calendar reference table."
+    except Exception as e:
+        # If bscalendar isn't populated yet, don't block the user
+        # over infrastructure - just log it and accept the
+        # syntactically-valid date.
+        logger.error(f"validate_bs_date: could not check bscalendar ({e}). Accepting date syntactically.")
+
+    return True, normalized
+
+
+# ---------------------------------------------------------
+# CONVERSION (bscalendar-backed)
+# ---------------------------------------------------------
+
+def bs_to_ad(bs_date_text: str) -> date:
+    """
+    Converts a BS date string to a Python `date` (AD).
+    Raises DateEngineError if not found in the reference table.
+    """
+    is_valid, normalized = validate_bs_date(bs_date_text)
+    if not is_valid:
+        raise DateEngineError(normalized)
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT addate FROM bscalendar WHERE bsdate = %s", (normalized,))
+                row = cur.fetchone()
+    except Exception as e:
+        logger.error(f"bs_to_ad: database error ({e})")
+        raise DateEngineError("Could not convert BS date - calendar data unavailable.") from e
+
+    if row is None:
+        raise DateEngineError(
+            "This BS date was not found in the calendar reference table. "
+            "Has bscalendar been imported for this year?"
+        )
+
+    return row["addate"]
+
+
+def ad_to_bs(ad_date: date) -> str:
+    """
+    Converts an AD `date` to its BS date string ("YYYY-MM-DD").
+    Raises DateEngineError if not found in the reference table.
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT bsdate FROM bscalendar WHERE addate = %s", (ad_date,))
+                row = cur.fetchone()
+    except Exception as e:
+        logger.error(f"ad_to_bs: database error ({e})")
+        raise DateEngineError("Could not convert AD date - calendar data unavailable.") from e
+
+    if row is None:
+        raise DateEngineError(
+            "This AD date was not found in the calendar reference table. "
+            "Has bscalendar been imported for this year?"
+        )
+
+    return row["bsdate"]
+
+
+# ---------------------------------------------------------
+# FINANCIAL YEAR
+# ---------------------------------------------------------
+
+def get_financial_year(bs_year: int, bs_month: int) -> str:
+    """
+    Nepal's fiscal year runs Shrawan (month 4) to Ashadh
+    (month 3 of the following year).
+    """
+    if bs_month <= 3:
+        return f"{bs_year - 1}/{bs_year}"
+    return f"{bs_year}/{bs_year + 1}"
+
+
+def get_financial_year_from_bs_date(bs_date_text: str) -> str:
+    is_valid, normalized = validate_bs_date(bs_date_text)
+    if not is_valid:
+        raise DateEngineError(normalized)
+
+    year, month, _ = (int(p) for p in normalized.split("-"))
+    return get_financial_year(year, month)
+
+
+# ---------------------------------------------------------
+# DATE DIFFERENCE / AGE (calendar-agnostic - operate on AD)
+# ---------------------------------------------------------
+
+def date_diff_days(ad_date_1: date, ad_date_2: date) -> int:
+    """
+    Returns the absolute number of days between two AD dates.
+    (Kept in AD internally, per the BS-first rule: AD is used
+    for calculations.)
+    """
+    return abs((ad_date_2 - ad_date_1).days)
+
+
+def calculate_age(birth_ad_date: date, as_of_ad_date: date | None = None) -> int:
+    """
+    Returns age in completed years, given an AD birth date.
+    """
+    if as_of_ad_date is None:
+        as_of_ad_date = date.today()
+
+    years = as_of_ad_date.year - birth_ad_date.year
+    had_birthday_yet = (as_of_ad_date.month, as_of_ad_date.day) >= (birth_ad_date.month, birth_ad_date.day)
+
+    if not had_birthday_yet:
+        years -= 1
+
+    return years
+
+
+# ---------------------------------------------------------
+# MONTH / YEAR UTILITIES
+# ---------------------------------------------------------
+
+def get_month_name(bs_month: int) -> str:
+    if not (1 <= bs_month <= 12):
+        raise DateEngineError("Month must be between 1 and 12.")
+    return MONTH_NAMES_EN[bs_month - 1]
+
+
+# ---------------------------------------------------------
+# REPORT FORMATTING
+# ---------------------------------------------------------
+
+def format_for_report(bs_date_text: str) -> str:
+    """
+    Formats a BS date for display on reports, e.g.
+    "2083-04-05" -> "5 Shrawan 2083"
+    """
+    is_valid, normalized = validate_bs_date(bs_date_text)
+    if not is_valid:
+        raise DateEngineError(normalized)
+
+    year, month, day = (int(p) for p in normalized.split("-"))
+    return f"{day} {get_month_name(month)} {year}"
+
+
+
+===== FILE: engines\exceptions.py =====
+
+"""
+engines/exceptions.py
+
+Shared exception hierarchy for Engine-layer errors. Kept generic (not
+Supplier-specific in naming) so future master modules (Customer, Item, etc.)
+reuse the same base classes instead of duplicating exception logic --
+consistent with the project's "No Duplicate Logic" rule.
+"""
+
+
+class EngineError(Exception):
+    """Base class for all business-rule/engine-layer errors."""
+
+
+class ValidationError(EngineError):
+    """Raised when input fails business validation. Carries the full error list."""
+
+    def __init__(self, errors: list[str]):
+        self.errors = errors
+        super().__init__("; ".join(errors) if errors else "Validation failed.")
+
+
+class RecordNotFoundError(EngineError):
+    """Raised when an operation targets a record that does not exist (or is deleted)."""
+
+
+class DuplicateRecordError(EngineError):
+    """Raised when a uniqueness rule is violated outside the normal validation path
+    (e.g. a race condition caught at the database constraint level)."""
+
+
+
+===== FILE: engines\license_manager.py =====
+
+"""
+=========================================================
+Medical ERP V2
+License Manager Engine
+---------------------------------------------------------
+Responsibilities:
+    - License validation
+    - Expiration check
+    - Machine verification
+    - Enabled module check
+
+NOTE: Since this ERP is currently for single/direct use
+(not yet being sold to other pharmacies), this engine
+defaults to a permissive "no license row = unrestricted"
+behaviour. Once ready to sell/license the product, insert
+a real row into the `license` table and this engine will
+start enforcing it automatically - no code change needed.
+=========================================================
+"""
+
+from datetime import date
+import uuid
+
+from database.db import get_connection
+from utils.app_logger import get_logger
+
+logger = get_logger()
+
+
+def get_machine_id() -> str:
+    """
+    Returns a stable identifier for the current machine,
+    used for machine-locked licensing.
+    """
+    return str(uuid.getnode())
+
+
+def validate_license() -> tuple[bool, str]:
+    """
+    Validates the license row (if any) against this machine
+    and the current date. Never raises - a database problem
+    here degrades to "unrestricted" rather than blocking login
+    entirely, since license infrastructure failing should not
+    lock a legitimate user out of their own business data.
+
+    Returns
+    -------
+    (is_valid, message) : tuple[bool, str]
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM license ORDER BY licenseid DESC LIMIT 1")
+                row = cur.fetchone()
+    except Exception as e:
+        logger.exception(f"validate_license: database error ({e})")
+        return True, "License check skipped (database unavailable)."
+
+    if row is None:
+        # No license configured yet -> not being sold/licensed yet, allow.
+        return True, "No license configured (unrestricted mode)."
+
+    if row["status"] != "Active":
+        return False, "License is not active."
+
+    if row["expirydate"] is not None and date.today() > row["expirydate"]:
+        return False, "License has expired."
+
+    if row["machineid"] and row["machineid"] != get_machine_id():
+        return False, "License is not valid for this machine."
+
+    return True, "License is valid."
+
+
+def is_module_enabled(module_name: str) -> bool:
+    """
+    Checks whether a given module name is included in the
+    license's enabled-modules list. If no license row exists,
+    every module is considered enabled (unrestricted mode).
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT enabledmodules FROM license ORDER BY licenseid DESC LIMIT 1")
+                row = cur.fetchone()
+    except Exception as e:
+        logger.exception(f"is_module_enabled: database error ({e})")
+        return True
+
+    if row is None or not row["enabledmodules"]:
+        return True
+
+    enabled = [m.strip() for m in row["enabledmodules"].split(",")]
+    return module_name in enabled
+
+
+
+===== FILE: engines\password_manager.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Password Manager Engine
+---------------------------------------------------------
+Responsibilities:
+    - Password hashing
+    - Password verification
+    - Password policy check
+    - Password expiration check
+
+Passwords are NEVER stored or logged in plain text.
+Uses PBKDF2-HMAC-SHA256 (Python standard library `hashlib`,
+no extra dependency needed) with a random salt per user.
+=========================================================
+"""
+
+import hashlib
+import hmac
+import secrets
+from datetime import datetime, timedelta
+
+from config.settings import PASSWORD_MIN_LENGTH, PASSWORD_EXPIRY_DAYS
+
+PBKDF2_ITERATIONS = 200_000
+
+
+def hash_password(plain_password: str) -> tuple[str, str]:
+    """
+    Hashes a plain-text password.
+
+    Returns
+    -------
+    (password_hash, password_salt) : tuple[str, str]
+        Both are hex strings, safe to store in the database.
+    """
+    salt = secrets.token_hex(16)
+    hashed = _derive(plain_password, salt)
+    return hashed, salt
+
+
+def verify_password(plain_password: str, stored_hash: str, stored_salt: str) -> bool:
+    """
+    Verifies a plain-text password against a stored hash+salt.
+    Uses constant-time comparison to avoid timing attacks.
+    """
+    computed = _derive(plain_password, stored_salt)
+    return hmac.compare_digest(computed, stored_hash)
+
+
+def _derive(plain_password: str, salt: str) -> str:
+    derived = hashlib.pbkdf2_hmac(
+        "sha256",
+        plain_password.encode("utf-8"),
+        bytes.fromhex(salt),
+        PBKDF2_ITERATIONS,
+    )
+    return derived.hex()
+
+
+def check_password_policy(plain_password: str) -> tuple[bool, str]:
+    """
+    Checks a plain-text password against the password policy.
+
+    Returns
+    -------
+    (is_valid, message) : tuple[bool, str]
+    """
+    if len(plain_password) < PASSWORD_MIN_LENGTH:
+        return False, f"Password must be at least {PASSWORD_MIN_LENGTH} characters."
+
+    if not any(c.isupper() for c in plain_password):
+        return False, "Password must contain an uppercase letter."
+
+    if not any(c.islower() for c in plain_password):
+        return False, "Password must contain a lowercase letter."
+
+    if not any(c.isdigit() for c in plain_password):
+        return False, "Password must contain a number."
+
+    if not any(not c.isalnum() for c in plain_password):
+        return False, "Password must contain a special character."
+
+    return True, "Password meets policy."
+
+
+def is_password_expired(password_changed_at: datetime, expiry_days: int = PASSWORD_EXPIRY_DAYS) -> bool:
+    """
+    Returns True if the password is older than the expiry policy.
+    """
+    if password_changed_at is None:
+        return False
+
+    expiry_date = password_changed_at + timedelta(days=expiry_days)
+    return datetime.now() > expiry_date
+
+
+def generate_remember_token() -> str:
+    """
+    Generates a secure random token for 'Remember Me'.
+    The plain token is what gets stored in an encrypted
+    cookie/local file on the client; only its hash is
+    stored in the database (never the plain password).
+    """
+    return secrets.token_urlsafe(32)
+
+
+
+===== FILE: engines\session_manager.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Session Manager Engine
+---------------------------------------------------------
+Responsibilities:
+    - Create session
+    - Destroy session
+    - Session timeout check
+    - Session validation
+    - Current user information (in-memory, for this run
+      of the application)
+
+No SQL logic beyond simple session-row read/write here.
+No UI code here.
+=========================================================
+"""
+
+import secrets
+import socket
+from datetime import datetime, timedelta
+
+from database.db import get_connection
+from config.settings import SESSION_TIMEOUT_MINUTES, ALLOW_MULTIPLE_LOGIN, APP_VERSION
+
+# Holds the current logged-in session for THIS running app
+# instance (a desktop app has exactly one active user at a
+# time per process).
+_current_session = None
+
+
+def create_session(userid: int, companyid: str, financialyear: str) -> dict:
+    """
+    Creates a new session: writes a row to `sessions`, and
+    (if multiple logins are disallowed) deactivates any other
+    active sessions for this user.
+
+    Returns the session dict (also kept as the "current" one).
+    """
+    global _current_session
+
+    session_id = secrets.token_hex(24)
+    machine_name = socket.gethostname()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            if not ALLOW_MULTIPLE_LOGIN:
+                cur.execute(
+                    "UPDATE sessions SET isactive = FALSE WHERE userid = %s AND isactive = TRUE",
+                    (userid,)
+                )
+
+            cur.execute(
+                """
+                INSERT INTO sessions (
+                    sessionid, userid, companyid, financialyear,
+                    logintime, lastactivity, machinename, appversion, isactive
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                """,
+                (
+                    session_id, userid, companyid, financialyear,
+                    datetime.now(), datetime.now(), machine_name, APP_VERSION,
+                )
+            )
+        conn.commit()
+
+    _current_session = {
+        "sessionid": session_id,
+        "userid": userid,
+        "companyid": companyid,
+        "financialyear": financialyear,
+        "machinename": machine_name,
+    }
+
+    return _current_session
+
+
+def destroy_session(session_id: str) -> None:
+    """
+    Ends a session (Logout).
+    """
+    global _current_session
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sessions SET isactive = FALSE WHERE sessionid = %s",
+                (session_id,)
+            )
+        conn.commit()
+
+    if _current_session and _current_session.get("sessionid") == session_id:
+        _current_session = None
+
+
+def touch_session(session_id: str) -> None:
+    """
+    Updates last-activity time for a session. Call this on
+    any user interaction to keep the session alive.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sessions SET lastactivity = %s WHERE sessionid = %s",
+                (datetime.now(), session_id)
+            )
+        conn.commit()
+
+
+def is_session_timed_out(last_activity: datetime, timeout_minutes: int = SESSION_TIMEOUT_MINUTES) -> bool:
+    """
+    Pure check: has this session been inactive too long?
+    """
+    if last_activity is None:
+        return True
+
+    return datetime.now() > last_activity + timedelta(minutes=timeout_minutes)
+
+
+def get_current_session() -> dict | None:
+    """
+    Returns the current in-memory session (or None if no one
+    is logged in for this app process).
+    """
+    return _current_session
+
+
+
+===== FILE: engines\settings_cache.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Settings Cache
+---------------------------------------------------------
+Purpose:
+    In-memory cache of all global settings. Loaded once
+    (e.g. at app startup, or on first access), then every
+    module reads from this cache - only Save/Refresh ever
+    touch the database again.
+=========================================================
+"""
+
+from utils.app_logger import get_logger
+from engines.settings_validator import parse_setting_value
+
+logger = get_logger()
+
+_cache: dict[str, dict] = {}
+_is_loaded = False
+
+
+def is_loaded() -> bool:
+    return _is_loaded
+
+
+def load_cache(settings_rows: list[dict]) -> None:
+    """
+    Populates the cache from a list of setting rows (as
+    returned by models.settings_model.get_all_settings()).
+
+    Stores a shallow COPY of each row rather than the caller's
+    own dict objects - update_cached_value() mutates a row's
+    stored value in place, and without copying here that would
+    also mutate whatever list/dict the caller passed in.
+    """
+    global _cache, _is_loaded
+
+    _cache = {row["setting_key"]: dict(row) for row in settings_rows}
+    _is_loaded = True
+    logger.info(f"Settings cache loaded with {len(_cache)} entries.")
+
+
+def get_cached_value(key: str, default=None):
+    """
+    Returns the setting's value already converted to its real
+    Python type (int/float/bool/str), or `default` if the key
+    isn't in the cache.
+    """
+    row = _cache.get(key)
+
+    if row is None:
+        return default
+
+    return parse_setting_value(row["data_type"], row["setting_value"])
+
+
+def get_cached_row(key: str) -> dict | None:
+    return _cache.get(key)
+
+
+def get_all_cached() -> dict[str, dict]:
+    return dict(_cache)
+
+
+def update_cached_value(key: str, new_value: str) -> None:
+    """
+    Updates just one cached row's value after a successful
+    save, so the app doesn't need a full reload for a single
+    change.
+    """
+    if key in _cache:
+        _cache[key]["setting_value"] = new_value
+
+
+def clear_cache() -> None:
+    global _cache, _is_loaded
+    _cache = {}
+    _is_loaded = False
+
+
+
+===== FILE: engines\settings_engine.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Settings Engine (LOCKED - the "Brain" of the ERP)
+---------------------------------------------------------
+Rule: no module ever queries the `settings` database table
+directly. Every module reads settings ONLY through this
+Engine's get_setting(). This is what makes the whole app
+Settings-driven instead of hardcoded.
+
+Responsibilities:
+    - load_all_settings   - populate the cache (call at startup)
+    - get_setting          - read a value (from cache)
+    - save_setting         - validate + persist + history + cache update
+    - apply_setting        - instant/temporary effect, no DB write
+    - reset_default        - restore one setting to its default
+    - import_settings      - load a settings.json export
+    - export_settings      - write a settings.json snapshot
+    - refresh_cache        - force a reload from the database
+=========================================================
+"""
+
+import json
+from datetime import datetime
+
+from utils.app_logger import get_logger
+from models import settings_model
+from engines import settings_cache
+from engines.settings_validator import validate_setting_value
+
+logger = get_logger()
+
+# Settings that change behaviour immediately without needing an
+# application restart (Blueprint-13: runtime-apply vs restart-required).
+RUNTIME_APPLY_GROUPS = {"General", "Print"}
+RESTART_REQUIRED_GROUPS = {"Date & Calendar", "Company"}
+
+
+def load_all_settings() -> None:
+    """
+    Loads every global setting from the database into the
+    in-memory cache. Call this once at application startup.
+    Never raises - if the database is unavailable, the cache
+    stays empty and get_setting() falls back to whatever
+    default the caller supplies, rather than crashing the app.
+    """
+    try:
+        rows = settings_model.get_all_settings()
+        settings_cache.load_cache(rows)
+    except Exception as e:
+        logger.exception(f"load_all_settings: failed to load settings from database: {e}")
+
+
+def refresh_cache() -> None:
+    """Forces a fresh reload from the database into the cache."""
+    load_all_settings()
+
+
+def get_setting(key: str, default=None):
+    """
+    Returns a setting's value, already converted to its real
+    type (int/float/bool/str). This is the ONLY way any other
+    module should read a setting.
+    """
+    if not settings_cache.is_loaded():
+        load_all_settings()
+
+    return settings_cache.get_cached_value(key, default=default)
+
+
+def get_settings_grouped() -> dict[str, list[dict]]:
+    """
+    Returns all cached settings grouped by category, in display
+    order - what the Settings screen's category tree is built from.
+    """
+    if not settings_cache.is_loaded():
+        load_all_settings()
+
+    grouped: dict[str, list[dict]] = {}
+
+    for row in settings_cache.get_all_cached().values():
+        grouped.setdefault(row["setting_group"], []).append(row)
+
+    for group_rows in grouped.values():
+        group_rows.sort(key=lambda r: (r["display_order"], r["setting_key"]))
+
+    return grouped
+
+
+def search_settings(search_text: str) -> list[dict]:
+    """
+    Backs the Settings screen's global search box. Searches
+    the database directly (not just the cache) so results are
+    always current even immediately after another user's change.
+    """
+    try:
+        return settings_model.search_settings(search_text)
+    except Exception as e:
+        logger.exception(f"search_settings: database error: {e}")
+        return []
+
+
+def save_setting(key: str, new_value: str, updated_by: str, reason: str = "") -> tuple[bool, str]:
+    """
+    Validates, persists to the database, writes a history
+    record, and updates the cache. This is "Save" (Blueprint-11) -
+    permanent, unlike apply_setting() which is temporary.
+    """
+    row = settings_cache.get_cached_row(key)
+
+    if row is None:
+        row = settings_model.get_setting_by_key(key)
+        if row is None:
+            return False, f"Setting '{key}' not found."
+
+    is_valid, error_message = validate_setting_value(row["data_type"], new_value)
+    if not is_valid:
+        return False, error_message
+
+    try:
+        success, message = settings_model.update_setting_value(key, new_value, updated_by, reason)
+    except Exception as e:
+        logger.exception(f"save_setting: database error saving '{key}': {e}")
+        return False, "Could not save setting - please try again."
+
+    if success:
+        settings_cache.update_cached_value(key, new_value)
+        logger.info(f"Setting '{key}' updated by {updated_by}.")
+
+    return success, message
+
+
+def apply_setting_temporarily(key: str, new_value: str) -> tuple[bool, str]:
+    """
+    "Apply" (Blueprint-11): updates the cache only, for an
+    instant preview/effect, WITHOUT writing to the database or
+    history. A later Save (or app restart) is what makes it
+    permanent; otherwise it reverts next time settings load.
+    """
+    row = settings_cache.get_cached_row(key)
+
+    if row is None:
+        return False, f"Setting '{key}' not found."
+
+    is_valid, error_message = validate_setting_value(row["data_type"], new_value)
+    if not is_valid:
+        return False, error_message
+
+    settings_cache.update_cached_value(key, new_value)
+    return True, "Applied (not yet saved)."
+
+
+def reset_setting_to_default(key: str, updated_by: str) -> tuple[bool, str]:
+    try:
+        success, message = settings_model.reset_setting_to_default(key, updated_by)
+    except Exception as e:
+        logger.exception(f"reset_setting_to_default: database error for '{key}': {e}")
+        return False, "Could not reset setting - please try again."
+
+    if success:
+        row = settings_model.get_setting_by_key(key)
+        if row is not None:
+            settings_cache.update_cached_value(key, row["setting_value"])
+
+    return success, message
+
+
+def requires_restart(setting_group: str) -> bool:
+    return setting_group in RESTART_REQUIRED_GROUPS
+
+
+def export_settings(file_path: str) -> tuple[bool, str]:
+    """
+    Writes all current global settings to a JSON file - e.g.
+    to clone a Retail Pharmacy configuration into a new
+    Wholesale Pharmacy setup.
+    """
+    try:
+        rows = settings_model.get_all_settings()
+    except Exception as e:
+        logger.exception(f"export_settings: database error: {e}")
+        return False, "Could not read settings to export."
+
+    export_data = {
+        "exported_at": datetime.now().isoformat(),
+        "settings": [
+            {
+                "setting_key": row["setting_key"],
+                "setting_value": row["setting_value"],
+                "setting_group": row["setting_group"],
+                "data_type": row["data_type"],
+            }
+            for row in rows
+        ],
+    }
+
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        logger.exception(f"export_settings: could not write file '{file_path}': {e}")
+        return False, f"Could not write export file: {e}"
+
+    return True, f"Exported {len(rows)} settings to {file_path}."
+
+
+def get_setting_history(key: str) -> list[dict]:
+    """
+    Returns the audit trail for one setting_key, most recent
+    first - backs the Settings screen's per-field "History" view.
+    """
+    try:
+        return settings_model.get_setting_history(key)
+    except Exception as e:
+        logger.exception(f"get_setting_history: database error for '{key}': {e}")
+        return []
+
+
+def get_recent_changes(limit: int = 10) -> list[dict]:
+    """
+    Returns the most recent settings_history rows across every
+    key - backs the Settings screen's "Recently changed" panel.
+    """
+    try:
+        return settings_model.get_recent_history(limit)
+    except Exception as e:
+        logger.exception(f"get_recent_changes: database error: {e}")
+        return []
+
+
+def import_settings(file_path: str, updated_by: str) -> tuple[bool, str]:
+    """
+    Reads a settings.json file (from export_settings) and
+    applies each value via save_setting() - so validation and
+    history still apply to every imported value.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.exception(f"import_settings: could not read file '{file_path}': {e}")
+        return False, f"Could not read import file: {e}"
+
+    imported = 0
+    skipped = 0
+
+    for entry in data.get("settings", []):
+        success, _ = save_setting(
+            entry["setting_key"], entry["setting_value"], updated_by,
+            reason=f"Imported from {file_path}"
+        )
+        if success:
+            imported += 1
+        else:
+            skipped += 1
+
+    return True, f"Imported {imported} settings ({skipped} skipped)."
+
+
+
+===== FILE: engines\settings_validator.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Settings Validator
+---------------------------------------------------------
+Purpose:
+    Validates a proposed new value for a setting against
+    its data_type BEFORE it is saved. Pure logic - no DB,
+    no UI.
+=========================================================
+"""
+
+VALID_DATA_TYPES = (
+    "string", "integer", "decimal", "boolean", "date", "time",
+    "json", "color", "font", "path", "printer",
+)
+
+
+def validate_setting_value(data_type: str, value: str) -> tuple[bool, str]:
+    """
+    Returns (is_valid, error_message). error_message is empty
+    when is_valid is True.
+    """
+    if data_type not in VALID_DATA_TYPES:
+        return False, f"Unknown data type: {data_type}"
+
+    if data_type == "integer":
+        return _validate_integer(value)
+
+    if data_type == "decimal":
+        return _validate_decimal(value)
+
+    if data_type == "boolean":
+        return _validate_boolean(value)
+
+    if data_type == "color":
+        return _validate_color(value)
+
+    # string/date/time/json/font/path/printer: accept any
+    # non-None text here - format-specific checks (e.g. is this
+    # really a valid date) belong to the Date Engine / relevant
+    # module when the value is actually used, to avoid duplicating
+    # that logic here.
+    if value is None:
+        return False, "Value is required."
+
+    return True, ""
+
+
+def _validate_integer(value: str) -> tuple[bool, str]:
+    try:
+        int(value)
+    except (TypeError, ValueError):
+        return False, "Value must be a whole number."
+    return True, ""
+
+
+def _validate_decimal(value: str) -> tuple[bool, str]:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False, "Value must be a number."
+    return True, ""
+
+
+def _validate_boolean(value: str) -> tuple[bool, str]:
+    if str(value).strip().lower() not in ("true", "false"):
+        return False, "Value must be true or false."
+    return True, ""
+
+
+def _validate_color(value: str) -> tuple[bool, str]:
+    text = str(value).strip()
+    if not text.startswith("#") or len(text) not in (4, 7):
+        return False, "Color must be a hex code like #2F6FED."
+    try:
+        int(text[1:], 16)
+    except ValueError:
+        return False, "Color must be a valid hex code like #2F6FED."
+    return True, ""
+
+
+def parse_setting_value(data_type: str, value: str):
+    """
+    Converts a stored (string) setting value into its real
+    Python type, for use by callers of settings_engine.get_setting().
+    """
+    if value is None:
+        return None
+
+    if data_type == "integer":
+        return int(value)
+
+    if data_type == "decimal":
+        return float(value)
+
+    if data_type == "boolean":
+        return str(value).strip().lower() == "true"
+
+    return value
+
+
+
+===== FILE: engines\subscription_manager.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Subscription Manager Engine
+---------------------------------------------------------
+Responsibilities:
+    - Subscription active check
+    - Renewal / grace period check
+    - Max users / max branches check
+
+Same philosophy as license_manager.py: if no subscription
+row exists yet, the app runs unrestricted. This becomes
+enforced automatically once a real subscription row is
+added (i.e. once this ERP starts being sold/licensed).
+=========================================================
+"""
+
+from datetime import date, timedelta
+
+from database.db import get_connection
+from utils.app_logger import get_logger
+
+logger = get_logger()
+
+
+def validate_subscription() -> tuple[bool, str]:
+    """
+    Validates the current subscription (if any). Never raises -
+    degrades to "unrestricted" on a database problem rather than
+    blocking a legitimate user's login.
+
+    Returns
+    -------
+    (is_valid, message) : tuple[bool, str]
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM subscription ORDER BY subscriptionid DESC LIMIT 1")
+                row = cur.fetchone()
+    except Exception as e:
+        logger.exception(f"validate_subscription: database error ({e})")
+        return True, "Subscription check skipped (database unavailable)."
+
+    if row is None:
+        return True, "No subscription configured (unrestricted mode)."
+
+    if row["status"] != "Active":
+        return False, "Subscription is not active."
+
+    if row["enddate"] is not None:
+        grace_deadline = row["enddate"] + timedelta(days=row["gracedays"] or 0)
+
+        if date.today() > grace_deadline:
+            return False, "Subscription and grace period have expired."
+
+        if date.today() > row["enddate"]:
+            days_left_in_grace = (grace_deadline - date.today()).days
+            return True, f"Subscription expired, {days_left_in_grace} grace day(s) remaining."
+
+    return True, "Subscription is active."
+
+
+def check_user_limit(current_user_count: int) -> tuple[bool, str]:
+    """
+    Checks current_user_count against the subscription's
+    maxusers limit.
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT maxusers FROM subscription ORDER BY subscriptionid DESC LIMIT 1")
+                row = cur.fetchone()
+    except Exception as e:
+        logger.exception(f"check_user_limit: database error ({e})")
+        return True, "User limit check skipped (database unavailable)."
+
+    if row is None:
+        return True, "No user limit configured."
+
+    if current_user_count >= row["maxusers"]:
+        return False, f"Maximum user limit ({row['maxusers']}) reached for this subscription plan."
+
+    return True, "Within user limit."
+
+
+
+===== FILE: engines\supplier_engine.py =====
+
+"""
+engines/supplier_engine.py
+
+Supplier Engine - Medical ERP V2
+
+Project rule: "Keep business logic inside the Engine only." This is the ONLY
+place that:
+    - decides default values (Opening Balance=0, Balance Type=Dr, Status=Active)
+    - generates Supplier Codes
+    - orchestrates validation (utils/supplier_validator.py) before touching
+      the database (models/supplier_model.py)
+    - stamps BS-first audit fields via the shared Date Engine
+    - enforces soft-delete-only semantics
+
+Integration with existing V2 foundation:
+    - engines/date_engine.py  -> DateEngine (centralized BS<->AD engine)
+    - engines/settings_engine.py -> SettingsEngine (e.g. supplier code prefix)
+  Both are imported lazily/defensively so this file can still be imported and
+  unit-tested (with injected fakes) in isolation even if those modules are not
+  on the current PYTHONPATH.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import asdict, dataclass
+from datetime import date,datetime, timezone
+from typing import Any, Optional
+
+from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
+from models.supplier_model import SupplierModel, SupplierSearchFilters
+from utils.supplier_validator import SupplierValidator
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_SUPPLIER_CODE_PREFIX = "SUP-"
+DEFAULT_SUPPLIER_CODE_PADDING = 4  # SUP-0001
+
+
+def _load_date_engine():
+    try:
+        from engines.date_engine import DateEngine
+        return DateEngine()
+    except ImportError:
+        logger.warning(
+            "engines.date_engine.DateEngine not found on PYTHONPATH; "
+            "SupplierEngine will fall back to a minimal AD-only stamp "
+            "(created_at_bs/updated_at_bs will be left blank) until the "
+            "real Date Engine is wired in. Inject a date_engine explicitly "
+            "to avoid this in tests."
+        )
+        return None
+
+
+def _load_settings_engine():
+    try:
+        from engines.settings_engine import SettingsEngine
+        return SettingsEngine()
+    except ImportError:
+        logger.warning(
+            "engines.settings_engine.SettingsEngine not found on PYTHONPATH; "
+            "SupplierEngine will use built-in defaults for supplier.code_prefix. "
+            "Inject a settings_engine explicitly to avoid this in tests."
+        )
+        return None
+
+
+@dataclass
+class SupplierDTO:
+    """Read-facing representation returned by the Engine to callers (Screens/tests)."""
+    supplier_id: int
+    supplier_code: str
+    supplier_name: str
+    contact_person: Optional[str]
+    mobile_no: Optional[str]
+    phone_no: Optional[str]
+    email: Optional[str]
+    address: Optional[str]
+    city: Optional[str]
+    pan_vat_no: Optional[str]
+    opening_balance: float
+    balance_type: str
+    credit_limit: float
+    credit_days: int
+    status: str
+    remarks: Optional[str]
+    company_id: Optional[int]
+    is_deleted: bool
+    created_by: int
+    created_at_ad: Any
+    created_at_bs: Optional[str]
+    updated_by: Optional[int]
+    updated_at_ad: Any
+    updated_at_bs: Optional[str]
+    deleted_by: Optional[int]
+    deleted_at_ad: Any
+    deleted_at_bs: Optional[str]
+
+    @classmethod
+    def from_row(cls, row: dict) -> "SupplierDTO":
+        return cls(**{k: row.get(k) for k in cls.__dataclass_fields__.keys()})
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class SupplierEngine:
+    """Business-rule orchestration for the Supplier Master."""
+
+    def __init__(
+        self,
+        model: Optional[SupplierModel] = None,
+        date_engine: Optional[Any] = None,
+        settings_engine: Optional[Any] = None,
+    ) -> None:
+        self._model = model or SupplierModel()
+        self._date_engine = date_engine if date_engine is not None else _load_date_engine()
+        self._settings_engine = settings_engine if settings_engine is not None else _load_settings_engine()
+        self._validator = SupplierValidator(
+            name_exists_fn=self._model.exists_by_name,
+            code_exists_fn=self._model.exists_by_code,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers
+    # ------------------------------------------------------------------ #
+    def _now_ad(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _now_bs(self) -> Optional[str]:
+        if self._date_engine is None:
+            return None
+        try:
+            return self._date_engine.ad_to_bs(date.today())
+        except self._date_engine.DateEngineError:
+            logger.warning(
+                "date_engine.ad_to_bs() could not find today's date in the "
+                "bscalendar reference table; created_at_bs/updated_at_bs will "
+                "be left blank for this operation."
+            )
+            return None
+
+    def _code_prefix(self) -> str:
+        if self._settings_engine is not None:
+            try:
+                return self._settings_engine.get_setting("supplier.code_prefix", DEFAULT_SUPPLIER_CODE_PREFIX)
+            except Exception:  # noqa: BLE001 - settings engine must never break supplier creation
+                logger.exception("Failed to read supplier.code_prefix setting; using default.")
+        return DEFAULT_SUPPLIER_CODE_PREFIX
+
+    def generate_supplier_code(self) -> str:
+        """
+        Generates the next sequential supplier code, e.g. SUP-0001, SUP-0002.
+        The prefix is Settings-driven (falls back to 'SUP-') per the project's
+        "zero hardcoded values" philosophy; the sequence itself is derived
+        from the highest existing numeric suffix in the table (including
+        soft-deleted rows, so codes are never reused).
+        """
+        prefix = self._code_prefix()
+        last_seq = self._model.get_last_code_sequence(prefix)
+        next_seq = last_seq + 1
+        return f"{prefix}{str(next_seq).zfill(DEFAULT_SUPPLIER_CODE_PADDING)}"
+
+    def _clean_payload(self, payload: dict) -> dict:
+        """Applies default values and trims strings. Never touches uniqueness/DB."""
+        data = dict(payload)
+        data["supplier_name"] = (data.get("supplier_name") or "").strip()
+        data["contact_person"] = (data.get("contact_person") or "").strip() or None
+        data["mobile_no"] = (data.get("mobile_no") or "").strip() or None
+        data["phone_no"] = (data.get("phone_no") or "").strip() or None
+        data["email"] = (data.get("email") or "").strip() or None
+        data["address"] = (data.get("address") or "").strip() or None
+        data["city"] = (data.get("city") or "").strip() or None
+        data["pan_vat_no"] = (data.get("pan_vat_no") or "").strip() or None
+        data["remarks"] = (data.get("remarks") or "").strip() or None
+        data["company_id"] = data.get("company_id") or None
+
+        data["opening_balance"] = data.get("opening_balance", 0) or 0
+        data["balance_type"] = data.get("balance_type") or "Dr"
+        data["credit_limit"] = data.get("credit_limit", 0) or 0
+        data["credit_days"] = data.get("credit_days", 0) or 0
+        data["status"] = data.get("status") or "Active"
+        return data
+
+    # ------------------------------------------------------------------ #
+    # CREATE
+    # ------------------------------------------------------------------ #
+    def create_supplier(self, payload: dict, current_user_id: int) -> SupplierDTO:
+        data = self._clean_payload(payload)
+
+        validation = self._validator.validate_for_create(data)
+        if not validation.is_valid:
+            raise ValidationError(validation.errors)
+
+        supplier_code = (data.get("supplier_code") or "").strip()
+        if supplier_code:
+            code_check = self._validator.validate_supplier_code_unique(supplier_code)
+            if not code_check.is_valid:
+                raise ValidationError(code_check.errors)
+        else:
+            supplier_code = self.generate_supplier_code()
+
+        now_ad = self._now_ad()
+        now_bs = self._now_bs()
+
+        insert_data = {
+            "supplier_code": supplier_code,
+            "supplier_name": data["supplier_name"],
+            "contact_person": data["contact_person"],
+            "mobile_no": data["mobile_no"],
+            "phone_no": data["phone_no"],
+            "email": data["email"],
+            "address": data["address"],
+            "city": data["city"],
+            "pan_vat_no": data["pan_vat_no"],
+            "opening_balance": data["opening_balance"],
+            "balance_type": data["balance_type"],
+            "credit_limit": data["credit_limit"],
+            "credit_days": data["credit_days"],
+            "status": data["status"],
+            "remarks": data["remarks"],
+            "company_id": data["company_id"],
+            "created_by": current_user_id,
+            "created_at_ad": now_ad,
+            "created_at_bs": now_bs,
+        }
+
+        try:
+            new_id = self._model.insert(insert_data)
+        except Exception as exc:  # noqa: BLE001
+            # Catches a race-condition unique-constraint violation that slipped
+            # past the pre-check above (two users saving the same name at once).
+            if _is_unique_violation(exc):
+                raise DuplicateRecordError(
+                    f"Supplier Name or Code already exists (concurrent save detected)."
+                ) from exc
+            logger.exception("Unexpected error inserting supplier.")
+            raise
+
+        row = self._model.get_by_id(new_id)
+        return SupplierDTO.from_row(row)
+
+    # ------------------------------------------------------------------ #
+    # UPDATE
+    # ------------------------------------------------------------------ #
+    def update_supplier(self, supplier_id: int, payload: dict, current_user_id: int) -> SupplierDTO:
+        existing = self._model.get_by_id(supplier_id)
+        if existing is None:
+            raise RecordNotFoundError(f"Supplier {supplier_id} not found or has been deleted.")
+
+        data = self._clean_payload(payload)
+        validation = self._validator.validate_for_update(supplier_id, data)
+        if not validation.is_valid:
+            raise ValidationError(validation.errors)
+
+        now_ad = self._now_ad()
+        now_bs = self._now_bs()
+
+        update_data = {
+            "supplier_name": data["supplier_name"],
+            "contact_person": data["contact_person"],
+            "mobile_no": data["mobile_no"],
+            "phone_no": data["phone_no"],
+            "email": data["email"],
+            "address": data["address"],
+            "city": data["city"],
+            "pan_vat_no": data["pan_vat_no"],
+            "opening_balance": data["opening_balance"],
+            "balance_type": data["balance_type"],
+            "credit_limit": data["credit_limit"],
+            "credit_days": data["credit_days"],
+            "status": data["status"],
+            "remarks": data["remarks"],
+            "company_id": data["company_id"],
+            "updated_by": current_user_id,
+            "updated_at_ad": now_ad,
+            "updated_at_bs": now_bs,
+        }
+
+        try:
+            updated = self._model.update(supplier_id, update_data)
+        except Exception as exc:  # noqa: BLE001
+            if _is_unique_violation(exc):
+                raise DuplicateRecordError("Supplier Name already exists (concurrent save detected).") from exc
+            logger.exception("Unexpected error updating supplier %s.", supplier_id)
+            raise
+
+        if not updated:
+            raise RecordNotFoundError(f"Supplier {supplier_id} not found or has been deleted.")
+
+        row = self._model.get_by_id(supplier_id)
+        return SupplierDTO.from_row(row)
+
+    # ------------------------------------------------------------------ #
+    # READ
+    # ------------------------------------------------------------------ #
+    def get_supplier(self, supplier_id: int, include_deleted: bool = False) -> SupplierDTO:
+        row = self._model.get_by_id(supplier_id, include_deleted=include_deleted)
+        if row is None:
+            raise RecordNotFoundError(f"Supplier {supplier_id} not found.")
+        return SupplierDTO.from_row(row)
+
+    def search_suppliers(
+        self,
+        search_text: Optional[str] = None,
+        status: Optional[str] = None,
+        include_deleted: bool = False,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[SupplierDTO], int]:
+        filters = SupplierSearchFilters(
+            search_text=search_text,
+            status=status,
+            include_deleted=include_deleted,
+            page=page,
+            page_size=page_size,
+        )
+        rows, total_count = self._model.search(filters)
+        return [SupplierDTO.from_row(r) for r in rows], total_count
+
+    # ------------------------------------------------------------------ #
+    # DUPLICATE CHECKS (exposed for Screens to call live, e.g. on-blur checks)
+    # ------------------------------------------------------------------ #
+    def is_name_taken(self, supplier_name: str, exclude_id: Optional[int] = None) -> bool:
+        return self._model.exists_by_name(supplier_name, exclude_id)
+
+    def is_code_taken(self, supplier_code: str, exclude_id: Optional[int] = None) -> bool:
+        return self._model.exists_by_code(supplier_code, exclude_id)
+
+    # ------------------------------------------------------------------ #
+    # SOFT DELETE / RESTORE
+    # ------------------------------------------------------------------ #
+    def delete_supplier(self, supplier_id: int, current_user_id: int) -> None:
+        existing = self._model.get_by_id(supplier_id)
+        if existing is None:
+            raise RecordNotFoundError(f"Supplier {supplier_id} not found or already deleted.")
+
+        now_ad = self._now_ad()
+        now_bs = self._now_bs()
+        ok = self._model.soft_delete(supplier_id, current_user_id, now_ad, now_bs)
+        if not ok:
+            raise RecordNotFoundError(f"Supplier {supplier_id} not found or already deleted.")
+        logger.info("Supplier %s soft-deleted by user %s.", supplier_id, current_user_id)
+
+    def restore_supplier(self, supplier_id: int, current_user_id: int) -> SupplierDTO:
+        now_ad = self._now_ad()
+        now_bs = self._now_bs()
+        ok = self._model.restore(supplier_id, current_user_id, now_ad, now_bs)
+        if not ok:
+            raise RecordNotFoundError(f"Supplier {supplier_id} not found or was not deleted.")
+        logger.info("Supplier %s restored by user %s.", supplier_id, current_user_id)
+        row = self._model.get_by_id(supplier_id)
+        return SupplierDTO.from_row(row)
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    """Detects a PostgreSQL unique-violation (SQLSTATE 23505) without a hard
+    psycopg2 import dependency at module scope, so this helper stays reusable
+    even in unit tests that stub the model layer entirely."""
+    pgcode = getattr(exc, "pgcode", None)
+    return pgcode == "23505"
+
+
+
+===== FILE: engines\theme_engine.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Theme Engine
+---------------------------------------------------------
+Loads/toggles the application-wide QSS stylesheet.
+
+Supported themes: Light, Dark (Blue accent), Black (violet
+accent, near-black background). "Dark" is kept as the name
+for the Blue theme for backward compatibility with existing
+saved settings and callers.
+=========================================================
+"""
+from PySide6.QtWidgets import QApplication
+
+from utils.app_logger import get_logger
+
+logger = get_logger()
+
+THEME_STYLESHEETS: dict[str, str] = {
+    "Light": "resources/style.qss",
+    "Dark": "resources/dark_style.qss",
+    "Black": "resources/dark_black.qss",
+}
+
+DEFAULT_THEME = "Light"
+
+_current_theme = DEFAULT_THEME
+
+
+def apply_theme(theme_name: str) -> None:
+    """
+    Applies the given theme's stylesheet to the running QApplication.
+
+    Falls back to the Light theme if theme_name is not recognized,
+    or if the stylesheet file cannot be found/read.
+    """
+    global _current_theme
+
+    if theme_name not in THEME_STYLESHEETS:
+        logger.warning(
+            f"apply_theme: unknown theme '{theme_name}', falling back to "
+            f"'{DEFAULT_THEME}'."
+        )
+        theme_name = DEFAULT_THEME
+
+    path = THEME_STYLESHEETS[theme_name]
+    app = QApplication.instance()
+    if app is None:
+        return
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
+        _current_theme = theme_name
+    except (FileNotFoundError, OSError) as e:
+        logger.warning(f"apply_theme: stylesheet '{path}' not found: {e}")
+
+
+def toggle_theme() -> str:
+    """
+    Cycles through the available themes in order: Light -> Dark -> Black
+    -> Light. Returns the new theme name.
+    """
+    theme_order = list(THEME_STYLESHEETS.keys())
+    try:
+        current_index = theme_order.index(_current_theme)
+    except ValueError:
+        current_index = -1
+    next_theme = theme_order[(current_index + 1) % len(theme_order)]
+    apply_theme(next_theme)
+    return next_theme
+
+
+def get_current_theme() -> str:
+    return _current_theme
+
+
+def get_available_themes() -> list[str]:
+    """
+    Returns the list of valid theme names, in display order.
+    Used by the Settings screen to build the theme selector.
+    """
+    return list(THEME_STYLESHEETS.keys())
+
+
+
+===== FILE: engines\user_engine.py =====
+
+"""
+User Engine
+Layer: Engine (Business Logic)
+Responsibility: Orchestrates Model + Validator + PasswordSecurity + AuditLog.
+This is the ONLY layer Screens/Controllers are allowed to call for User Master.
+"""
+
+from typing import Optional, List
+from models.user_model import UserModel, UserRecord
+from validators.user_validator import UserValidator, ValidationError
+from security.password_security import PasswordSecurity, ALGO_NAME
+from core.date_engine import DateEngine  # existing frozen engine
+
+
+class UserEngine:
+
+    def __init__(self, user_model: UserModel, validator: UserValidator):
+        self._model = user_model
+        self._validator = validator
+
+    # ---------------- CREATE ----------------
+
+    def create_user(self, data: dict, created_by: int) -> int:
+        self._validator.validate_create(data)
+
+        password_hash = PasswordSecurity.hash_password(data["password"])
+        bs_today = DateEngine.today_bs()
+
+        record = UserRecord(
+            user_id=None,
+            username=data["username"].strip(),
+            display_name=data["display_name"].strip(),
+            email=data.get("email"),
+            phone=data.get("phone"),
+            password_hash=password_hash,
+            password_algo=ALGO_NAME,
+            must_change_password=data.get("must_change_password", True),
+            role_id=data.get("role_id"),
+            company_id=data.get("company_id"),
+            is_active=data.get("is_active", True),
+            is_deleted=False,
+            created_on_bs=bs_today,
+            created_by=created_by,
+            updated_on_bs=None,
+            updated_by=None,
+        )
+
+        user_id = self._model.insert(record)
+        self._model.insert_password_history(user_id, password_hash, ALGO_NAME, bs_today)
+
+        self._model.insert_audit(
+            user_id=user_id, action="CREATE", performed_by=created_by,
+            old_value=None, new_value={"username": record.username, "role_id": record.role_id},
+            remarks="User created", action_on_bs=bs_today
+        )
+        return user_id
+
+    # ---------------- UPDATE ----------------
+
+    def update_user(self, user_id: int, data: dict, updated_by: int) -> None:
+        self._validator.validate_update(user_id, data)
+
+        existing = self._model.get_by_id(user_id)
+        if not existing or existing.is_deleted:
+            raise ValidationError(["User not found or has been deleted."])
+
+        bs_today = DateEngine.today_bs()
+        allowed_fields = {"username", "display_name", "email", "phone", "role_id", "company_id"}
+        update_fields = {k: v for k, v in data.items() if k in allowed_fields}
+
+        self._model.update(user_id, update_fields, updated_by, bs_today)
+
+        self._model.insert_audit(
+            user_id=user_id, action="UPDATE", performed_by=updated_by,
+            old_value=self._snapshot(existing), new_value=update_fields,
+            remarks="User updated", action_on_bs=bs_today
+        )
+
+    # ---------------- STATUS ----------------
+
+    def set_active_status(self, user_id: int, is_active: bool, changed_by: int) -> None:
+        bs_today = DateEngine.today_bs()
+        self._model.update(user_id, {"is_active": is_active}, changed_by, bs_today)
+        self._model.insert_audit(
+            user_id=user_id,
+            action="ACTIVATE" if is_active else "DEACTIVATE",
+            performed_by=changed_by, old_value=None, new_value={"is_active": is_active},
+            remarks=None, action_on_bs=bs_today
+        )
+
+    # ---------------- SOFT DELETE / RESTORE ----------------
+
+    def delete_user(self, user_id: int, deleted_by: int, remarks: Optional[str] = None) -> None:
+        bs_today = DateEngine.today_bs()
+        self._model.soft_delete(user_id, deleted_by, bs_today)
+        self._model.insert_audit(
+            user_id=user_id, action="DELETE", performed_by=deleted_by,
+            old_value=None, new_value=None, remarks=remarks, action_on_bs=bs_today
+        )
+
+    def restore_user(self, user_id: int, restored_by: int) -> None:
+        bs_today = DateEngine.today_bs()
+        self._model.restore(user_id, restored_by, bs_today)
+        self._model.insert_audit(
+            user_id=user_id, action="RESTORE", performed_by=restored_by,
+            old_value=None, new_value=None, remarks="User restored", action_on_bs=bs_today
+        )
+
+    # ---------------- PASSWORD MANAGEMENT ----------------
+
+    def change_password(self, user_id: int, old_password: str, new_password: str) -> None:
+        user = self._model.get_by_id(user_id)
+        if not user or user.is_deleted:
+            raise ValidationError(["User not found."])
+
+        if not PasswordSecurity.verify_password(old_password, user.password_hash):
+            raise ValidationError(["Current password is incorrect."])
+
+        history = self._model.get_password_history(user_id)
+        history_hashes = [h["password_hash"] for h in history]
+
+        self._validator.validate_password_change(
+            new_password, history_hashes, PasswordSecurity.verify_password
+        )
+
+        self._apply_new_password(user_id, new_password, must_change=False, action="PASSWORD_CHANGE",
+                                  performed_by=user_id)
+
+    def reset_password(self, user_id: int, new_password: str, reset_by: int) -> None:
+        """Admin-initiated reset â€” forces user to change password on next login."""
+        history = self._model.get_password_history(user_id)
+        history_hashes = [h["password_hash"] for h in history]
+
+        self._validator.validate_password_change(
+            new_password, history_hashes, PasswordSecurity.verify_password
+        )
+
+        self._apply_new_password(user_id, new_password, must_change=True, action="PASSWORD_RESET",
+                                  performed_by=reset_by)
+
+    def _apply_new_password(self, user_id: int, new_password: str, must_change: bool,
+                             action: str, performed_by: int) -> None:
+        bs_today = DateEngine.today_bs()
+        new_hash = PasswordSecurity.hash_password(new_password)
+
+        self._model.update_password(user_id, new_hash, ALGO_NAME, must_change)
+        self._model.insert_password_history(user_id, new_hash, ALGO_NAME, bs_today)
+        self._model.insert_audit(
+            user_id=user_id, action=action, performed_by=performed_by,
+            old_value=None, new_value=None, remarks=None, action_on_bs=bs_today
+        )
+
+    # ---------------- AUTHENTICATION SUPPORT ----------------
+
+    def authenticate(self, username: str, password: str) -> Optional[UserRecord]:
+        """
+        Single source of truth for username/password verification.
+        Authentication module should call this rather than re-implementing
+        password checks against the users table.
+        Returns the UserRecord on success, or None on failure.
+        Does not raise on bad credentials (auth failure is not a validation error).
+        """
+        user = self._model.get_by_username(username)
+        if not user or user.is_deleted or not user.is_active:
+            return None
+        if not PasswordSecurity.verify_password(password, user.password_hash):
+            return None
+        return user
+
+    # ---------------- SEARCH / RETRIEVAL ----------------
+
+    def get_user(self, user_id: int) -> Optional[UserRecord]:
+        return self._model.get_by_id(user_id)
+
+    def search_users(self, filters: dict, page: int = 1, page_size: int = 50) -> List[UserRecord]:
+        offset = (page - 1) * page_size
+        return self._model.search(filters, limit=page_size, offset=offset)
+
+    @staticmethod
+    def _snapshot(record: UserRecord) -> dict:
+        return {
+            "username": record.username,
+            "display_name": record.display_name,
+            "email": record.email,
+            "role_id": record.role_id,
+            "company_id": record.company_id,
+        }
+
+
+
+===== FILE: engines\__init__.py =====
+
+
+
+===== FILE: models\company_model.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Company Model
+---------------------------------------------------------
+Responsibilities:
+- All SQL for the `company` table lives here and ONLY here.
+- No business logic, no validation, no UI concerns.
+- Every write operation is transaction-safe: commit on
+  success, rollback on any exception.
+
+NOTE: The real `company` table (confirmed via psql "\d company")
+uses a TEXT `status` column ('Active'/'Inactive'), not a
+boolean isactive. `isdeleted` was added separately (Option A)
+so deactivating a company is never confused with deleting one.
+`users.companyid` has a FK to this table - never drop a row,
+only soft-delete it.
+=========================================================
+"""
+
+from typing import Optional, List, Dict, Any
+import psycopg2
+import psycopg2.extras
+
+from database.db import get_connection
+from utils.app_logger import get_logger
+
+logger = get_logger()
+
+
+class CompanyModelError(Exception):
+    """Raised when a database operation on `company` fails."""
+    pass
+
+
+def get_active_companies() -> list:
+    """
+    Used by the Login screen's cmbCompany dropdown.
+    Kept exactly as it existed before Company Master was added -
+    do not change its signature or query.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT companyid, companyname FROM company WHERE status = 'Active' ORDER BY companyname"
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def generate_next_company_id(cursor) -> str:
+    """
+    Generates the next sequential companyid in the form COM001, COM002...
+    """
+    cursor.execute("""
+        SELECT companyid FROM company
+        WHERE companyid LIKE 'COM%%'
+        ORDER BY companyid DESC
+        LIMIT 1
+    """)
+    row = cursor.fetchone()
+    if not row:
+        return "COM001"
+    last_id = row["companyid"]
+    try:
+        num = int(last_id.replace("COM", "")) + 1
+    except ValueError:
+        num = 1
+    return f"COM{num:03d}"
+
+
+def company_name_exists(companyname: str, exclude_companyid: Optional[str] = None) -> bool:
+    """Case-insensitive duplicate check against non-deleted companies."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if exclude_companyid:
+                cur.execute("""
+                    SELECT 1 FROM company
+                    WHERE LOWER(companyname) = LOWER(%s)
+                      AND isdeleted = FALSE
+                      AND companyid <> %s
+                """, (companyname, exclude_companyid))
+            else:
+                cur.execute("""
+                    SELECT 1 FROM company
+                    WHERE LOWER(companyname) = LOWER(%s)
+                      AND isdeleted = FALSE
+                """, (companyname,))
+            return cur.fetchone() is not None
+    except psycopg2.Error as e:
+        logger.error(f"company_name_exists failed: {e}")
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
+def insert_company(data: Dict[str, Any], created_by: str) -> str:
+    """
+    Inserts a new company row inside a transaction.
+    `status` defaults to 'Active'; `country` defaults to 'Nepal'
+    (both via the table's own DEFAULT, so we only set them if
+    the caller explicitly provided a value).
+    Returns the generated companyid.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            companyid = generate_next_company_id(cur)
+            cur.execute("""
+                INSERT INTO company (
+                    companyid, companyname, address, contactperson, mobileno,
+                    phone, email, panno, registrationno, remarks,
+                    status, isdeleted, createdby
+                ) VALUES (
+                    %(companyid)s, %(companyname)s, %(address)s, %(contactperson)s,
+                    %(mobileno)s, %(phone)s, %(email)s, %(panno)s, %(registrationno)s,
+                    %(remarks)s, 'Active', FALSE, %(createdby)s
+                )
+            """, {
+                "companyid": companyid,
+                "companyname": data.get("companyname"),
+                "address": data.get("address"),
+                "contactperson": data.get("contactperson"),
+                "mobileno": data.get("mobileno"),
+                "phone": data.get("phone"),
+                "email": data.get("email"),
+                "panno": data.get("panno"),
+                "registrationno": data.get("registrationno"),
+                "remarks": data.get("remarks"),
+                "createdby": created_by,
+            })
+        conn.commit()
+        logger.info(f"Company created: {companyid} by {created_by}")
+        return companyid
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error(f"insert_company failed, rolled back: {e}")
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
+def update_company(companyid: str, data: Dict[str, Any], modified_by: str) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE company SET
+                    companyname = %(companyname)s,
+                    address = %(address)s,
+                    contactperson = %(contactperson)s,
+                    mobileno = %(mobileno)s,
+                    phone = %(phone)s,
+                    email = %(email)s,
+                    panno = %(panno)s,
+                    registrationno = %(registrationno)s,
+                    remarks = %(remarks)s,
+                    modifiedby = %(modifiedby)s,
+                    modifiedat = CURRENT_TIMESTAMP
+                WHERE companyid = %(companyid)s AND isdeleted = FALSE
+            """, {
+                "companyid": companyid,
+                "companyname": data.get("companyname"),
+                "address": data.get("address"),
+                "contactperson": data.get("contactperson"),
+                "mobileno": data.get("mobileno"),
+                "phone": data.get("phone"),
+                "email": data.get("email"),
+                "panno": data.get("panno"),
+                "registrationno": data.get("registrationno"),
+                "remarks": data.get("remarks"),
+                "modifiedby": modified_by,
+            })
+            updated = cur.rowcount > 0
+        conn.commit()
+        if updated:
+            logger.info(f"Company updated: {companyid} by {modified_by}")
+        return updated
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error(f"update_company failed, rolled back: {e}")
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
+def soft_delete_company(companyid: str, deleted_by: str) -> bool:
+    """
+    Soft delete only - never DELETEs the row, since `users.companyid`
+    has a FK to this table. Also flips status to 'Inactive' so it
+    disappears from active dropdowns (e.g. Login screen) immediately.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE company SET
+                    isdeleted = TRUE,
+                    status = 'Inactive',
+                    deletedby = %s,
+                    deletedat = CURRENT_TIMESTAMP
+                WHERE companyid = %s AND isdeleted = FALSE
+            """, (deleted_by, companyid))
+            affected = cur.rowcount > 0
+        conn.commit()
+        if affected:
+            logger.info(f"Company soft-deleted: {companyid} by {deleted_by}")
+        return affected
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error(f"soft_delete_company failed, rolled back: {e}")
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
+def restore_company(companyid: str, modified_by: str) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE company SET
+                    isdeleted = FALSE,
+                    status = 'Active',
+                    modifiedby = %s,
+                    modifiedat = CURRENT_TIMESTAMP,
+                    deletedby = NULL,
+                    deletedat = NULL
+                WHERE companyid = %s AND isdeleted = TRUE
+            """, (modified_by, companyid))
+            affected = cur.rowcount > 0
+        conn.commit()
+        if affected:
+            logger.info(f"Company restored: {companyid} by {modified_by}")
+        return affected
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error(f"restore_company failed, rolled back: {e}")
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
+def set_company_status(companyid: str, status: str, modified_by: str) -> bool:
+    """status must be 'Active' or 'Inactive' - validated by the Engine."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE company SET
+                    status = %s,
+                    modifiedby = %s,
+                    modifiedat = CURRENT_TIMESTAMP
+                WHERE companyid = %s AND isdeleted = FALSE
+            """, (status, modified_by, companyid))
+            affected = cur.rowcount > 0
+        conn.commit()
+        return affected
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error(f"set_company_status failed, rolled back: {e}")
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
+def get_company_by_id(companyid: str) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM company WHERE companyid = %s", (companyid,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    except psycopg2.Error as e:
+        logger.error(f"get_company_by_id failed: {e}")
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
+def list_companies(
+    search_term: Optional[str] = None,
+    status_filter: str = "active",   # 'active' | 'inactive' | 'all'
+    include_deleted: bool = False,
+) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            clauses = []
+            params: List[Any] = []
+
+            if not include_deleted:
+                clauses.append("isdeleted = FALSE")
+
+            if status_filter == "active":
+                clauses.append("status = 'Active'")
+            elif status_filter == "inactive":
+                clauses.append("status = 'Inactive'")
+            # 'all' -> no filter on status
+
+            if search_term:
+                clauses.append("""(
+                    companyname ILIKE %s OR
+                    contactperson ILIKE %s OR
+                    mobileno ILIKE %s OR
+                    email ILIKE %s
+                )""")
+                like = f"%{search_term}%"
+                params.extend([like, like, like, like])
+
+            where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            cur.execute(f"""
+                SELECT * FROM company
+                {where_sql}
+                ORDER BY companyname ASC
+            """, params)
+
+            rows = cur.fetchall()
+            return [dict(row) for row in rows]
+    except psycopg2.Error as e:
+        logger.error(f"list_companies failed: {e}")
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
+
+===== FILE: models\dashboard_model.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Dashboard Model
+---------------------------------------------------------
+Purpose:
+    Raw data queries for Dashboard KPI cards.
+
+NOTE: Purchase, Sales, and Stock modules have not been
+built yet in V2 (only the Login/Dashboard foundation
+exists so far). The functions below query the REAL tables
+for those modules and will start returning real numbers
+automatically once those modules are built - they do NOT
+return fabricated/dummy figures. Until then, they safely
+report 0 (with the failure logged) rather than crashing
+the Dashboard.
+=========================================================
+"""
+
+from datetime import date
+
+from database.db import get_connection
+from utils.app_logger import get_logger
+from models.user_model import count_active_users
+
+logger = get_logger()
+
+
+def _safe_scalar_query(query: str, params: tuple = ()) -> float:
+    """
+    Runs a single-value query. Returns 0 (and logs) if the
+    underlying table doesn't exist yet or any DB error occurs -
+    this keeps the Dashboard usable even before every module
+    has been built.
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                row = cur.fetchone()
+                if row is None:
+                    return 0
+                return list(row.values())[0] or 0
+    except Exception as e:
+        logger.info(f"Dashboard KPI query unavailable (module not built yet or DB issue): {e}")
+        return 0
+
+
+def get_today_sales_total(today_ad: date | None = None) -> float:
+    today_ad = today_ad or date.today()
+    return _safe_scalar_query(
+        "SELECT COALESCE(SUM(netamount), 0) AS total FROM saleheader WHERE saledatead = %s",
+        (today_ad,),
+    )
+
+
+def get_today_purchase_total(today_ad: date | None = None) -> float:
+    today_ad = today_ad or date.today()
+    return _safe_scalar_query(
+        "SELECT COALESCE(SUM(netamount), 0) AS total FROM purchaseheader WHERE purchasedatead = %s",
+        (today_ad,),
+    )
+
+
+def get_stock_value() -> float:
+    return _safe_scalar_query(
+        "SELECT COALESCE(SUM(availableqty * purchaserate), 0) AS total FROM stockmaster"
+    )
+
+
+def get_low_stock_count(threshold_qty: float = 10) -> float:
+    return _safe_scalar_query(
+        "SELECT COUNT(*) AS total FROM stockmaster WHERE availableqty <= %s",
+        (threshold_qty,),
+    )
+
+
+def get_expiring_medicines_count(within_days: int = 90) -> float:
+    return _safe_scalar_query(
+        """
+        SELECT COUNT(*) AS total FROM stockmaster
+        WHERE expiryaddate IS NOT NULL
+          AND expiryaddate <= (CURRENT_DATE + %s * INTERVAL '1 day')
+        """,
+        (within_days,),
+    )
+
+
+def get_pending_payments_total() -> float:
+    return _safe_scalar_query(
+        "SELECT COALESCE(SUM(balanceamount), 0) AS total FROM purchaseheader WHERE balanceamount > 0"
+    )
+
+
+def get_pending_receipts_total() -> float:
+    return _safe_scalar_query(
+        "SELECT COALESCE(SUM(balanceamount), 0) AS total FROM saleheader WHERE balanceamount > 0"
+    )
+
+
+def get_active_users_count() -> float:
+    try:
+        return count_active_users()
+    except Exception as e:
+        logger.info(f"get_active_users_count unavailable: {e}")
+        return 0
+
+
+
+===== FILE: models\financialyear_model.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Financial Year Model (minimal - Login screen needs this)
+=========================================================
+"""
+
+from database.db import get_connection
+
+
+def get_all_financial_years() -> list[dict]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT financialyearid, financialyear, isactive, isclosed
+                FROM financialyear
+                WHERE isclosed = FALSE
+                ORDER BY financialyear DESC
+                """
+            )
+            return cur.fetchall()
+
+
+def get_active_financial_year() -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM financialyear WHERE isactive = TRUE LIMIT 1")
+            return cur.fetchone()
+
+
+
+===== FILE: models\role_model.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Role Model
+---------------------------------------------------------
+Minimal operations needed right now (role lookup for the
+Authentication Engine). Full Role Master screen (add/edit/
+assign permissions) will be its own module later.
+=========================================================
+"""
+
+from database.db import get_connection
+
+
+def get_role_by_id(roleid: int) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM roles WHERE roleid = %s", (roleid,))
+            return cur.fetchone()
+
+
+def get_role_name(roleid: int) -> str:
+    role = get_role_by_id(roleid)
+    return role["rolename"] if role else "Unknown"
+
+
+
+===== FILE: models\settings_model.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Settings Model
+---------------------------------------------------------
+Purpose:
+    All database operations for the `settings` and
+    `settings_history` tables (see database/schema_auth.sql).
+
+    Business logic (caching, validation, applying settings)
+    lives in engines/settings_engine.py - this file is
+    PostgreSQL access only, per MVC.
+=========================================================
+"""
+
+from datetime import datetime
+
+from database.db import get_connection
+
+
+def get_all_settings(companyid: str | None = None, userid: int | None = None) -> list[dict]:
+    """
+    Returns every GLOBAL setting row (companyid/userid both NULL).
+    Company/user-specific overrides are a future enhancement -
+    this function's signature already accepts those parameters
+    so callers don't need to change later.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM settings
+                WHERE companyid IS NOT DISTINCT FROM %s
+                  AND userid IS NOT DISTINCT FROM %s
+                ORDER BY setting_group, display_order, setting_key
+                """,
+                (companyid, userid)
+            )
+            return cur.fetchall()
+
+
+def get_setting_by_key(key: str, companyid: str | None = None, userid: int | None = None) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM settings
+                WHERE setting_key = %s
+                  AND companyid IS NOT DISTINCT FROM %s
+                  AND userid IS NOT DISTINCT FROM %s
+                """,
+                (key, companyid, userid)
+            )
+            return cur.fetchone()
+
+
+def get_settings_by_group(setting_group: str) -> list[dict]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM settings
+                WHERE setting_group = %s AND companyid IS NULL AND userid IS NULL
+                ORDER BY display_order, setting_key
+                """,
+                (setting_group,)
+            )
+            return cur.fetchall()
+
+
+def get_all_groups() -> list[str]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT setting_group FROM settings
+                WHERE companyid IS NULL AND userid IS NULL
+                ORDER BY setting_group
+                """
+            )
+            return [row["setting_group"] for row in cur.fetchall()]
+
+
+def search_settings(search_text: str) -> list[dict]:
+    """
+    Searches key, description, and group - this backs the
+    Settings screen's global search box.
+    """
+    keyword = f"%{search_text.strip()}%"
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM settings
+                WHERE companyid IS NULL AND userid IS NULL
+                  AND (
+                        setting_key ILIKE %s
+                        OR description ILIKE %s
+                        OR setting_group ILIKE %s
+                      )
+                ORDER BY setting_group, display_order
+                """,
+                (keyword, keyword, keyword)
+            )
+            return cur.fetchall()
+
+
+def update_setting_value(key: str, value: str, updated_by: str, reason: str = "") -> tuple[bool, str]:
+    """
+    Updates a global setting's value and writes a
+    settings_history row recording the change.
+    """
+    existing = get_setting_by_key(key)
+
+    if existing is None:
+        return False, f"Setting '{key}' not found."
+
+    old_value = existing["setting_value"]
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE settings
+                SET setting_value = %s, updated_at = %s, updated_by = %s
+                WHERE setting_key = %s AND companyid IS NULL AND userid IS NULL
+                """,
+                (value, datetime.now(), updated_by, key)
+            )
+
+            cur.execute(
+                """
+                INSERT INTO settings_history (setting_key, old_value, new_value, changed_by, reason)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (key, old_value, value, updated_by, reason)
+            )
+        conn.commit()
+
+    return True, "Setting updated successfully."
+
+
+def reset_setting_to_default(key: str, updated_by: str) -> tuple[bool, str]:
+    existing = get_setting_by_key(key)
+
+    if existing is None:
+        return False, f"Setting '{key}' not found."
+
+    return update_setting_value(key, existing["default_value"], updated_by, reason="Reset to default")
+
+
+def create_setting(
+    key: str, value: str, setting_group: str, data_type: str,
+    default_value: str, description: str, display_order: int, created_by: str
+) -> tuple[bool, str]:
+    key = key.strip()
+
+    if not key:
+        return False, "Setting key is required."
+
+    if get_setting_by_key(key):
+        return False, "A setting with this key already exists."
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO settings (
+                    setting_key, setting_value, setting_group, data_type,
+                    default_value, description, display_order, updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (key, value, setting_group, data_type, default_value, description, display_order, created_by)
+            )
+        conn.commit()
+
+    return True, f"Setting '{key}' created."
+
+
+def get_setting_history(key: str) -> list[dict]:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM settings_history WHERE setting_key = %s ORDER BY changed_at DESC",
+                (key,)
+            )
+            return cur.fetchall()
+
+
+def get_recent_history(limit: int = 10) -> list[dict]:
+    """
+    Returns the most recent settings_history rows across ALL
+    keys, with the owning setting's group joined in - backs the
+    Settings screen's "Recently changed" panel with real audit
+    data instead of anything fabricated.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT h.*, s.setting_group
+                FROM settings_history h
+                LEFT JOIN settings s
+                       ON s.setting_key = h.setting_key
+                      AND s.companyid IS NULL AND s.userid IS NULL
+                ORDER BY h.changed_at DESC
+                LIMIT %s
+                """,
+                (limit,)
+            )
+            return cur.fetchall()
+
+
+
+
+===== FILE: models\settings_screen.py =====
+
+"""
+=========================================================
+Medical ERP V2
+Settings Screen
+---------------------------------------------------------
+UI event handling ONLY - no SQL here, no business rules.
+Everything goes through engines.settings_engine, exactly
+like every other screen in this app goes through its own
+engine (see screens/dashboard_screen.py).
+
+Visual language: a landing page of clickable group "tiles"
+with a centered search bar - loosely inspired by a browser's
+New Tab page, but built with this app's own dark/violet
+design system (resources/dark_style.qss / style.qss) so it
+stays consistent with Login and Dashboard rather than being
+a copy of anything external.
+
+Built as plain Python widgets (no .ui/Designer file) since
+every value on this screen is driven by data the Settings
+Engine returns at runtime - group list, per-group counts,
+and search results all vary, so a static Designer layout
+would need to be rebuilt in code anyway. This mirrors how
+dashboard_engine.SIDEBAR_MODULES already drives dynamic UI
+inside a Designer-built shell.
+=========================================================
+"""
+
+from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtGui import QIcon, QShortcut, QKeySequence
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
+    QLineEdit, QPushButton, QScrollArea, QStackedWidget, QFrame, QFileDialog,
+    QDialog, QListWidget, QListWidgetItem,
+)
+
+from utils.app_logger import get_logger
+from utils.message import show_success, show_warning, show_error, confirm
+from utils.settings_ui_helpers import group_icon_name
+from engines import settings_engine
+from engines.theme_engine import toggle_theme, get_current_theme
+from widgets.settings_tile import SettingsTile
+from widgets.settings_field_row import SettingsFieldRow
+
+logger = get_logger()
+
+ICON_DIR = "resources/icons"
+SEARCH_DEBOUNCE_MS = 300
+RECENT_CHANGES_LIMIT = 8
+
+PAGE_LANDING = 0
+PAGE_GROUP_DETAIL = 1
+PAGE_SEARCH_RESULTS = 2
+
+
+class SettingsScreen(QMainWindow):
+
+    def __init__(self, login_result, parent=None):
+        super().__init__(parent)
+
+        self.login_result = login_result
+        self.current_group = None
+        self.group_rows: dict[str, SettingsFieldRow] = {}
+        self.search_rows: dict[str, SettingsFieldRow] = {}
+        self.tiles: dict[str, SettingsTile] = {}
+        self._pending_restart_groups: set[str] = set()
+
+        self.setWindowTitle("Settings - Medical ERP")
+        self.resize(1366, 800)
+
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._run_search)
+
+        self._build_ui()
+        self._setup_shortcuts()
+        self.reload_landing()
+
+    # -----------------------------------------------------
+    # BUILD
+    # -----------------------------------------------------
+
+    def _build_ui(self):
+        central = QWidget()
+        central.setObjectName("centralwidget")
+        self.setCentralWidget(central)
+
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        root.addWidget(self._build_header())
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_landing_page())
+        self.stack.addWidget(self._build_group_detail_page())
+        self.stack.addWidget(self._build_search_results_page())
+        root.addWidget(self.stack, 1)
+
+        self.statusBar().showMessage(f"Signed in as {self.login_result.username}")
+
+    def _build_header(self):
+        header = QFrame()
+        header.setObjectName("frmTopHeader")
+        header.setFixedHeight(72)
+
+        row = QHBoxLayout(header)
+        row.setContentsMargins(20, 10, 20, 10)
+        row.setSpacing(14)
+
+        icon_label = QLabel()
+        icon_label.setPixmap(QIcon(f"{ICON_DIR}/settings.svg").pixmap(QSize(22, 22)))
+        row.addWidget(icon_label)
+
+        title = QLabel("Settings")
+        title.setStyleSheet("font-size: 14pt; font-weight: 700;")
+        row.addWidget(title)
+
+        self.btn_back = QPushButton("\u2190 All Settings")
+        self.btn_back.setProperty("flat", "true")
+        self.btn_back.clicked.connect(self.reload_landing)
+        self.btn_back.hide()
+        row.addWidget(self.btn_back)
+
+        row.addStretch(1)
+
+        # ---- centered search bar ----
+        search_frame = QFrame()
+        search_frame.setObjectName("frmSettingsSearchBar")
+        search_frame.setFixedWidth(420)
+        search_row = QHBoxLayout(search_frame)
+        search_row.setContentsMargins(14, 4, 10, 4)
+        search_row.setSpacing(6)
+
+        search_icon = QLabel()
+        search_icon.setPixmap(QIcon(f"{ICON_DIR}/search.svg").pixmap(QSize(16, 16)))
+        search_row.addWidget(search_icon)
+
+        self.txt_search = QLineEdit()
+        self.txt_search.setObjectName("txtSettingsSearch")
+        self.txt_search.setPlaceholderText("Search settings\u2026")
+        self.txt_search.textChanged.connect(self._handle_search_text_changed)
+        search_row.addWidget(self.txt_search)
+        row.addWidget(search_frame)
+
+        row.addStretch(1)
+
+        self.btn_theme = QPushButton()
+        self.btn_theme.setToolTip("Switch between Light and Dark theme")
+        self._refresh_theme_icon()
+        self.btn_theme.clicked.connect(self._handle_theme_toggle)
+        row.addWidget(self.btn_theme)
+
+        self.btn_export = QPushButton("Export")
+        self.btn_export.setToolTip("Export all settings to a JSON file")
+        self.btn_export.clicked.connect(self._handle_export)
+        row.addWidget(self.btn_export)
+
+        self.btn_import = QPushButton("Import")
+        self.btn_import.setToolTip("Import settings from a previously exported JSON file")
+        self.btn_import.clicked.connect(self._handle_import)
+        row.addWidget(self.btn_import)
+
+        self.btn_close = QPushButton("Close")
+        self.btn_close.clicked.connect(self.close)
+        row.addWidget(self.btn_close)
+
+        return header
+
+    def _build_landing_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(18)
+
+        self.lbl_restart_banner = QLabel()
+        self.lbl_restart_banner.setStyleSheet(
+            "background-color: #E0B84D; color: #1A1A22; border-radius: 8px; padding: 8px 14px; font-weight: 600;"
+        )
+        self.lbl_restart_banner.hide()
+        layout.addWidget(self.lbl_restart_banner)
+
+        recent_label = QLabel("Recently changed")
+        recent_label.setStyleSheet("font-size: 11pt; font-weight: 700;")
+        layout.addWidget(recent_label)
+
+        self.recent_list = QListWidget()
+        self.recent_list.setFixedHeight(110)
+        self.recent_list.setFrameShape(QFrame.Shape.NoFrame)
+        layout.addWidget(self.recent_list)
+
+        groups_label = QLabel("All settings")
+        groups_label.setStyleSheet("font-size: 11pt; font-weight: 700; margin-top: 6px;")
+        layout.addWidget(groups_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        self.tiles_grid = QGridLayout(scroll_content)
+        self.tiles_grid.setSpacing(16)
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll, 1)
+
+        return page
+
+    def _build_group_detail_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(12)
+
+        header_row = QHBoxLayout()
+        self.lbl_group_icon = QLabel()
+        header_row.addWidget(self.lbl_group_icon)
+
+        self.lbl_group_title = QLabel()
+        self.lbl_group_title.setStyleSheet("font-size: 14pt; font-weight: 700;")
+        header_row.addWidget(self.lbl_group_title)
+
+        self.lbl_group_restart_badge = QLabel("Restart required")
+        self.lbl_group_restart_badge.setProperty("cssClass", "tileRestartBadge")
+        self.lbl_group_restart_badge.hide()
+        header_row.addWidget(self.lbl_group_restart_badge)
+
+        header_row.addStretch(1)
+
+        self.btn_discard_group = QPushButton("Discard")
+        self.btn_discard_group.setProperty("flat", "true")
+        self.btn_discard_group.clicked.connect(self._handle_discard_group)
+        header_row.addWidget(self.btn_discard_group)
+
+        self.btn_save_group = QPushButton("Save Changes")
+        self.btn_save_group.clicked.connect(self._handle_save_group)
+        self.btn_save_group.setEnabled(False)
+        header_row.addWidget(self.btn_save_group)
+
+        layout.addLayout(header_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.group_rows_container = QWidget()
+        self.group_rows_layout = QVBoxLayout(self.group_rows_container)
+        self.group_rows_layout.setSpacing(10)
+        self.group_rows_layout.addStretch(1)
+        scroll.setWidget(self.group_rows_container)
+        layout.addWidget(scroll, 1)
+
+        return page
+
+    def _build_search_results_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(12)
+
+        self.lbl_search_summary = QLabel()
+        self.lbl_search_summary.setStyleSheet("font-size: 11pt; font-weight: 700;")
+        layout.addWidget(self.lbl_search_summary)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.search_rows_container = QWidget()
+        self.search_rows_layout = QVBoxLayout(self.search_rows_container)
+        self.search_rows_layout.setSpacing(10)
+        self.search_rows_layout.addStretch(1)
+        scroll.setWidget(self.search_rows_container)
+        layout.addWidget(scroll, 1)
+
+        return page
+
+    def _setup_shortcuts(self):
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.txt_search.setFocus)
+        QShortcut(QKeySequence("Ctrl+W"), self, activated=self.close)
+        QShortcut(QKeySequence("Escape"), self, activated=self._handle_escape)
+
+    def _handle_escape(self):
+        if self.stack.currentIndex() != PAGE_LANDING:
+            self.reload_landing()
+
+    # -----------------------------------------------------
+    # THEME
+    # -----------------------------------------------------
+
+    def _refresh_theme_icon(self):
+        theme_icon = "moon" if get_current_theme() == "Light" else "sun"
+        self.btn_theme.setIcon(QIcon(f"{ICON_DIR}/{theme_icon}.svg"))
+
+    def _handle_theme_toggle(self):
+        new_theme = toggle_theme()
+        self._refresh_theme_icon()
+        self.statusBar().showMessage(f"Theme switched to {new_theme}", 3000)
+
+    # -----------------------------------------------------
+    # LANDING PAGE
+    # -----------------------------------------------------
+
+    def reload_landing(self):
+        self.stack.setCurrentIndex(PAGE_LANDING)
+        self.btn_back.hide()
+        self.txt_search.blockSignals(True)
+        self.txt_search.clear()
+        self.txt_search.blockSignals(False)
+
+        self._load_recent_changes()
+        self._load_tiles()
+        self._refresh_restart_banner()
+
+    def _load_recent_changes(self):
+        self.recent_list.clear()
+        try:
+            recent = settings_engine.get_recent_changes(RECENT_CHANGES_LIMIT)
+        except Exception as e:
+            logger.exception(f"SettingsScreen: could not load recent changes: {e}")
+            recent = []
+
+        if not recent:
+            item = QListWidgetItem("No changes recorded yet.")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.recent_list.addItem(item)
+            return
+
+        for entry in recent:
+            changed_at = entry.get("changed_at")
+            when_text = changed_at.strftime("%Y-%m-%d %H:%M") if changed_at else ""
+            key_label = entry.get("setting_key", "")
+            group_label = entry.get("setting_group") or ""
+            by_whom = entry.get("changed_by") or "unknown"
+            text = f"{key_label}  ({group_label})  \u2192  {entry.get('new_value')}   \u2014 {by_whom}, {when_text}"
+            self.recent_list.addItem(QListWidgetItem(text))
+
+    def _load_tiles(self):
+        # clear existing grid
+        while self.tiles_grid.count():
+            child = self.tiles_grid.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.tiles.clear()
+
+        try:
+            grouped = settings_engine.get_settings_grouped()
+        except Exception as e:
+            logger.exception(f"SettingsScreen: could not load settings groups: {e}")
+            show_error("Could not load settings from the database. Please check your connection.")
+            return
+
+        columns = 3
+        for index, (group_name, rows) in enumerate(sorted(grouped.items())):
+            tile = SettingsTile(
+                group_name, len(rows), settings_engine.requires_restart(group_name)
+            )
+            tile.clicked.connect(self.open_group)
+            self.tiles[group_name] = tile
+            self.tiles_grid.addWidget(tile, index // columns, index % columns)
+
+    def _refresh_restart_banner(self):
+        if self._pending_restart_groups:
+            names = ", ".join(sorted(self._pending_restart_groups))
+            self.lbl_restart_banner.setText(
+                f"You changed settings in: {names}. Restart the app for these to fully take effect."
+            )
+            self.lbl_restart_banner.show()
+        else:
+            self.lbl_restart_banner.hide()
+
+    # -----------------------------------------------------
+    # GROUP DETAIL PAGE
+    # -----------------------------------------------------
+
+    def open_group(self, group_name: str):
+        self.current_group = group_name
+        self.stack.setCurrentIndex(PAGE_GROUP_DETAIL)
+        self.btn_back.show()
+
+        try:
+            grouped = settings_engine.get_settings_grouped()
+        except Exception as e:
+            logger.exception(f"SettingsScreen: could not load group '{group_name}': {e}")
+            show_error("Could not load this settings group.")
+            self.reload_landing()
+            return
+
+        rows = grouped.get(group_name, [])
+
+        self.lbl_group_title.setText(group_name)
+        self.lbl_group_icon.setPixmap(QIcon(f"{ICON_DIR}/{group_icon_name(group_name)}.svg").pixmap(QSize(24, 24)))
+        self.lbl_group_restart_badge.setVisible(settings_engine.requires_restart(group_name))
+
+        # clear previous rows
+        while self.group_rows_layout.count():
+            child = self.group_rows_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.group_rows.clear()
+
+        for row in rows:
+            field_row = SettingsFieldRow(row)
+            field_row.apply_requested.connect(self._handle_apply)
+            field_row.reset_requested.connect(self._handle_reset)
+            field_row.history_requested.connect(self._handle_history)
+            field_row.changed.connect(lambda _key: self._handle_field_dirty_check())
+            self.group_rows[row["setting_key"]] = field_row
+            self.group_rows_layout.addWidget(field_row)
+
+        self.group_rows_layout.addStretch(1)
+        self.btn_save_group.setEnabled(False)
+
+    def _handle_discard_group(self):
+        if self.current_group:
+            self.open_group(self.current_group)
+
+    def _handle_save_group(self):
+        dirty_rows = [row for row in self.group_rows.values() if row.is_dirty()]
+
+        if not dirty_rows:
+            show_warning("No changes to save.")
+            return
+
+        saved, failed = 0, []
+        for row in dirty_rows:
+            value = row.current_value_str()
+            if value is None:
+                failed.append(f"{row.setting_key} (invalid value)")
+                continue
+
+            success, message = settings_engine.save_setting(
+                row.setting_key, value, self.login_result.username
+            )
+            if success:
+                row.mark_saved(value)
+                saved += 1
+            else:
+                failed.append(f"{row.setting_key} ({message})")
+
+        if saved and settings_engine.requires_restart(self.current_group):
+            self._pending_restart_groups.add(self.current_group)
+
+        if failed:
+            show_warning(f"Saved {saved} setting(s). Could not save: {', '.join(failed)}")
+        else:
+            show_success(f"Saved {saved} setting(s).")
+
+        self.btn_save_group.setEnabled(False)
+        if self.current_group in self.tiles:
+            try:
+                grouped = settings_engine.get_settings_grouped()
+                self.tiles[self.current_group].update_count(len(grouped.get(self.current_group, [])))
+            except Exception:
+                pass
+
+    def _handle_field_dirty_check(self):
+        any_dirty = any(row.is_dirty() for row in self.group_rows.values())
+        self.btn_save_group.setEnabled(any_dirty)
+
+    def _handle_apply(self, key: str, value: str):
+        success, message = settings_engine.apply_setting_temporarily(key, value)
+        if success:
+            self.statusBar().showMessage(f"Applied '{key}' (preview only, not saved). Use Save Changes to persist.", 4000)
+        else:
+            show_warning(message)
+        self._handle_field_dirty_check()
+
+    def _handle_reset(self, key: str):
+        if not confirm(f"Reset '{key}' to its default value?"):
+            return
+
+        success, message = settings_engine.reset_setting_to_default(key, self.login_result.username)
+        if not success:
+            show_error(message)
+            return
+
+        row = self.group_rows.get(key) or self.search_rows.get(key)
+        if row:
+            fresh = next(
+                (r for r in settings_engine.get_settings_grouped().get(row.setting_row.get("setting_group"), [])
+                 if r["setting_key"] == key),
+                None,
+            )
+            default_value = fresh["setting_value"] if fresh else row.setting_row.get("default_value", "")
+            row.mark_saved(default_value)
+
+        self.statusBar().showMessage(f"'{key}' reset to default.", 3000)
+        if self.current_group:
+            self.open_group(self.current_group)
+
+    def _handle_history(self, key: str):
+        history = settings_engine.get_setting_history(key)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"History - {key}")
+        dialog.resize(560, 380)
+        layout = QVBoxLayout(dialog)
+
+        list_widget = QListWidget()
+        if not history:
+            item = QListWidgetItem("No changes recorded for this setting yet.")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            list_widget.addItem(item)
+        else:
+            for entry in history:
+                changed_at = entry.get("changed_at")
+                when_text = changed_at.strftime("%Y-%m-%d %H:%M") if changed_at else ""
+                text = (
+                    f"{entry.get('old_value')}  \u2192  {entry.get('new_value')}\n"
+                    f"by {entry.get('changed_by') or 'unknown'} on {when_text}"
+                    + (f"  \u2014 {entry.get('reason')}" if entry.get("reason") else "")
+                )
+                list_widget.addItem(QListWidgetItem(text))
+
+        layout.addWidget(list_widget)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+
+        dialog.exec()
+
+    # -----------------------------------------------------
+    # SEARCH
+    # -----------------------------------------------------
+
+    def _handle_search_text_changed(self, text: str):
+        if text.strip():
+            self._search_timer.start(SEARCH_DEBOUNCE_MS)
+        else:
+            self.reload_landing()
+
+    def _run_search(self):
+        text = self.txt_search.text().strip()
+        if not text:
+            return
+
+        self.stack.setCurrentIndex(PAGE_SEARCH_RESULTS)
+        self.btn_back.show()
+
+        try:
+            results = settings_engine.search_settings(text)
+        except Exception as e:
+            logger.exception(f"SettingsScreen: search failed: {e}")
+            results = []
+
+        while self.search_rows_layout.count():
+            child = self.search_rows_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.search_rows.clear()
+
+        self.lbl_search_summary.setText(f"{len(results)} result(s) for \u201c{text}\u201d")
+
+        for row in results:
+            field_row = SettingsFieldRow(row, show_group_tag=True)
+            field_row.apply_requested.connect(self._handle_search_apply)
+            field_row.reset_requested.connect(self._handle_reset)
+            field_row.history_requested.connect(self._handle_history)
+            self.search_rows[row["setting_key"]] = field_row
+            self.search_rows_layout.addWidget(field_row)
+
+        self.search_rows_layout.addStretch(1)
+
+    def _handle_search_apply(self, key: str, value: str):
+        success, message = settings_engine.apply_setting_temporarily(key, value)
+        if success:
+            self.statusBar().showMessage(f"Applied '{key}' (preview only, not saved).", 4000)
+        else:
+            show_warning(message)
+
+    # -----------------------------------------------------
+    # EXPORT / IMPORT
+    # -----------------------------------------------------
+
+    def _handle_export(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export Settings", "settings_export.json", "JSON (*.json)")
+        if not path:
+            return
+
+        success, message = settings_engine.export_settings(path)
+        if success:
+            show_success(message)
+        else:
+            show_error(message)
+
+    def _handle_import(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "JSON (*.json)")
+        if not path:
+            return
+
+        if not confirm("Importing will overwrite existing setting values with those in the file. Continue?"):
+            return
+
+        success, message = settings_engine.import_settings(path, self.login_result.username)
+        if success:
+            show_success(message)
+            self.reload_landing()
+        else:
+            show_error(message)
+
+
+
+===== FILE: models\supplier_model.py =====
+
+"""
+models/supplier_model.py
+
+Supplier Model - Medical ERP V2
+
+Project rule: "No SQL outside the Model." Every statement that touches the
+`supplier` table lives in this file and nowhere else. This class has NO
+business rules, NO validation, and NO decisions -- it only executes SQL and
+returns data. All business logic belongs in engines/supplier_engine.py.
+
+Integration contract with the existing project (as previously established
+for the Login/Dashboard module):
+    - database/db.py exposes `get_connection()`, a context manager that
+      yields a psycopg2 connection (autocommit=False) from the shared
+      connection pool, e.g.:
+
+          from database.db import get_connection
+          with _get_connection() as conn:
+              with conn.cursor() as cur:
+                  cur.execute(...)
+
+      If your actual db.py exposes a differently-named helper, update the
+      single import line below (`from database.db import get_connection`)
+      -- nothing else in this module needs to change, since all access goes
+      through that one function.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+# NOTE: psycopg2 and database.db.get_connection are imported LAZILY inside
+# each method (rather than at module scope) on purpose. This keeps
+# `import models.supplier_model` safe to do in unit tests for the Engine/
+# Validator layers on a machine that does not have psycopg2 installed or a
+# database/db.py present yet (e.g. this sandbox). In the real project, where
+# both are always available, this has no behavioural difference -- Python
+# caches the import after the first call.
+
+
+def _get_connection():
+    """Lazy import wrapper -- see module docstring for why."""
+    from database.db import get_connection
+    return get_connection()
+
+
+def _dict_cursor_factory():
+    """Lazy import wrapper -- see module docstring for why."""
+    import psycopg2.extras
+    return psycopg2.extras.RealDictCursor
+
+
+@dataclass
+class SupplierSearchFilters:
+    """Filter parameters for supplier search/listing."""
+    search_text: Optional[str] = None      # matches code, name, mobile, PAN/VAT
+    status: Optional[str] = None           # 'Active' | 'Inactive' | None (=both)
+    include_deleted: bool = False
+    page: int = 1
+    page_size: int = 50
+
+
+class SupplierModel:
+    """Data-access layer for the `supplier` table. SQL only, no business logic."""
+
+    # ------------------------------------------------------------------ #
+    # CREATE
+    # ------------------------------------------------------------------ #
+    def insert(self, data: dict[str, Any]) -> int:
+        """
+        Insert a new supplier row. `data` must already contain every column
+        this INSERT expects (the Engine is responsible for defaults,
+        generated supplier_code, created_by/created_at_ad/created_at_bs).
+        Returns the new supplier_id.
+        """
+        sql = """
+            INSERT INTO supplier (
+                supplier_code, supplier_name, contact_person, mobile_no,
+                phone_no, email, address, city, pan_vat_no,
+                opening_balance, balance_type, credit_limit, credit_days,
+                status, remarks, company_id,
+                created_by, created_at_ad, created_at_bs
+            ) VALUES (
+                %(supplier_code)s, %(supplier_name)s, %(contact_person)s, %(mobile_no)s,
+                %(phone_no)s, %(email)s, %(address)s, %(city)s, %(pan_vat_no)s,
+                %(opening_balance)s, %(balance_type)s, %(credit_limit)s, %(credit_days)s,
+                %(status)s, %(remarks)s, %(company_id)s,
+                %(created_by)s, %(created_at_ad)s, %(created_at_bs)s
+            )
+            RETURNING supplier_id;
+        """
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, data)
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                logger.info("Supplier inserted: id=%s code=%s", new_id, data.get("supplier_code"))
+                return new_id
+
+    # ------------------------------------------------------------------ #
+    # UPDATE
+    # ------------------------------------------------------------------ #
+    def update(self, supplier_id: int, data: dict[str, Any]) -> bool:
+        """
+        Update an existing, non-deleted supplier. `data` must contain
+        updated_by/updated_at_ad/updated_at_bs plus every editable field.
+        Returns True if a row was updated.
+        """
+        sql = """
+            UPDATE supplier
+            SET supplier_name   = %(supplier_name)s,
+                contact_person  = %(contact_person)s,
+                mobile_no       = %(mobile_no)s,
+                phone_no        = %(phone_no)s,
+                email           = %(email)s,
+                address         = %(address)s,
+                city            = %(city)s,
+                pan_vat_no      = %(pan_vat_no)s,
+                opening_balance = %(opening_balance)s,
+                balance_type    = %(balance_type)s,
+                credit_limit    = %(credit_limit)s,
+                credit_days     = %(credit_days)s,
+                status          = %(status)s,
+                remarks         = %(remarks)s,
+                company_id      = %(company_id)s,
+                updated_by      = %(updated_by)s,
+                updated_at_ad   = %(updated_at_ad)s,
+                updated_at_bs   = %(updated_at_bs)s
+            WHERE supplier_id = %(supplier_id)s
+              AND is_deleted = FALSE;
+        """
+        params = dict(data)
+        params["supplier_id"] = supplier_id
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                updated = cur.rowcount > 0
+                conn.commit()
+                if updated:
+                    logger.info("Supplier updated: id=%s", supplier_id)
+                return updated
+
+    # ------------------------------------------------------------------ #
+    # READ
+    # ------------------------------------------------------------------ #
+    def get_by_id(self, supplier_id: int, include_deleted: bool = False) -> Optional[dict]:
+        sql = "SELECT * FROM supplier WHERE supplier_id = %(supplier_id)s"
+        if not include_deleted:
+            sql += " AND is_deleted = FALSE"
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"supplier_id": supplier_id})
+                row = cur.fetchone()
+                return dict(row) if row else None
+
+    def get_by_name(self, supplier_name: str, include_deleted: bool = False) -> Optional[dict]:
+        sql = "SELECT * FROM supplier WHERE LOWER(supplier_name) = LOWER(%(name)s)"
+        if not include_deleted:
+            sql += " AND is_deleted = FALSE"
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"name": supplier_name})
+                row = cur.fetchone()
+                return dict(row) if row else None
+
+    def get_by_code(self, supplier_code: str, include_deleted: bool = False) -> Optional[dict]:
+        sql = "SELECT * FROM supplier WHERE LOWER(supplier_code) = LOWER(%(code)s)"
+        if not include_deleted:
+            sql += " AND is_deleted = FALSE"
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"code": supplier_code})
+                row = cur.fetchone()
+                return dict(row) if row else None
+
+    def exists_by_name(self, supplier_name: str, exclude_id: Optional[int] = None) -> bool:
+        sql = "SELECT 1 FROM supplier WHERE LOWER(supplier_name) = LOWER(%(name)s) AND is_deleted = FALSE"
+        params: dict[str, Any] = {"name": supplier_name}
+        if exclude_id is not None:
+            sql += " AND supplier_id != %(exclude_id)s"
+            params["exclude_id"] = exclude_id
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone() is not None
+
+    def exists_by_code(self, supplier_code: str, exclude_id: Optional[int] = None) -> bool:
+        sql = "SELECT 1 FROM supplier WHERE LOWER(supplier_code) = LOWER(%(code)s) AND is_deleted = FALSE"
+        params: dict[str, Any] = {"code": supplier_code}
+        if exclude_id is not None:
+            sql += " AND supplier_id != %(exclude_id)s"
+            params["exclude_id"] = exclude_id
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone() is not None
+
+    def get_last_code_sequence(self, prefix: str) -> int:
+        """
+        Returns the highest numeric suffix currently used among ACTIVE-or-
+        DELETED supplier codes starting with `prefix` (codes are never
+        reused across the table's full history, even after a soft delete,
+        so the sequence never collides). Returns 0 if none exist.
+        """
+        sql = """
+            SELECT COALESCE(MAX(
+                CAST(REGEXP_REPLACE(supplier_code, %(prefix_pattern)s, '') AS INTEGER)
+            ), 0) AS max_seq
+            FROM supplier
+            WHERE supplier_code ~ %(pattern)s;
+        """
+        params = {
+            "prefix_pattern": f"^{prefix}",
+            "pattern": f"^{prefix}[0-9]+$",
+        }
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone()["max_seq"]
+
+    def search(self, filters: SupplierSearchFilters) -> tuple[list[dict], int]:
+        """Returns (rows, total_count) honoring search text, status filter and paging."""
+        where = ["1=1"]
+        params: dict[str, Any] = {}
+
+        if not filters.include_deleted:
+            where.append("is_deleted = FALSE")
+
+        if filters.status:
+            where.append("status = %(status)s")
+            params["status"] = filters.status
+
+        if filters.search_text:
+            where.append("""(
+                supplier_code ILIKE %(search)s OR
+                supplier_name ILIKE %(search)s OR
+                mobile_no ILIKE %(search)s OR
+                pan_vat_no ILIKE %(search)s
+            )""")
+            params["search"] = f"%{filters.search_text}%"
+
+        where_clause = " AND ".join(where)
+        offset = max(filters.page - 1, 0) * filters.page_size
+
+        count_sql = f"SELECT COUNT(*) FROM supplier WHERE {where_clause};"
+        data_sql = f"""
+            SELECT * FROM supplier
+            WHERE {where_clause}
+            ORDER BY supplier_name ASC
+            LIMIT %(limit)s OFFSET %(offset)s;
+        """
+
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(count_sql, params)
+
+                row = cur.fetchone()
+
+                if row is None:
+                    total_count = 0
+                else:
+                    total_count = row["count"]
+
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                data_params = dict(params)
+                data_params["limit"] = filters.page_size
+                data_params["offset"] = offset
+                cur.execute(data_sql, data_params)
+                rows = [dict(r) for r in cur.fetchall()]
+
+        return rows, total_count
+
+    # ------------------------------------------------------------------ #
+    # SOFT DELETE / RESTORE
+    # ------------------------------------------------------------------ #
+    def soft_delete(self, supplier_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> bool:
+        sql = """
+            UPDATE supplier
+            SET is_deleted = TRUE,
+                deleted_by = %(deleted_by)s,
+                deleted_at_ad = %(deleted_at_ad)s,
+                deleted_at_bs = %(deleted_at_bs)s
+            WHERE supplier_id = %(supplier_id)s
+              AND is_deleted = FALSE;
+        """
+        params = {
+            "supplier_id": supplier_id,
+            "deleted_by": deleted_by,
+            "deleted_at_ad": deleted_at_ad,
+            "deleted_at_bs": deleted_at_bs,
+        }
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                ok = cur.rowcount > 0
+                conn.commit()
+                if ok:
+                    logger.info("Supplier soft-deleted: id=%s by=%s", supplier_id, deleted_by)
+                return ok
+
+    def restore(self, supplier_id: int, updated_by: int, updated_at_ad, updated_at_bs: str) -> bool:
+        sql = """
+            UPDATE supplier
+            SET is_deleted = FALSE,
+                deleted_by = NULL,
+                deleted_at_ad = NULL,
+                deleted_at_bs = NULL,
+                updated_by = %(updated_by)s,
+                updated_at_ad = %(updated_at_ad)s,
+                updated_at_bs = %(updated_at_bs)s
+            WHERE supplier_id = %(supplier_id)s
+              AND is_deleted = TRUE;
+        """
+        params = {
+            "supplier_id": supplier_id,
+            "updated_by": updated_by,
+            "updated_at_ad": updated_at_ad,
+            "updated_at_bs": updated_at_bs,
+        }
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                ok = cur.rowcount > 0
+                conn.commit()
+                if ok:
+                    logger.info("Supplier restored: id=%s by=%s", supplier_id, updated_by)
+                return ok
+
+
+
+===== FILE: models\user_model.py =====
+
+"""
+=========================================================
+Medical ERP V2
+User Model
+---------------------------------------------------------
+Purpose:
+    All database operations for the `users` table.
+    Business rules around login attempts / locking live
+    here (Model layer), not in the Screen.
+=========================================================
+"""
+
+from datetime import datetime, timedelta
+
+from database.db import get_connection
+from config.settings import MAX_FAILED_LOGIN_ATTEMPTS, ACCOUNT_AUTO_UNLOCK_MINUTES, STATUS_LOCKED, STATUS_ACTIVE
+from engines.password_manager import hash_password
+
+
+def get_user_by_username(username: str) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE username = %s", (username,))
+            return cur.fetchone()
+
+
+def create_user(username: str, plain_password: str, fullname: str, roleid: int, companyid: str, created_by: str) -> tuple[bool, str]:
+    username = username.strip()
+
+    if not username:
+        return False, "Username is required."
+
+    if get_user_by_username(username):
+        return False, "Username already exists."
+
+    password_hash, password_salt = hash_password(plain_password)
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (
+                    username, passwordhash, passwordsalt, fullname,
+                    roleid, companyid, status, passwordchangedat,
+                    createddate, createdby
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING userid
+                """,
+                (
+                    username, password_hash, password_salt, fullname,
+                    roleid, companyid, STATUS_ACTIVE, datetime.now(),
+                    datetime.now(), created_by,
+                )
+            )
+            new_id = cur.fetchone()["userid"]
+        conn.commit()
+
+    return True, f"User created (ID: {new_id})."
+
+
+def register_failed_attempt(username: str) -> None:
+    """
+    Increments failed-attempt counter. If it reaches the
+    configured maximum, locks the account for the configured
+    auto-unlock duration.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT failedattempts FROM users WHERE username = %s",
+                (username,)
+            )
+            row = cur.fetchone()
+
+            if row is None:
+                return
+
+            new_count = row["failedattempts"] + 1
+
+            if new_count >= MAX_FAILED_LOGIN_ATTEMPTS:
+                locked_until = datetime.now() + timedelta(minutes=ACCOUNT_AUTO_UNLOCK_MINUTES)
+                cur.execute(
+                    "UPDATE users SET failedattempts = %s, status = %s, lockeduntil = %s WHERE username = %s",
+                    (new_count, STATUS_LOCKED, locked_until, username)
+                )
+            else:
+                cur.execute(
+                    "UPDATE users SET failedattempts = %s WHERE username = %s",
+                    (new_count, username)
+                )
+
+        conn.commit()
+
+
+def reset_failed_attempts(username: str) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET failedattempts = 0 WHERE username = %s",
+                (username,)
+            )
+        conn.commit()
+
+
+def auto_unlock_if_due(user: dict) -> dict:
+    """
+    If the user's lock period has passed, unlocks them and
+    returns the updated user dict. Otherwise returns the
+    user dict unchanged.
+    """
+    if user["status"] != STATUS_LOCKED:
+        return user
+
+    if user["lockeduntil"] and datetime.now() >= user["lockeduntil"]:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET status = %s, failedattempts = 0, lockeduntil = NULL WHERE userid = %s",
+                    (STATUS_ACTIVE, user["userid"])
+                )
+            conn.commit()
+
+        user = dict(user)
+        user["status"] = STATUS_ACTIVE
+        user["failedattempts"] = 0
+        user["lockeduntil"] = None
+
+    return user
+
+
+def update_password(userid: int, plain_password: str) -> tuple[bool, str]:
+    password_hash, password_salt = hash_password(plain_password)
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET passwordhash = %s, passwordsalt = %s, passwordchangedat = %s, mustchangepassword = FALSE
+                WHERE userid = %s
+                """,
+                (password_hash, password_salt, datetime.now(), userid)
+            )
+        conn.commit()
+
+    return True, "Password updated successfully."
+
+
+def count_active_users() -> int:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS total FROM users WHERE status = %s", (STATUS_ACTIVE,))
+            return cur.fetchone()["total"]
+
+
+
+===== FILE: models\__init__.py =====
+

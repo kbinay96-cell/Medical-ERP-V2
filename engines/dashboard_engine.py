@@ -1,3 +1,4 @@
+
 """
 =========================================================
 Medical ERP V2
@@ -48,7 +49,7 @@ SIDEBAR_MODULES = {
     "Inventory": ["Stock Ledger", "Stock Master"],
     "Accounts": ["Payment", "Receipt"],
     "Reports": ["Reports"],
-    "Settings": ["Settings"],
+    "Settings": ["Settings", "User Master"],
 }
 
 
@@ -113,3 +114,6 @@ def _build_alerts(data: DashboardData) -> list[str]:
         logger.exception(f"_build_alerts: subscription check failed: {e}")
 
     return alerts
+
+
+

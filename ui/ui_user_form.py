@@ -8,7 +8,7 @@
 ################################################################################
 
 from PySide6.QtCore import (QCoreApplication, QMetaObject, QRect, QSize, Qt)
-from PySide6.QtGui import (QIcon)
+from PySide6.QtGui import (QIcon, QFont)
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFrame,
     QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QSizePolicy, QSpacerItem, QVBoxLayout, QWidget)
@@ -32,7 +32,7 @@ class Ui_UserFormView(object):
         font = self.lbl_form_title.font()
         font.setPointSize(14)
         font.setBold(True)
-        font.setWeight(75)
+        font.setWeight(QFont.Weight.Bold)
         self.lbl_form_title.setFont(font)
         self.verticalLayout_root.addWidget(self.lbl_form_title)
 

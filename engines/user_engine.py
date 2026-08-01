@@ -1,187 +1,248 @@
 """
-User Engine
-Layer: Engine (Business Logic)
-Responsibility: Orchestrates Model + Validator + PasswordSecurity + AuditLog.
-This is the ONLY layer Screens/Controllers are allowed to call for User Master.
+engines/user_engine.py
+
+User Master business logic - Medical ERP V2.
+Mirrors engines/company_engine.py's shape exactly (DTO in/out, shared
+exceptions from engines/exceptions.py, no SQL, no UI). This is the ONLY
+layer Screens are allowed to call for User Master.
+
+NOTE: This module was rewritten to align with the REAL, live `users`
+table (database/schema_auth.sql), which the Login/Session/Audit/
+Dashboard modules already depend on. It intentionally does NOT use
+security/password_security.py (Argon2id) - that produces a hash format
+the Login screen's verify_password() cannot read. User Master uses the
+same engines/password_manager.py (PBKDF2) the Login screen already
+verifies against, so a user created here can log in immediately.
 """
 
-from typing import Optional, List
-from models.user_model import UserModel, UserRecord
-from validators.user_validator import UserValidator, ValidationError
-from security.password_security import PasswordSecurity, ALGO_NAME
-from core.date_engine import DateEngine  # existing frozen engine
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+from config.settings import STATUS_ACTIVE, STATUS_DISABLED, STATUS_DELETED
+from engines.exceptions import RecordNotFoundError, ValidationError
+from engines.password_manager import verify_password
+from models import user_model
+from models.user_model import UserModelError
+from validators.user_validator import validate_user_data, validate_password_change
+
+
+@dataclass
+class UserDTO:
+    user_id: int
+    username: str
+    fullname: str
+    email: Optional[str]
+    phone: Optional[str]
+    role_id: int
+    company_id: Optional[str]
+    status: str
+    must_change_password: bool
+    failed_attempts: int
+    created_date: object
+    created_by: Optional[str]
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.status == STATUS_DELETED
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == STATUS_ACTIVE
+
+
+def _row_to_dto(row: dict) -> UserDTO:
+    return UserDTO(
+        user_id=row["userid"],
+        username=row["username"],
+        fullname=row["fullname"],
+        email=row.get("email"),
+        phone=row.get("phone"),
+        role_id=row["roleid"],
+        company_id=row.get("companyid"),
+        status=row["status"],
+        must_change_password=bool(row.get("mustchangepassword")),
+        failed_attempts=row.get("failedattempts") or 0,
+        created_date=row.get("createddate"),
+        created_by=row.get("createdby"),
+    )
 
 
 class UserEngine:
-
-    def __init__(self, user_model: UserModel, validator: UserValidator):
-        self._model = user_model
-        self._validator = validator
+    """Business logic for the User Master. Screens call ONLY this class."""
 
     # ---------------- CREATE ----------------
 
-    def create_user(self, data: dict, created_by: int) -> int:
-        self._validator.validate_create(data)
+    def create_user(self, data: dict, current_user_id) -> UserDTO:
+        errors = validate_user_data(data, is_update=False)
+        if errors:
+            raise ValidationError(errors)
 
-        password_hash = PasswordSecurity.hash_password(data["password"])
-        bs_today = DateEngine.today_bs()
-
-        record = UserRecord(
-            user_id=None,
-            username=data["username"].strip(),
-            display_name=data["display_name"].strip(),
-            email=data.get("email"),
-            phone=data.get("phone"),
-            password_hash=password_hash,
-            password_algo=ALGO_NAME,
-            must_change_password=data.get("must_change_password", True),
-            role_id=data.get("role_id"),
-            company_id=data.get("company_id"),
-            is_active=data.get("is_active", True),
-            is_deleted=False,
-            created_on_bs=bs_today,
-            created_by=created_by,
-            updated_on_bs=None,
-            updated_by=None,
-        )
-
-        user_id = self._model.insert(record)
-        self._model.insert_password_history(user_id, password_hash, ALGO_NAME, bs_today)
-
-        self._model.insert_audit(
-            user_id=user_id, action="CREATE", performed_by=created_by,
-            old_value=None, new_value={"username": record.username, "role_id": record.role_id},
-            remarks="User created", action_on_bs=bs_today
-        )
-        return user_id
+        try:
+            userid = user_model.insert_user(data, created_by=str(current_user_id))
+            user_model.insert_user_audit(
+                userid=userid, action="CREATE", performed_by=str(current_user_id),
+                old_value=None, new_value={"username": data["username"], "role_id": data.get("role_id")},
+                remarks="User created",
+            )
+            row = user_model.get_user_by_id(userid)
+            return _row_to_dto(row)
+        except UserModelError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     # ---------------- UPDATE ----------------
 
-    def update_user(self, user_id: int, data: dict, updated_by: int) -> None:
-        self._validator.validate_update(user_id, data)
+    def update_user(self, user_id: int, data: dict, current_user_id) -> UserDTO:
+        existing = user_model.get_user_by_id(user_id)
+        if not existing or existing["status"] == STATUS_DELETED:
+            raise RecordNotFoundError(f"User '{user_id}' not found.")
 
-        existing = self._model.get_by_id(user_id)
-        if not existing or existing.is_deleted:
-            raise ValidationError(["User not found or has been deleted."])
+        errors = validate_user_data(data, is_update=True, exclude_userid=user_id)
+        if errors:
+            raise ValidationError(errors)
 
-        bs_today = DateEngine.today_bs()
-        allowed_fields = {"username", "display_name", "email", "phone", "role_id", "company_id"}
-        update_fields = {k: v for k, v in data.items() if k in allowed_fields}
-
-        self._model.update(user_id, update_fields, updated_by, bs_today)
-
-        self._model.insert_audit(
-            user_id=user_id, action="UPDATE", performed_by=updated_by,
-            old_value=self._snapshot(existing), new_value=update_fields,
-            remarks="User updated", action_on_bs=bs_today
-        )
+        try:
+            user_model.update_user(user_id, data, modified_by=str(current_user_id))
+            user_model.insert_user_audit(
+                userid=user_id, action="UPDATE", performed_by=str(current_user_id),
+                old_value=_snapshot(existing), new_value=data, remarks="User updated",
+            )
+            row = user_model.get_user_by_id(user_id)
+            return _row_to_dto(row)
+        except UserModelError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     # ---------------- STATUS ----------------
 
-    def set_active_status(self, user_id: int, is_active: bool, changed_by: int) -> None:
-        bs_today = DateEngine.today_bs()
-        self._model.update(user_id, {"is_active": is_active}, changed_by, bs_today)
-        self._model.insert_audit(
-            user_id=user_id,
-            action="ACTIVATE" if is_active else "DEACTIVATE",
-            performed_by=changed_by, old_value=None, new_value={"is_active": is_active},
-            remarks=None, action_on_bs=bs_today
-        )
+    def set_active_status(self, user_id: int, is_active: bool, current_user_id) -> UserDTO:
+        existing = user_model.get_user_by_id(user_id)
+        if not existing or existing["status"] == STATUS_DELETED:
+            raise RecordNotFoundError(f"User '{user_id}' not found.")
+
+        new_status = STATUS_ACTIVE if is_active else STATUS_DISABLED
+        try:
+            user_model.set_user_status(user_id, new_status, modified_by=str(current_user_id))
+            user_model.insert_user_audit(
+                userid=user_id, action="ACTIVATE" if is_active else "DEACTIVATE",
+                performed_by=str(current_user_id), old_value={"status": existing["status"]},
+                new_value={"status": new_status}, remarks=None,
+            )
+            row = user_model.get_user_by_id(user_id)
+            return _row_to_dto(row)
+        except UserModelError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     # ---------------- SOFT DELETE / RESTORE ----------------
 
-    def delete_user(self, user_id: int, deleted_by: int, remarks: Optional[str] = None) -> None:
-        bs_today = DateEngine.today_bs()
-        self._model.soft_delete(user_id, deleted_by, bs_today)
-        self._model.insert_audit(
-            user_id=user_id, action="DELETE", performed_by=deleted_by,
-            old_value=None, new_value=None, remarks=remarks, action_on_bs=bs_today
-        )
+    def delete_user(self, user_id: int, current_user_id, remarks: Optional[str] = None) -> None:
+        existing = user_model.get_user_by_id(user_id)
+        if not existing or existing["status"] == STATUS_DELETED:
+            raise RecordNotFoundError(f"User '{user_id}' not found.")
+        try:
+            user_model.soft_delete_user(user_id, deleted_by=str(current_user_id))
+            user_model.insert_user_audit(
+                userid=user_id, action="DELETE", performed_by=str(current_user_id),
+                old_value=None, new_value=None, remarks=remarks,
+            )
+        except UserModelError as exc:
+            raise RuntimeError(str(exc)) from exc
 
-    def restore_user(self, user_id: int, restored_by: int) -> None:
-        bs_today = DateEngine.today_bs()
-        self._model.restore(user_id, restored_by, bs_today)
-        self._model.insert_audit(
-            user_id=user_id, action="RESTORE", performed_by=restored_by,
-            old_value=None, new_value=None, remarks="User restored", action_on_bs=bs_today
-        )
+    def restore_user(self, user_id: int, current_user_id) -> UserDTO:
+        existing = user_model.get_user_by_id(user_id)
+        if not existing or existing["status"] != STATUS_DELETED:
+            raise RecordNotFoundError(f"User '{user_id}' not found or not deleted.")
+        try:
+            user_model.restore_user(user_id, restored_by=str(current_user_id))
+            user_model.insert_user_audit(
+                userid=user_id, action="RESTORE", performed_by=str(current_user_id),
+                old_value=None, new_value=None, remarks="User restored",
+            )
+            row = user_model.get_user_by_id(user_id)
+            return _row_to_dto(row)
+        except UserModelError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     # ---------------- PASSWORD MANAGEMENT ----------------
 
     def change_password(self, user_id: int, old_password: str, new_password: str) -> None:
-        user = self._model.get_by_id(user_id)
-        if not user or user.is_deleted:
-            raise ValidationError(["User not found."])
+        """Self-service: user changes their own password, knowing the old one."""
+        user = user_model.get_user_by_id(user_id)
+        if not user or user["status"] == STATUS_DELETED:
+            raise RecordNotFoundError("User not found.")
 
-        if not PasswordSecurity.verify_password(old_password, user.password_hash):
+        full_user = user_model.get_user_by_username(user["username"])
+        if not verify_password(old_password, full_user["passwordhash"], full_user["passwordsalt"]):
             raise ValidationError(["Current password is incorrect."])
 
-        history = self._model.get_password_history(user_id)
-        history_hashes = [h["password_hash"] for h in history]
+        history = user_model.get_password_history(user_id)
+        errors = validate_password_change(new_password, history, verify_password)
+        if errors:
+            raise ValidationError(errors)
 
-        self._validator.validate_password_change(
-            new_password, history_hashes, PasswordSecurity.verify_password
+        new_hash, new_salt = user_model.update_user_password(user_id, new_password, must_change=False)
+        user_model.insert_password_history(user_id, new_hash, new_salt)
+        user_model.insert_user_audit(
+            userid=user_id, action="PASSWORD_CHANGE", performed_by=str(user_id),
+            old_value=None, new_value=None, remarks=None,
         )
 
-        self._apply_new_password(user_id, new_password, must_change=False, action="PASSWORD_CHANGE",
-                                  performed_by=user_id)
+    def reset_password(self, user_id: int, new_password: str, reset_by) -> None:
+        """Admin-initiated reset - forces user to change password on next login."""
+        user = user_model.get_user_by_id(user_id)
+        if not user or user["status"] == STATUS_DELETED:
+            raise RecordNotFoundError("User not found.")
 
-    def reset_password(self, user_id: int, new_password: str, reset_by: int) -> None:
-        """Admin-initiated reset — forces user to change password on next login."""
-        history = self._model.get_password_history(user_id)
-        history_hashes = [h["password_hash"] for h in history]
+        history = user_model.get_password_history(user_id)
+        errors = validate_password_change(new_password, history, verify_password)
+        if errors:
+            raise ValidationError(errors)
 
-        self._validator.validate_password_change(
-            new_password, history_hashes, PasswordSecurity.verify_password
+        new_hash, new_salt = user_model.update_user_password(user_id, new_password, must_change=True)
+        user_model.insert_password_history(user_id, new_hash, new_salt)
+        user_model.insert_user_audit(
+            userid=user_id, action="PASSWORD_RESET", performed_by=str(reset_by),
+            old_value=None, new_value=None, remarks=None,
         )
-
-        self._apply_new_password(user_id, new_password, must_change=True, action="PASSWORD_RESET",
-                                  performed_by=reset_by)
-
-    def _apply_new_password(self, user_id: int, new_password: str, must_change: bool,
-                             action: str, performed_by: int) -> None:
-        bs_today = DateEngine.today_bs()
-        new_hash = PasswordSecurity.hash_password(new_password)
-
-        self._model.update_password(user_id, new_hash, ALGO_NAME, must_change)
-        self._model.insert_password_history(user_id, new_hash, ALGO_NAME, bs_today)
-        self._model.insert_audit(
-            user_id=user_id, action=action, performed_by=performed_by,
-            old_value=None, new_value=None, remarks=None, action_on_bs=bs_today
-        )
-
-    # ---------------- AUTHENTICATION SUPPORT ----------------
-
-    def authenticate(self, username: str, password: str) -> Optional[UserRecord]:
-        """
-        Single source of truth for username/password verification.
-        Authentication module should call this rather than re-implementing
-        password checks against the users table.
-        Returns the UserRecord on success, or None on failure.
-        Does not raise on bad credentials (auth failure is not a validation error).
-        """
-        user = self._model.get_by_username(username)
-        if not user or user.is_deleted or not user.is_active:
-            return None
-        if not PasswordSecurity.verify_password(password, user.password_hash):
-            return None
-        return user
 
     # ---------------- SEARCH / RETRIEVAL ----------------
 
-    def get_user(self, user_id: int) -> Optional[UserRecord]:
-        return self._model.get_by_id(user_id)
+    def get_user(self, user_id: int) -> UserDTO:
+        row = user_model.get_user_by_id(user_id)
+        if not row:
+            raise RecordNotFoundError(f"User '{user_id}' not found.")
+        return _row_to_dto(row)
 
-    def search_users(self, filters: dict, page: int = 1, page_size: int = 50) -> List[UserRecord]:
-        offset = (page - 1) * page_size
-        return self._model.search(filters, limit=page_size, offset=offset)
+    def search_users(
+        self,
+        search_text: Optional[str] = None,
+        status: Optional[str] = None,
+        include_deleted: bool = False,
+        page: int = 1,
+        page_size: int = 500,
+    ) -> Tuple[List[UserDTO], int]:
+        status_filter = status if status else "all"
+        try:
+            rows = user_model.list_users(
+                search_term=search_text, status_filter=status_filter, include_deleted=include_deleted,
+            )
+        except UserModelError as exc:
+            raise RuntimeError(str(exc)) from exc
 
-    @staticmethod
-    def _snapshot(record: UserRecord) -> dict:
-        return {
-            "username": record.username,
-            "display_name": record.display_name,
-            "email": record.email,
-            "role_id": record.role_id,
-            "company_id": record.company_id,
-        }
+        total = len(rows)
+        start = (page - 1) * page_size
+        page_rows = rows[start:start + page_size]
+        return [_row_to_dto(r) for r in page_rows], total
+
+
+def _snapshot(row: dict) -> dict:
+    return {
+        "username": row.get("username"),
+        "fullname": row.get("fullname"),
+        "email": row.get("email"),
+        "roleid": row.get("roleid"),
+        "companyid": row.get("companyid"),
+    }
+
+
+__all__ = ["UserEngine", "UserDTO"]

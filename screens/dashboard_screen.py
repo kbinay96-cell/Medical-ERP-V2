@@ -1,3 +1,4 @@
+
 """
 =========================================================
 Medical ERP V2
@@ -26,6 +27,8 @@ from screens.supplier_form_screen import SupplierFormScreen
 from screens.company_list_screen import CompanyListScreen
 
 from screens.settings_screen import SettingsScreen
+
+from screens.user_list_screen import UserListScreen
 
 logger = get_logger()
 
@@ -246,6 +249,11 @@ class DashboardScreen(QMainWindow):
             self.company_list.setWindowFlag(Qt.Window)
             self.company_list.show()
 
+        elif module_name == "user master":
+            self.user_list = UserListScreen(self)
+            self.user_list.setWindowFlag(Qt.Window)
+            self.user_list.show()
+
         elif module_name == "settings":
             self.settings_screen = SettingsScreen(
                 current_username=self.login_result.username or "system",
@@ -265,3 +273,6 @@ class DashboardScreen(QMainWindow):
         logout(self.login_result.userid, self.login_result.username, self.login_result.session_id)
         show_info("You have been logged out.")
         self.close()
+
+
+

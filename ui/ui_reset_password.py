@@ -8,7 +8,7 @@
 ################################################################################
 
 from PySide6.QtCore import (QCoreApplication, QMetaObject, QSize, Qt)
-from PySide6.QtGui import (QIcon)
+from PySide6.QtGui import (QIcon, QFont)
 from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QSpacerItem,
     QVBoxLayout)
@@ -32,7 +32,7 @@ class Ui_ResetPasswordDialog(object):
         font = self.lbl_form_title.font()
         font.setPointSize(13)
         font.setBold(True)
-        font.setWeight(75)
+        font.setWeight(QFont.Weight.Bold)
         self.lbl_form_title.setFont(font)
         self.verticalLayout_root.addWidget(self.lbl_form_title)
 
