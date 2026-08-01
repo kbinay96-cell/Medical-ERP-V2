@@ -29,6 +29,7 @@ from screens.company_list_screen import CompanyListScreen
 from screens.settings_screen import SettingsScreen
 
 from screens.user_list_screen import UserListScreen
+from screens.customer_list_screen import CustomerListScreen
 
 logger = get_logger()
 
@@ -248,6 +249,11 @@ class DashboardScreen(QMainWindow):
             self.company_list = CompanyListScreen(self)
             self.company_list.setWindowFlag(Qt.Window)
             self.company_list.show()
+
+        elif module_name == "customer":
+            self.customer_list = CustomerListScreen(self.login_result, parent=self)
+            self.customer_list.setWindowFlag(Qt.Window)
+            self.customer_list.show()
 
         elif module_name == "user master":
             self.user_list = UserListScreen(self)
