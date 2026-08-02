@@ -72,6 +72,16 @@ def create_customer(data: dict, created_by: str) -> tuple[bool, str, int | None]
     data = dict(data)  # never mutate the caller's dict
     photo_source = data.pop("_photo_source_path", None)
 
+    area_name = data.pop("area_name", None)
+    route_name = data.pop("route_name", None)
+
+    try:
+        data["area_id"] = _resolve_area_id(area_name)
+        data["route_id"] = _resolve_route_id(route_name)
+    except Exception as e:
+        logger.exception(f"create_customer: database error resolving area/route: {e}")
+        return False, "Could not save Area/Route - please try again.", None
+
     try:
         prefix = settings_engine.get_setting("customer.code_prefix", default=DEFAULT_CODE_PREFIX)
     except Exception as e:
@@ -133,6 +143,15 @@ def update_customer(customer_id: int, data: dict, updated_by: str) -> tuple[bool
     data = dict(data)
     photo_source = data.pop("_photo_source_path", None)
     remove_photo = data.pop("_remove_photo", False)
+    area_name = data.pop("area_name", None)
+    route_name = data.pop("route_name", None)
+
+    try:
+        data["area_id"] = _resolve_area_id(area_name)
+        data["route_id"] = _resolve_route_id(route_name)
+    except Exception as e:
+        logger.exception(f"update_customer: database error resolving area/route: {e}")
+        return False, "Could not save Area/Route - please try again."
 
     try:
         existing = customer_model.get_customer_by_id(customer_id)
@@ -205,15 +224,17 @@ def search_customers(
     area_id: int | None = None,
     route_id: int | None = None,
     price_level_id: int | None = None,
+    include_deleted: bool = False,
 ) -> list[dict]:
     """
     Backs the Customer List screen's search box + filters
-    (Active/Inactive, Area, Route, Price Level - per spec).
+    (Active/Inactive, Area, Route, Price Level, Show Deleted).
     """
     try:
         return customer_model.list_customers(
             search_text=search_text, is_active=is_active,
             area_id=area_id, route_id=route_id, price_level_id=price_level_id,
+            include_deleted=include_deleted,
         )
     except Exception as e:
         logger.exception(f"search_customers: database error: {e}")
@@ -269,6 +290,71 @@ def set_active_status(customer_id: int, is_active: bool, updated_by: str) -> tup
     logger.info(f"Customer {customer_id} {status_text} by {updated_by}.")
     return True, f"Customer {status_text}."
 
+def restore_customer(customer_id: int, updated_by: str) -> tuple[bool, str]:
+    """Reverses a soft delete, per spec (mirrors supplier_engine.restore_supplier)."""
+    try:
+        existing = customer_model.get_customer_by_id(customer_id)
+    except Exception as e:
+        logger.exception(f"restore_customer: database error loading customer {customer_id}: {e}")
+        return False, "Could not load customer - please try again."
+
+    if existing is None:
+        return False, "Customer not found."
+
+    if not existing.get("is_deleted"):
+        return False, "Customer is not deleted."
+
+    updated_at_bs = _today_bs()
+
+    try:
+        customer_model.restore_customer(customer_id, updated_by, updated_at_bs)
+    except Exception as e:
+        logger.exception(f"restore_customer: database error restoring customer {customer_id}: {e}")
+        return False, "Could not restore customer - please try again."
+
+    logger.info(f"Customer '{existing['customer_code']}' restored by {updated_by}.")
+    return True, f"Customer '{existing['customer_code']}' restored."
+
+def _resolve_area_id(area_name: str | None) -> int | None:
+    """Find-or-create an Area by name (case-insensitive), so the Customer
+    Form's editable Area dropdown can grow the areas table on the fly,
+    without ever creating a duplicate row."""
+    name = (area_name or "").strip()
+    if not name:
+        return None
+
+    existing = customer_model.get_area_by_name(name)
+    if existing:
+        return existing["area_id"]
+
+    try:
+        return customer_model.create_area(name)
+    except Exception as e:
+        logger.warning(f"_resolve_area_id: create_area('{name}') failed, re-checking for a concurrent insert: {e}")
+        existing = customer_model.get_area_by_name(name)
+        if existing:
+            return existing["area_id"]
+        raise
+
+
+def _resolve_route_id(route_name: str | None) -> int | None:
+    """Find-or-create a Route by name (case-insensitive) - mirrors _resolve_area_id."""
+    name = (route_name or "").strip()
+    if not name:
+        return None
+
+    existing = customer_model.get_route_by_name(name)
+    if existing:
+        return existing["route_id"]
+
+    try:
+        return customer_model.create_route(name)
+    except Exception as e:
+        logger.warning(f"_resolve_route_id: create_route('{name}') failed, re-checking for a concurrent insert: {e}")
+        existing = customer_model.get_route_by_name(name)
+        if existing:
+            return existing["route_id"]
+        raise
 
 def _today_bs() -> str:
     """Today's date in BS, for audit stamping - never invented, always via the Date Engine."""

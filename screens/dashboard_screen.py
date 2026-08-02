@@ -23,6 +23,7 @@ from engines.date_engine import ad_to_bs, DateEngineError
 
 from screens.supplier_list_screen import SupplierListScreen
 from screens.supplier_form_screen import SupplierFormScreen
+from screens.manufacturer_list_screen import ManufacturerListScreen
 
 from screens.company_list_screen import CompanyListScreen
 
@@ -30,6 +31,7 @@ from screens.settings_screen import SettingsScreen
 
 from screens.user_list_screen import UserListScreen
 from screens.customer_list_screen import CustomerListScreen
+from screens.customer_form_screen import CustomerFormScreen
 
 logger = get_logger()
 
@@ -74,6 +76,7 @@ class DashboardScreen(QMainWindow):
 
         self.ui.btnLogout.clicked.connect(self.handle_logout)
         self.ui.btnAddSupplier.clicked.connect(self.open_supplier_form)
+        self.ui.btnAddCustomer.clicked.connect(self.open_customer_form)
         self.ui.treeSidebarMenu.itemDoubleClicked.connect(self.open_module_from_sidebar)
         self.ui.btnTheme.clicked.connect(self._handle_theme_toggle)
         self.ui.txtSearchMenu.textChanged.connect(self._filter_sidebar_menu)
@@ -105,8 +108,8 @@ class DashboardScreen(QMainWindow):
         self.ui.txtSearchMenu.setToolTip("Type to search the module menu.")
         self.ui.btnNewSale.setStatusTip("Open a new Sale entry (module not yet built).")
         self.ui.btnNewPurchase.setStatusTip("Open a new Purchase entry (module not yet built).")
-        self.ui.btnAddCustomer.setStatusTip("Add a new Customer (module not yet built).")
-        self.ui.btnAddSupplier.setStatusTip("Add a new Supplier (module not yet built).")
+        self.ui.btnAddCustomer.setStatusTip("Add a new Customer.")
+        self.ui.btnAddSupplier.setStatusTip("Add a new Supplier.")
         self.ui.btnAddItem.setStatusTip("Add a new Item (module not yet built).")
         self.ui.btnBackupDatabase.setStatusTip("Backup the database (module not yet built).")
 
@@ -229,6 +232,10 @@ class DashboardScreen(QMainWindow):
         self.supplier_form = SupplierFormScreen(self)
         self.supplier_form.show()
 
+    def open_customer_form(self):
+        self.customer_form = CustomerFormScreen(self.login_result, parent=self)
+        self.customer_form.show()
+
     def open_module_from_sidebar(self, item, column):
         """
         Opens modules from Sidebar.
@@ -250,13 +257,18 @@ class DashboardScreen(QMainWindow):
             self.company_list.setWindowFlag(Qt.Window)
             self.company_list.show()
 
+        elif module_name == "manufacturer":
+            self.manufacturer_list = ManufacturerListScreen(self)
+            self.manufacturer_list.setWindowFlag(Qt.Window)
+            self.manufacturer_list.show()
+
         elif module_name == "customer":
             self.customer_list = CustomerListScreen(self.login_result, parent=self)
             self.customer_list.setWindowFlag(Qt.Window)
             self.customer_list.show()
 
         elif module_name == "user master":
-            self.user_list = UserListScreen(self)
+            self.user_list = UserListScreen(self, current_user_id=self.login_result.userid)
             self.user_list.setWindowFlag(Qt.Window)
             self.user_list.show()
 

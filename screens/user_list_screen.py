@@ -12,12 +12,13 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QHeaderView, QWidget
 
 from engines.exceptions import RecordNotFoundError
 from engines.user_engine import UserDTO, UserEngine
 from screens.user_form_screen import UserFormScreen
 from screens.reset_password_screen import ResetPasswordScreen
+from models import company_model, role_model
 from ui.ui_user_list import Ui_UserListView
 from utils.integration_adapters import confirm, get_current_user_id, show_error, show_success
 
@@ -34,7 +35,7 @@ def _dto_to_table_row(dto: UserDTO) -> list[str]:
         dto.username,
         dto.fullname,
         dto.email or "",
-        str(dto.role_id),
+        str(dto.role_name or dto.role_id),
         dto.status,
     ]
 
@@ -48,12 +49,13 @@ def _status_filter_value(label: str) -> Optional[str]:
 class UserListScreen(QWidget):
     """User Master list/search/filter screen. Opens UserFormScreen for Add/Edit."""
 
-    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[UserEngine] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[UserEngine] = None, current_user_id: Optional[int] = None) -> None:
         super().__init__(parent)
         self.ui = Ui_UserListView()
         self.ui.setupUi(self)
 
         self._engine = engine or UserEngine()
+        self._current_user_id = current_user_id
         self._rows: list[UserDTO] = []
 
         self._search_debounce_timer = QTimer(self)
@@ -66,10 +68,38 @@ class UserListScreen(QWidget):
         self.ui.table_users.setSelectionBehavior(self.ui.table_users.SelectionBehavior.SelectRows)
         self.ui.table_users.setSelectionMode(self.ui.table_users.SelectionMode.SingleSelection)
         self.ui.table_users.setEditTriggers(self.ui.table_users.EditTrigger.NoEditTriggers)
+        self.ui.table_users.setAlternatingRowColors(True)
+        self._configure_column_widths()
+        self._load_filter_options()
 
         self._connect_signals()
         self._setup_shortcuts()
         self.refresh()
+
+    def _configure_column_widths(self) -> None:
+        """User ID / Username / Role / Status stay compact; Full Name and Email
+        take up the remaining space. Fixes the previous default where every
+        column (including Status) stretched unevenly."""
+        header = self.ui.table_users.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # User ID
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Username
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)          # Full Name
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)          # Email
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Role
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)             # Status
+        header.resizeSection(5, 110)
+        header.setStretchLastSection(False)
+
+    def _load_filter_options(self) -> None:
+        self.ui.filter_role.clear()
+        self.ui.filter_role.addItem("All Roles", None)
+        for role in role_model.list_roles():
+            self.ui.filter_role.addItem(role["rolename"], role["roleid"])
+
+        self.ui.filter_company.clear()
+        self.ui.filter_company.addItem("All Companies", None)
+        for company in company_model.list_companies(status_filter="all"):
+            self.ui.filter_company.addItem(company["companyname"], company["companyid"])
 
     # ------------------------------------------------------------------ #
     # Wiring
@@ -77,6 +107,8 @@ class UserListScreen(QWidget):
     def _connect_signals(self) -> None:
         self.ui.search_input.textChanged.connect(self._on_search_text_changed)
         self.ui.filter_status.currentTextChanged.connect(self.refresh)
+        self.ui.filter_role.currentIndexChanged.connect(self.refresh)
+        self.ui.filter_company.currentIndexChanged.connect(self.refresh)
         self.ui.btn_refresh.clicked.connect(self.refresh)
         self.ui.table_users.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.ui.table_users.doubleClicked.connect(self._on_edit_clicked)
@@ -104,10 +136,13 @@ class UserListScreen(QWidget):
     def refresh(self) -> None:
         search_text = self.ui.search_input.text().strip() or None
         status = _status_filter_value(self.ui.filter_status.currentText())
+        role_id = self.ui.filter_role.currentData()
+        company_id = self.ui.filter_company.currentData()
 
         try:
             rows, total = self._engine.search_users(
-                search_text=search_text, status=status, include_deleted=False,
+                search_text=search_text, status=status,
+                role_id=role_id, company_id=company_id, include_deleted=False,
                 page=1, page_size=500,
             )
         except Exception as exc:  # noqa: BLE001
@@ -126,6 +161,8 @@ class UserListScreen(QWidget):
             for col_index, value in enumerate(_dto_to_table_row(dto)):
                 item = QStandardItem(value)
                 item.setEditable(False)
+                if col_index in (0, 5):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col_index == 0:
                     item.setData(dto.user_id, Qt.UserRole)
                 if not dto.is_active:
@@ -162,7 +199,7 @@ class UserListScreen(QWidget):
     # CRUD actions
     # ------------------------------------------------------------------ #
     def _on_add_clicked(self) -> None:
-        dialog = UserFormScreen(self, user_id=None, engine=self._engine)
+        dialog = UserFormScreen(self, user_id=None, engine=self._engine, current_user_id=self._current_user_id)
         if dialog.exec():
             self.refresh()
 
@@ -170,7 +207,7 @@ class UserListScreen(QWidget):
         dto = self._selected_dto()
         if dto is None or dto.is_deleted:
             return
-        dialog = UserFormScreen(self, user_id=dto.user_id, engine=self._engine)
+        dialog = UserFormScreen(self, user_id=dto.user_id, engine=self._engine, current_user_id=self._current_user_id)
         if dialog.exec():
             self.refresh()
 
@@ -181,7 +218,7 @@ class UserListScreen(QWidget):
         if not confirm(self, "Delete User", f"Delete user '{dto.username}'?\n\nThis can be restored later."):
             return
         try:
-            self._engine.delete_user(dto.user_id, current_user_id=get_current_user_id())
+            self._engine.delete_user(dto.user_id, current_user_id=self._current_user_id)
         except RecordNotFoundError as exc:
             show_error(self, "User Master", str(exc))
         except Exception as exc:  # noqa: BLE001
@@ -196,7 +233,7 @@ class UserListScreen(QWidget):
         if dto is None or not dto.is_deleted:
             return
         try:
-            restored = self._engine.restore_user(dto.user_id, current_user_id=get_current_user_id())
+            restored = self._engine.restore_user(dto.user_id, current_user_id=self._current_user_id)
         except RecordNotFoundError as exc:
             show_error(self, "User Master", str(exc))
         except Exception as exc:  # noqa: BLE001
@@ -212,7 +249,7 @@ class UserListScreen(QWidget):
             return
         try:
             updated = self._engine.set_active_status(
-                dto.user_id, is_active=not dto.is_active, current_user_id=get_current_user_id()
+                dto.user_id, is_active=not dto.is_active, current_user_id=self._current_user_id
             )
         except RecordNotFoundError as exc:
             show_error(self, "User Master", str(exc))
@@ -227,7 +264,7 @@ class UserListScreen(QWidget):
         dto = self._selected_dto()
         if dto is None or dto.is_deleted:
             return
-        dialog = ResetPasswordScreen(self, user_id=dto.user_id, username=dto.username, engine=self._engine)
+        dialog = ResetPasswordScreen(self, user_id=dto.user_id, username=dto.username, engine=self._engine, current_user_id=self._current_user_id)
         dialog.exec()
 
     # ------------------------------------------------------------------ #

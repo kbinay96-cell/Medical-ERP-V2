@@ -342,25 +342,30 @@ def list_users(
     search_term: Optional[str] = None,
     status_filter: str = "all",
     role_id: Optional[int] = None,
+    company_id: Optional[str] = None,
     include_deleted: bool = False,
 ) -> List[dict]:
     where = []
     params: List[Any] = []
 
     if not include_deleted:
-        where.append("status != %s")
+        where.append("u.status != %s")
         params.append(STATUS_DELETED)
 
     if status_filter and status_filter != "all":
-        where.append("status = %s")
+        where.append("u.status = %s")
         params.append(status_filter)
 
     if role_id:
-        where.append("roleid = %s")
+        where.append("u.roleid = %s")
         params.append(role_id)
 
+    if company_id:
+        where.append("u.companyid = %s")
+        params.append(company_id)
+
     if search_term:
-        where.append("(username ILIKE %s OR fullname ILIKE %s OR email ILIKE %s)")
+        where.append("(u.username ILIKE %s OR u.fullname ILIKE %s OR u.email ILIKE %s)")
         keyword = f"%{search_term.strip()}%"
         params.extend([keyword, keyword, keyword])
 
@@ -370,7 +375,16 @@ def list_users(
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"SELECT {_USER_MASTER_COLUMNS} FROM users {where_clause} ORDER BY fullname",
+                    f"""
+                    SELECT u.userid, u.username, u.fullname, u.email, u.phone, u.roleid,
+                           r.rolename, u.companyid, u.status, u.mustchangepassword,
+                           u.failedattempts, u.lockeduntil, u.passwordchangedat,
+                           u.createddate, u.createdby, u.modifieddate, u.modifiedby
+                    FROM users u
+                    LEFT JOIN roles r ON r.roleid = u.roleid
+                    {where_clause}
+                    ORDER BY u.fullname
+                    """,
                     tuple(params)
                 )
                 return cur.fetchall()

@@ -13,12 +13,14 @@ from typing import Optional
 
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QDialog, QLabel, QWidget
 
 from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.user_engine import UserEngine
-from models import role_model
+from models import company_model, role_model
 from ui.ui_user_form import Ui_UserFormView
-from utils.integration_adapters import get_current_user_id, show_success
+from utils.integration_adapters import get_current_user_id, show_error, show_success
+from utils.password_field_helper import attach_show_password_toggle
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class UserFormScreen(QDialog):
         parent: Optional[QWidget] = None,
         user_id: Optional[int] = None,
         engine: Optional[UserEngine] = None,
+        current_user_id: Optional[int] = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_UserFormView()
@@ -38,9 +41,24 @@ class UserFormScreen(QDialog):
 
         self._engine = engine or UserEngine()
         self._user_id = user_id
+        self._current_user_id = current_user_id
+        self._is_edit_mode = user_id is not None
+
+        self._engine = engine or UserEngine()
+        self._user_id = user_id
         self._is_edit_mode = user_id is not None
 
         self._load_roles()
+        self._load_companies()
+        attach_show_password_toggle(self.ui.input_password)
+        attach_show_password_toggle(self.ui.input_confirm_password)
+        from PySide6.QtWidgets import QLabel  # ensure this import exists at top of file
+
+        password_rule_hint = "Min 8 characters: uppercase, lowercase, digit & special character."
+        self.ui.lbl_password_hint = QLabel(password_rule_hint)
+        self.ui.lbl_password_hint.setStyleSheet("color: #666666; font-size: 11px;")
+        self.ui.lbl_password_hint.setWordWrap(True)
+        self.ui.gridLayout_password.addWidget(self.ui.lbl_password_hint, 2, 0, 1, 2)
         self._connect_signals()
         self._setup_shortcuts()
 
@@ -65,6 +83,13 @@ class UserFormScreen(QDialog):
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
 
+    def _show_validation_message(self, message: str) -> None:
+        if message:
+            show_error(self, "User Master", message)
+
+    def _clear_validation_message(self) -> None:
+        self._show_validation_message("")
+
     def _load_roles(self) -> None:
         self.ui.combo_role.clear()
         try:
@@ -72,7 +97,17 @@ class UserFormScreen(QDialog):
                 self.ui.combo_role.addItem(role["rolename"], role["roleid"])
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to load roles for User form.")
-            self.ui.lbl_validation_message.setText(f"Could not load roles: {exc}")
+            self._show_validation_message(f"Could not load roles: {exc}")
+
+    def _load_companies(self) -> None:
+        self.ui.combo_company.clear()
+        self.ui.combo_company.addItem("-- None --", None)
+        try:
+            for company in company_model.list_companies(status_filter="all"):
+                self.ui.combo_company.addItem(company["companyname"], company["companyid"])
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to load companies for User form.")
+            self._show_validation_message(f"Could not load companies: {exc}")
 
     # ------------------------------------------------------------------ #
     # Load (edit mode)
@@ -81,7 +116,7 @@ class UserFormScreen(QDialog):
         try:
             dto = self._engine.get_user(self._user_id)
         except RecordNotFoundError as exc:
-            self.ui.lbl_validation_message.setText(str(exc))
+            self._show_validation_message(str(exc))
             return
 
         self.ui.input_username.setText(dto.username)
@@ -96,6 +131,10 @@ class UserFormScreen(QDialog):
         if role_index >= 0:
             self.ui.combo_role.setCurrentIndex(role_index)
 
+        company_index = self.ui.combo_company.findData(dto.company_id)
+        if company_index >= 0:
+            self.ui.combo_company.setCurrentIndex(company_index)
+
         # Password fields stay blank on edit - only filled in to actually change
         # the password (which this form does not do; use Reset Password instead).
         self.ui.input_password.setEnabled(False)
@@ -106,7 +145,7 @@ class UserFormScreen(QDialog):
     # Save
     # ------------------------------------------------------------------ #
     def _on_save_clicked(self) -> None:
-        self.ui.lbl_validation_message.setText("")
+        self._clear_validation_message()
 
         data = {
             "username": self.ui.input_username.text().strip(),
@@ -114,6 +153,7 @@ class UserFormScreen(QDialog):
             "email": self.ui.input_email.text().strip() or None,
             "phone": self.ui.input_phone.text().strip() or None,
             "role_id": self.ui.combo_role.currentData(),
+            "company_id": self.ui.combo_company.currentData(),
             "must_change_password": self.ui.chk_must_change_password.isChecked(),
         }
 
@@ -121,30 +161,30 @@ class UserFormScreen(QDialog):
             password = self.ui.input_password.text()
             confirm_password = self.ui.input_confirm_password.text()
             if password != confirm_password:
-                self.ui.lbl_validation_message.setText("Password and Confirm Password do not match.")
+                self._show_validation_message("Password and Confirm Password do not match.")
                 return
             data["password"] = password
 
         try:
             if self._is_edit_mode:
-                dto = self._engine.update_user(self._user_id, data, current_user_id=get_current_user_id())
+                dto = self._engine.update_user(self._user_id, data, current_user_id=self._current_user_id)
                 if dto.is_active != self.ui.chk_is_active.isChecked():
                     dto = self._engine.set_active_status(
-                        self._user_id, self.ui.chk_is_active.isChecked(), current_user_id=get_current_user_id()
+                        self._user_id, self.ui.chk_is_active.isChecked(), current_user_id=self._current_user_id
                     )
                 show_success(self, "User Master", f"User '{dto.username}' updated.")
             else:
-                dto = self._engine.create_user(data, current_user_id=get_current_user_id())
+                dto = self._engine.create_user(data, current_user_id=self._current_user_id)
                 show_success(self, "User Master", f"User '{dto.username}' created.")
         except ValidationError as exc:
-            self.ui.lbl_validation_message.setText("; ".join(exc.errors))
+            self._show_validation_message("; ".join(exc.errors))
             return
         except RecordNotFoundError as exc:
-            self.ui.lbl_validation_message.setText(str(exc))
+            self._show_validation_message(str(exc))
             return
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to save user.")
-            self.ui.lbl_validation_message.setText(f"Failed to save user: {exc}")
+            self._show_validation_message(f"Failed to save user: {exc}")
             return
 
         self.accept()

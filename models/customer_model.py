@@ -140,9 +140,13 @@ def list_customers(
     area_id: int | None = None,
     route_id: int | None = None,
     price_level_id: int | None = None,
+    include_deleted: bool = False,
 ) -> list[dict]:
-    conditions = ["is_deleted = FALSE"]
+    conditions = []
     params: list = []
+
+    if not include_deleted:
+        conditions.append("is_deleted = FALSE")
 
     if search_text:
         conditions.append(
@@ -168,7 +172,7 @@ def list_customers(
         conditions.append("price_level_id = %s")
         params.append(price_level_id)
 
-    where_clause = " AND ".join(conditions)
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -179,6 +183,61 @@ def list_customers(
             return cur.fetchall()
 
 
+def restore_customer(customer_id: int, updated_by: str, updated_at_bs: str) -> None:
+    """Reverses a soft delete - restores the customer as Active, per project's
+    soft-delete-only Restore convention (see supplier_model.restore)."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE customers
+                   SET is_deleted = FALSE, is_active = TRUE,
+                       deleted_by = NULL, deleted_at_ad = NULL, deleted_at_bs = NULL,
+                       updated_by = %s, updated_at_ad = CURRENT_TIMESTAMP, updated_at_bs = %s
+                 WHERE customer_id = %s
+                """,
+                (updated_by, updated_at_bs, customer_id)
+            )
+
+def get_area_by_name(name: str) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM areas WHERE LOWER(area_name) = LOWER(%s)",
+                (name,)
+            )
+            return cur.fetchone()
+
+
+def create_area(name: str) -> int:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO areas (area_name) VALUES (%s) RETURNING area_id",
+                (name,)
+            )
+            return cur.fetchone()["area_id"]
+
+
+def get_route_by_name(name: str) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM routes WHERE LOWER(route_name) = LOWER(%s)",
+                (name,)
+            )
+            return cur.fetchone()
+
+
+def create_route(name: str) -> int:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO routes (route_name) VALUES (%s) RETURNING route_id",
+                (name,)
+            )
+            return cur.fetchone()["route_id"]
+        
 def get_active_customers() -> list[dict]:
     """
     Selection list for Sales/Receipt/Order Entry - Active,
@@ -254,3 +313,18 @@ def get_price_levels(active_only: bool = True) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(query)
             return cur.fetchall()
+
+def restore_customer(customer_id: int, updated_by: str, updated_at_bs: str) -> None:
+    """Reverses a soft delete - restores the customer as Active."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE customers
+                   SET is_deleted = FALSE, is_active = TRUE,
+                       deleted_by = NULL, deleted_at_ad = NULL, deleted_at_bs = NULL,
+                       updated_by = %s, updated_at_ad = CURRENT_TIMESTAMP, updated_at_bs = %s
+                 WHERE customer_id = %s
+                """,
+                (updated_by, updated_at_bs, customer_id)
+            )

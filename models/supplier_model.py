@@ -96,7 +96,7 @@ class SupplierModel:
         with _get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, data)
-                new_id = cur.fetchone()[0]
+                new_id = cur.fetchone()["supplier_id"]
                 conn.commit()
                 logger.info("Supplier inserted: id=%s code=%s", new_id, data.get("supplier_code"))
                 return new_id

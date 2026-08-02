@@ -1,10 +1,10 @@
 """
-screens/reset_password_screen.py
+screens/change_password_screen.py
 
-Admin-initiated password reset dialog - Medical ERP V2. Mirrors the
-company_form_screen.py pattern (thin UI, no SQL/business logic).
-Calls UserEngine.reset_password(), which forces the target user to
-change their password on next login.
+Self-service "Change My Password" dialog - Medical ERP V2. The logged-in
+user changes their own password, knowing the current one. Calls
+UserEngine.change_password(). Opened from the Dashboard (user menu),
+not from the User Master list.
 """
 
 from __future__ import annotations
@@ -17,62 +17,58 @@ from PySide6.QtWidgets import QDialog, QWidget
 
 from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.user_engine import UserEngine
-from ui.ui_reset_password import Ui_ResetPasswordDialog
-from utils.integration_adapters import get_current_user_id, show_error, show_success
+from ui.ui_change_password import Ui_ChangePasswordDialog
+from utils.integration_adapters import show_error, show_success
 from utils.password_field_helper import attach_show_password_toggle
 
 logger = logging.getLogger(__name__)
 
 
-class ResetPasswordScreen(QDialog):
-    """Admin resets another user's password. Always operates on an existing user_id."""
+class ChangePasswordScreen(QDialog):
+    """Logged-in user changes their own password."""
 
     def __init__(
         self,
         parent: Optional[QWidget] = None,
         user_id: Optional[int] = None,
-        username: str = "",
         engine: Optional[UserEngine] = None,
-        current_user_id: Optional[int] = None,
     ) -> None:
         super().__init__(parent)
-        self.ui = Ui_ResetPasswordDialog()
+        self.ui = Ui_ChangePasswordDialog()
         self.ui.setupUi(self)
 
         self._engine = engine or UserEngine()
         self._user_id = user_id
-        self._current_user_id = current_user_id
 
-        self.ui.lbl_target_user.setText(username)
-        self.ui.chk_force_change_on_login.setChecked(True)
+        self._connect_signals()
+        self._setup_shortcuts()
+        attach_show_password_toggle(self.ui.input_old_password)
         attach_show_password_toggle(self.ui.input_new_password)
         attach_show_password_toggle(self.ui.input_confirm_password)
         password_rule_hint = "Min 8 characters, with uppercase, lowercase, digit & special character."
         self.ui.input_new_password.setToolTip(password_rule_hint)
         self.ui.input_new_password.setPlaceholderText(password_rule_hint)
-
-        self._connect_signals()
-        self._setup_shortcuts()
-        self.ui.input_new_password.setFocus()
+        self.ui.input_old_password.setFocus()
 
     def _connect_signals(self) -> None:
-        self.ui.btn_reset.clicked.connect(self._on_reset_clicked)
+        self.ui.btn_change.clicked.connect(self._on_change_clicked)
         self.ui.btn_cancel.clicked.connect(self.reject)
 
     def _setup_shortcuts(self) -> None:
-        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_reset_clicked)
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_change_clicked)
 
     def _show_validation_message(self, message: str) -> None:
         if message:
             show_error(self, "User Master", message)
 
-    def _on_reset_clicked(self) -> None:
+    def _on_change_clicked(self) -> None:
         self._show_validation_message("")
 
         if self._user_id is None:
-            self._show_validation_message("No user selected.")
+            self._show_validation_message("No logged-in user context.")
             return
 
+        old_password = self.ui.input_old_password.text()
         new_password = self.ui.input_new_password.text()
         confirm_password = self.ui.input_confirm_password.text()
 
@@ -81,9 +77,7 @@ class ResetPasswordScreen(QDialog):
             return
 
         try:
-            self._engine.reset_password(
-                self._user_id, new_password, reset_by=self._current_user_id
-            )
+            self._engine.change_password(self._user_id, old_password, new_password)
         except ValidationError as exc:
             self._show_validation_message("; ".join(exc.errors))
             return
@@ -91,12 +85,12 @@ class ResetPasswordScreen(QDialog):
             self._show_validation_message(str(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to reset password for user %s.", self._user_id)
-            self._show_validation_message(f"Failed to reset password: {exc}")
+            logger.exception("Failed to change password for user %s.", self._user_id)
+            self._show_validation_message(f"Failed to change password: {exc}")
             return
 
-        show_success(self, "User Master", "Password reset successfully.")
+        show_success(self, "Change Password", "Password changed successfully.")
         self.accept()
 
 
-__all__ = ["ResetPasswordScreen"]
+__all__ = ["ChangePasswordScreen"]

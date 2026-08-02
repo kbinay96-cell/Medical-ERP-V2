@@ -235,10 +235,12 @@ class CustomerFormScreen(QDialog):
         form.addRow("Price Level", self.cmb_price_level)
 
         self.cmb_area = QComboBox()
+        self.cmb_area.setEditable(True)
         self._populate_lookup_combo(self.cmb_area, self.lookup_data["areas"], "area_id", "area_name")
         form.addRow("Area", self.cmb_area)
 
         self.cmb_route = QComboBox()
+        self.cmb_route.setEditable(True)
         self._populate_lookup_combo(self.cmb_route, self.lookup_data["routes"], "route_id", "route_name")
         form.addRow("Route", self.cmb_route)
 
@@ -282,6 +284,16 @@ class CustomerFormScreen(QDialog):
         index = combo.findData(value)
         combo.setCurrentIndex(index if index >= 0 else 0)
 
+    @staticmethod
+    def _select_editable_by_name(combo: QComboBox, rows: list[dict], id_key: str, name_key: str, value):
+        """Fallback for editable combos when the id isn't in the dropdown's
+        snapshot list (e.g. it was added by someone else after this form's
+        lookup_data was loaded)."""
+        for row in rows:
+            if row[id_key] == value:
+                combo.setCurrentText(row[name_key])
+                return
+
     # -----------------------------------------------------
     # LOAD (Edit mode)
     # -----------------------------------------------------
@@ -317,6 +329,10 @@ class CustomerFormScreen(QDialog):
         self._select_combo_by_data(self.cmb_price_level, row.get("price_level_id"))
         self._select_combo_by_data(self.cmb_area, row.get("area_id"))
         self._select_combo_by_data(self.cmb_route, row.get("route_id"))
+        if self.cmb_area.currentData() != row.get("area_id"):
+            self._select_editable_by_name(self.cmb_area, self.lookup_data["areas"], "area_id", "area_name", row.get("area_id"))
+        if self.cmb_route.currentData() != row.get("route_id"):
+            self._select_editable_by_name(self.cmb_route, self.lookup_data["routes"], "route_id", "route_name", row.get("route_id"))
         self.txt_remarks.setPlainText(row.get("remarks") or "")
         self.chk_active.setChecked(bool(row.get("is_active", True)))
 
@@ -325,6 +341,12 @@ class CustomerFormScreen(QDialog):
     # -----------------------------------------------------
     # SAVE
     # -----------------------------------------------------
+    @staticmethod
+    def _editable_combo_text(combo: QComboBox) -> str | None:
+        text = combo.currentText().strip()
+        if not text or text == NONE_OPTION_LABEL:
+            return None
+        return text
 
     def _collect_form_data(self) -> dict:
         data = {
@@ -350,8 +372,8 @@ class CustomerFormScreen(QDialog):
             "opening_balance": self.spn_opening_balance.value(),
             "balance_type": self.cmb_balance_type.currentText(),
             "price_level_id": self.cmb_price_level.currentData(),
-            "area_id": self.cmb_area.currentData(),
-            "route_id": self.cmb_route.currentData(),
+            "area_name": self._editable_combo_text(self.cmb_area),
+            "route_name": self._editable_combo_text(self.cmb_route),
             "remarks": self.txt_remarks.toPlainText().strip() or None,
             "is_active": self.chk_active.isChecked(),
         }

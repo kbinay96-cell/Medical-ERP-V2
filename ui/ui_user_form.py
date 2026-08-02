@@ -71,7 +71,7 @@ class Ui_UserFormView(object):
 
         self.input_username = QLineEdit(self.group_identity)
         self.input_username.setObjectName(u"input_username")
-        self.input_username.setMinimumSize(QSize(0, 30))
+        self.input_username.setMinimumSize(QSize(0, 38))
         self.input_username.setMaxLength(50)
         self.gridLayout_identity.addWidget(self.input_username, 0, 1, 1, 1)
 
@@ -81,7 +81,7 @@ class Ui_UserFormView(object):
 
         self.input_display_name = QLineEdit(self.group_identity)
         self.input_display_name.setObjectName(u"input_display_name")
-        self.input_display_name.setMinimumSize(QSize(0, 30))
+        self.input_display_name.setMinimumSize(QSize(0, 38))
         self.input_display_name.setMaxLength(150)
         self.gridLayout_identity.addWidget(self.input_display_name, 1, 1, 1, 1)
 
@@ -91,7 +91,7 @@ class Ui_UserFormView(object):
 
         self.input_email = QLineEdit(self.group_identity)
         self.input_email.setObjectName(u"input_email")
-        self.input_email.setMinimumSize(QSize(0, 30))
+        self.input_email.setMinimumSize(QSize(0, 38))
         self.input_email.setMaxLength(150)
         self.gridLayout_identity.addWidget(self.input_email, 2, 1, 1, 1)
 
@@ -101,7 +101,7 @@ class Ui_UserFormView(object):
 
         self.input_phone = QLineEdit(self.group_identity)
         self.input_phone.setObjectName(u"input_phone")
-        self.input_phone.setMinimumSize(QSize(0, 30))
+        self.input_phone.setMinimumSize(QSize(0, 38))
         self.input_phone.setMaxLength(20)
         self.gridLayout_identity.addWidget(self.input_phone, 3, 1, 1, 1)
 
@@ -123,7 +123,7 @@ class Ui_UserFormView(object):
         self.combo_role = QComboBox(self.group_access)
         self.combo_role.addItem("")
         self.combo_role.setObjectName(u"combo_role")
-        self.combo_role.setMinimumSize(QSize(0, 30))
+        self.combo_role.setMinimumSize(QSize(0, 38))
         self.gridLayout_access.addWidget(self.combo_role, 0, 1, 1, 1)
 
         self.lbl_company = QLabel(self.group_access)
@@ -133,7 +133,7 @@ class Ui_UserFormView(object):
         self.combo_company = QComboBox(self.group_access)
         self.combo_company.addItem("")
         self.combo_company.setObjectName(u"combo_company")
-        self.combo_company.setMinimumSize(QSize(0, 30))
+        self.combo_company.setMinimumSize(QSize(0, 38))
         self.gridLayout_access.addWidget(self.combo_company, 1, 1, 1, 1)
 
         self.verticalLayout_scroll.addWidget(self.group_access)
@@ -153,7 +153,7 @@ class Ui_UserFormView(object):
 
         self.input_password = QLineEdit(self.group_password)
         self.input_password.setObjectName(u"input_password")
-        self.input_password.setMinimumSize(QSize(0, 30))
+        self.input_password.setMinimumSize(QSize(0, 38))
         self.input_password.setEchoMode(QLineEdit.Password)
         self.gridLayout_password.addWidget(self.input_password, 0, 1, 1, 1)
 
@@ -163,7 +163,7 @@ class Ui_UserFormView(object):
 
         self.input_confirm_password = QLineEdit(self.group_password)
         self.input_confirm_password.setObjectName(u"input_confirm_password")
-        self.input_confirm_password.setMinimumSize(QSize(0, 30))
+        self.input_confirm_password.setMinimumSize(QSize(0, 38))
         self.input_confirm_password.setEchoMode(QLineEdit.Password)
         self.gridLayout_password.addWidget(self.input_confirm_password, 1, 1, 1, 1)
 

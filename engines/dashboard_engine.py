@@ -43,7 +43,7 @@ class DashboardData:
 # only appears if the logged-in role has View access to it
 # (per get_accessible_menus) OR is Administrator (sees all).
 SIDEBAR_MODULES = {
-    "Masters": ["Company", "Supplier", "Customer", "Item"],
+    "Masters": ["Company", "Supplier", "Manufacturer", "Customer", "Item"],
     "Purchase": ["New Purchase", "Purchase List"],
     "Sales": ["New Sale", "Sale List"],
     "Inventory": ["Stock Ledger", "Stock Master"],

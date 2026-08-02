@@ -36,6 +36,7 @@ class UserDTO:
     email: Optional[str]
     phone: Optional[str]
     role_id: int
+    role_name: Optional[str]
     company_id: Optional[str]
     status: str
     must_change_password: bool
@@ -60,6 +61,7 @@ def _row_to_dto(row: dict) -> UserDTO:
         email=row.get("email"),
         phone=row.get("phone"),
         role_id=row["roleid"],
+        role_name=row.get("rolename"),
         company_id=row.get("companyid"),
         status=row["status"],
         must_change_password=bool(row.get("mustchangepassword")),
@@ -217,6 +219,8 @@ class UserEngine:
         self,
         search_text: Optional[str] = None,
         status: Optional[str] = None,
+        role_id: Optional[int] = None,
+        company_id: Optional[str] = None,
         include_deleted: bool = False,
         page: int = 1,
         page_size: int = 500,
@@ -224,7 +228,8 @@ class UserEngine:
         status_filter = status if status else "all"
         try:
             rows = user_model.list_users(
-                search_term=search_text, status_filter=status_filter, include_deleted=include_deleted,
+                search_term=search_text, status_filter=status_filter,
+                role_id=role_id, company_id=company_id, include_deleted=include_deleted,
             )
         except UserModelError as exc:
             raise RuntimeError(str(exc)) from exc

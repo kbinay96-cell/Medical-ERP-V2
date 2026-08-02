@@ -38,12 +38,18 @@ DEFAULT_SUPPLIER_CODE_PADDING = 4  # SUP-0001
 
 
 def _load_date_engine():
+    """
+    Loads the centralized, LOCKED Date Engine module
+    (engines/date_engine.py). That module is function-based
+    (ad_to_bs, DateEngineError) -- it is NOT a class -- so we
+    return the module object itself, not an instance.
+    """
     try:
-        from engines.date_engine import DateEngine
-        return DateEngine()
+        import engines.date_engine as date_engine_module
+        return date_engine_module
     except ImportError:
         logger.warning(
-            "engines.date_engine.DateEngine not found on PYTHONPATH; "
+            "engines.date_engine module not found on PYTHONPATH; "
             "SupplierEngine will fall back to a minimal AD-only stamp "
             "(created_at_bs/updated_at_bs will be left blank) until the "
             "real Date Engine is wired in. Inject a date_engine explicitly "
@@ -54,13 +60,13 @@ def _load_date_engine():
 
 def _load_settings_engine():
     try:
-        from engines.settings_engine import SettingsEngine
-        return SettingsEngine()
+        from engines import settings_engine
+        return settings_engine
     except ImportError:
         logger.warning(
-            "engines.settings_engine.SettingsEngine not found on PYTHONPATH; "
-            "SupplierEngine will use built-in defaults for supplier.code_prefix. "
-            "Inject a settings_engine explicitly to avoid this in tests."
+            "engines.settings_engine not importable; SupplierEngine will use "
+            "the built-in default for supplier.code_prefix. Inject a "
+            "settings_engine explicitly to avoid this in tests."
         )
         return None
 
@@ -127,17 +133,32 @@ class SupplierEngine:
     def _now_ad(self) -> datetime:
         return datetime.now(timezone.utc)
 
+    def _load_date_engine():
+        try:
+            from engines import date_engine
+            return date_engine
+        except ImportError:
+            logger.warning(
+                "engines.date_engine not importable; SupplierEngine will fall "
+                "back to a minimal AD-only stamp (created_at_bs/updated_at_bs "
+                "left blank) until the Date Engine is wired in. Inject a "
+                "date_engine explicitly to avoid this in tests."
+            )
+            return None
+
     def _now_bs(self) -> Optional[str]:
+        """
+        Returns today's date in BS ('YYYY-MM-DD'), via the centralized
+        Date Engine. Returns None only if the Date Engine module itself
+        is unavailable, or if today's AD date isn't found in the
+        bscalendar reference table yet (see date_engine.DateEngineError).
+        """
         if self._date_engine is None:
             return None
         try:
-            return self._date_engine.ad_to_bs(date.today())
-        except self._date_engine.DateEngineError:
-            logger.warning(
-                "date_engine.ad_to_bs() could not find today's date in the "
-                "bscalendar reference table; created_at_bs/updated_at_bs will "
-                "be left blank for this operation."
-            )
+            return self._date_engine.ad_to_bs(self._now_ad().date())
+        except self._date_engine.DateEngineError as e:
+            logger.warning(f"_now_bs: BS conversion unavailable ({e}). created_at_bs will be blank.")
             return None
 
     def _code_prefix(self) -> str:

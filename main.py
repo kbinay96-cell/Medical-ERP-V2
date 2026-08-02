@@ -26,7 +26,7 @@ logger = get_logger()
 
 def main():
     app = QApplication(sys.argv)
-    apply_theme("Light")
+    apply_theme("Dark")
 
     login_screen = LoginScreen()
     login_screen.show()
