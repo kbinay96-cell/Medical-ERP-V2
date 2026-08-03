@@ -26,6 +26,7 @@ from screens.supplier_form_screen import SupplierFormScreen
 from screens.manufacturer_list_screen import ManufacturerListScreen
 
 from screens.company_list_screen import CompanyListScreen
+from screens.item_list_screen import ItemListScreen
 
 from screens.settings_screen import SettingsScreen
 
@@ -266,6 +267,11 @@ class DashboardScreen(QMainWindow):
             self.customer_list = CustomerListScreen(self.login_result, parent=self)
             self.customer_list.setWindowFlag(Qt.Window)
             self.customer_list.show()
+
+        elif module_name == "item":
+            self.item_list = ItemListScreen(self)
+            self.item_list.setWindowFlag(Qt.Window)
+            self.item_list.show()
 
         elif module_name == "user master":
             self.user_list = UserListScreen(self, current_user_id=self.login_result.userid)

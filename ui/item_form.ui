@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ItemFormDialog</class>
+ <widget class="QDialog" name="ItemFormDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>680</width><height>760</height></rect>
+  </property>
+  <property name="windowTitle"><string>Item</string></property>
+  <property name="modal"><bool>true</bool></property>
+  <layout class="QVBoxLayout" name="verticalLayoutRoot">
+   <property name="spacing"><number>10</number></property>
+   <property name="leftMargin"><number>14</number></property>
+   <property name="topMargin"><number>14</number></property>
+   <property name="rightMargin"><number>14</number></property>
+   <property name="bottomMargin"><number>14</number></property>
+   <item>
+    <widget class="QLabel" name="lblFormTitle">
+     <property name="font"><font><pointsize>13</pointsize><bold>true</bold></font></property>
+     <property name="text"><string>Item Details</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QScrollArea" name="scrollArea">
+     <property name="widgetResizable"><bool>true</bool></property>
+     <widget class="QWidget" name="scrollAreaContents">
+      <property name="geometry"><rect><x>0</x><y>0</y><width>640</width><height>1000</height></rect></property>
+      <layout class="QVBoxLayout" name="verticalLayoutScroll">
+
+       <item>
+        <widget class="QGroupBox" name="grpBasicInfo">
+         <property name="title"><string>Basic Information</string></property>
+         <layout class="QFormLayout" name="formLayoutBasic">
+          <property name="labelAlignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+          <item row="0" column="0"><widget class="QLabel" name="lblItemCode"><property name="text"><string>Item Code:</string></property></widget></item>
+          <item row="0" column="1"><widget class="QLineEdit" name="txtItemCode">
+            <property name="placeholderText"><string>Auto-generated if left blank</string></property>
+            <property name="toolTip"><string>Leave blank to auto-generate (e.g. ITM-0001)</string></property>
+          </widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="lblItemName"><property name="text"><string>Item Name: *</string></property></widget></item>
+          <item row="1" column="1"><widget class="QLineEdit" name="txtItemName"><property name="maxLength"><number>200</number></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpClassification">
+         <property name="title"><string>Classification</string></property>
+         <layout class="QFormLayout" name="formLayoutClassification">
+          <property name="labelAlignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+          <item row="0" column="0"><widget class="QLabel" name="lblCategory"><property name="text"><string>Category:</string></property></widget></item>
+          <item row="0" column="1"><widget class="QComboBox" name="cmbCategory"/></item>
+          <item row="1" column="0"><widget class="QLabel" name="lblSubCategory"><property name="text"><string>Sub Category:</string></property></widget></item>
+          <item row="1" column="1"><widget class="QComboBox" name="cmbSubCategory"/></item>
+          <item row="2" column="0"><widget class="QLabel" name="lblItemGroup"><property name="text"><string>Item Type:</string></property></widget></item>
+          <item row="2" column="1"><widget class="QComboBox" name="cmbItemGroup"/></item>
+          <item row="3" column="0"><widget class="QLabel" name="lblManufacturer"><property name="text"><string>Manufacturer:</string></property></widget></item>
+          <item row="3" column="1"><widget class="QComboBox" name="cmbManufacturer"/></item>
+          <item row="4" column="0"><widget class="QLabel" name="lblGeneric"><property name="text"><string>Generic Name:</string></property></widget></item>
+          <item row="4" column="1"><widget class="QComboBox" name="cmbGeneric"/></item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpUnits">
+         <property name="title"><string>Units</string></property>
+         <layout class="QFormLayout" name="formLayoutUnits">
+          <property name="labelAlignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+          <item row="0" column="0"><widget class="QLabel" name="lblUnit"><property name="text"><string>Unit: *</string></property></widget></item>
+          <item row="0" column="1"><widget class="QComboBox" name="cmbUnit"/></item>
+          <item row="1" column="0"><widget class="QLabel" name="lblPurchaseUnit"><property name="text"><string>Purchase Unit:</string></property></widget></item>
+          <item row="1" column="1"><widget class="QComboBox" name="cmbPurchaseUnit">
+            <property name="toolTip"><string>Leave same as Unit if this item is purchased and sold in the same unit.</string></property>
+          </widget></item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpPricing">
+         <property name="title"><string>Pricing &amp;&amp; Stock</string></property>
+         <layout class="QFormLayout" name="formLayoutPricing">
+          <property name="labelAlignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+          <item row="0" column="0"><widget class="QLabel" name="lblPurchaseRate"><property name="text"><string>Purchase Rate:</string></property></widget></item>
+          <item row="0" column="1"><widget class="QLineEdit" name="txtPurchaseRate"><property name="text"><string>0.00</string></property></widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="lblSaleRate"><property name="text"><string>Sale Rate:</string></property></widget></item>
+          <item row="1" column="1"><widget class="QLineEdit" name="txtSaleRate"><property name="text"><string>0.00</string></property></widget></item>
+          <item row="2" column="0"><widget class="QLabel" name="lblMrp"><property name="text"><string>MRP:</string></property></widget></item>
+          <item row="2" column="1"><widget class="QLineEdit" name="txtMrp"><property name="text"><string>0.00</string></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel" name="lblMinimumStock"><property name="text"><string>Minimum Stock:</string></property></widget></item>
+          <item row="3" column="1"><widget class="QLineEdit" name="txtMinimumStock">
+            <property name="text"><string>0</string></property>
+            <property name="toolTip"><string>Reorder level -- can be changed anytime, no lock.</string></property>
+          </widget></item>
+          <item row="4" column="0"><widget class="QLabel" name="lblCurrentStockDisplay"><property name="text"><string>Current Total Stock:</string></property></widget></item>
+          <item row="4" column="1"><widget class="QLabel" name="lblCurrentStockValue">
+            <property name="text"><string>0</string></property>
+            <property name="toolTip"><string>Read-only -- sum of all batch quantities. Add stock via 'Add Batch'.</string></property>
+          </widget></item>
+          <item row="5" column="1"><widget class="QPushButton" name="btnAddBatch">
+            <property name="text"><string>Add Batch (Opening Stock)</string></property>
+            <property name="toolTip"><string>Add a batch with quantity + expiry. An item can also be saved with zero stock.</string></property>
+          </widget></item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpTax">
+         <property name="title"><string>Tax</string></property>
+         <layout class="QVBoxLayout" name="verticalLayoutTax">
+          <item>
+           <layout class="QHBoxLayout" name="horizontalLayoutTaxMode">
+            <item><widget class="QRadioButton" name="radioCountryDefault">
+              <property name="text"><string>Use Country Default</string></property>
+              <property name="checked"><bool>true</bool></property>
+            </widget></item>
+            <item><widget class="QRadioButton" name="radioIndividual"><property name="text"><string>Individual Tax</string></property></widget></item>
+            <item><spacer name="horizontalSpacerTaxMode"><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QLabel" name="lblCountryDefaultPreview">
+            <property name="text"><string>Effective VAT/Custom % will be resolved from the selected Manufacturer's Country.</string></property>
+            <property name="wordWrap"><bool>true</bool></property>
+            <property name="styleSheet"><string notr="true">color: #666666;</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QFrame" name="frameIndividualTax">
+            <property name="visible"><bool>false</bool></property>
+            <layout class="QFormLayout" name="formLayoutIndividualTax">
+             <property name="labelAlignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+             <item row="0" column="0"><widget class="QCheckBox" name="chkVat"><property name="text"><string>VAT %</string></property></widget></item>
+             <item row="0" column="1"><widget class="QLineEdit" name="txtVatPercent"><property name="enabled"><bool>false</bool></property></widget></item>
+             <item row="1" column="0"><widget class="QCheckBox" name="chkCustom"><property name="text"><string>Custom %</string></property></widget></item>
+             <item row="1" column="1"><widget class="QLineEdit" name="txtCustomPercent"><property name="enabled"><bool>false</bool></property></widget></item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpStatus">
+         <property name="title"><string>Status</string></property>
+         <layout class="QFormLayout" name="formLayoutStatus">
+          <property name="labelAlignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+          <item row="0" column="0"><widget class="QLabel" name="lblStatus"><property name="text"><string>Status:</string></property></widget></item>
+          <item row="0" column="1"><widget class="QComboBox" name="cmbStatus">
+            <item><property name="text"><string>Active</string></property></item>
+            <item><property name="text"><string>Inactive</string></property></item>
+          </widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="lblRemarks"><property name="text"><string>Remarks:</string></property></widget></item>
+          <item row="1" column="1"><widget class="QPlainTextEdit" name="txtRemarks"><property name="maximumHeight"><number>70</number></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+
+      </layout>
+     </widget>
+    </widget>
+   </item>
+
+   <item>
+    <widget class="QLabel" name="lblValidationMessage">
+     <property name="text"><string></string></property>
+     <property name="styleSheet"><string notr="true">color: #c0392b;</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutFormButtons">
+     <item><spacer name="horizontalSpacerFormButtons"><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+     <item><widget class="QPushButton" name="btnSave">
+       <property name="text"><string>Save</string></property>
+       <property name="toolTip"><string>Save this item (Ctrl+S)</string></property>
+       <property name="default"><bool>true</bool></property>
+     </widget></item>
+     <item><widget class="QPushButton" name="btnCancel">
+       <property name="text"><string>Cancel</string></property>
+       <property name="toolTip"><string>Discard changes (Esc)</string></property>
+     </widget></item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

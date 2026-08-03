@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ItemListWidget</class>
+ <widget class="QWidget" name="ItemListWidget">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1150</width><height>650</height></rect>
+  </property>
+  <property name="windowTitle"><string>Item Master</string></property>
+  <layout class="QVBoxLayout" name="verticalLayoutRoot">
+   <property name="spacing"><number>10</number></property>
+   <property name="leftMargin"><number>12</number></property>
+   <property name="topMargin"><number>12</number></property>
+   <property name="rightMargin"><number>12</number></property>
+   <property name="bottomMargin"><number>12</number></property>
+
+   <item>
+    <widget class="QLabel" name="lblTitle">
+     <property name="font"><font><pointsize>14</pointsize><bold>true</bold></font></property>
+     <property name="text"><string>Item Master</string></property>
+    </widget>
+   </item>
+
+   <item>
+    <widget class="QFrame" name="frmToolbar">
+     <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+     <layout class="QHBoxLayout" name="horizontalLayoutToolbar">
+      <item><widget class="QLabel" name="lblSearch"><property name="text"><string>Search:</string></property></widget></item>
+      <item><widget class="QLineEdit" name="txtSearch">
+        <property name="placeholderText"><string>Search by Code or Name...</string></property>
+        <property name="clearButtonEnabled"><bool>true</bool></property>
+        <property name="toolTip"><string>Search Items (Ctrl+F)</string></property>
+      </widget></item>
+      <item><widget class="QLabel" name="lblCategoryFilter"><property name="text"><string>Category:</string></property></widget></item>
+      <item><widget class="QComboBox" name="cmbCategoryFilter"/></item>
+      <item><widget class="QLabel" name="lblManufacturerFilter"><property name="text"><string>Manufacturer:</string></property></widget></item>
+      <item><widget class="QComboBox" name="cmbManufacturerFilter"/></item>
+      <item><widget class="QLabel" name="lblStatusFilter"><property name="text"><string>Status:</string></property></widget></item>
+      <item><widget class="QComboBox" name="cmbStatusFilter">
+        <item><property name="text"><string>All</string></property></item>
+        <item><property name="text"><string>Active</string></property></item>
+        <item><property name="text"><string>Inactive</string></property></item>
+      </widget></item>
+      <item><widget class="QCheckBox" name="chkShowDeleted"><property name="text"><string>Show Deleted</string></property></widget></item>
+      <item><spacer name="horizontalSpacerToolbar"><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+      <item><widget class="QPushButton" name="btnRefresh">
+        <property name="text"><string>Refresh</string></property>
+        <property name="toolTip"><string>Reload item list (F5)</string></property>
+      </widget></item>
+     </layout>
+    </widget>
+   </item>
+
+   <item>
+    <widget class="QTableWidget" name="tblItem">
+     <property name="alternatingRowColors"><bool>true</bool></property>
+     <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
+     <property name="selectionMode"><enum>QAbstractItemView::SingleSelection</enum></property>
+     <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+     <property name="sortingEnabled"><bool>true</bool></property>
+     <column><property name="text"><string>Code</string></property></column>
+     <column><property name="text"><string>Item Name</string></property></column>
+     <column><property name="text"><string>Purchase Rate</string></property></column>
+     <column><property name="text"><string>Sale Rate</string></property></column>
+     <column><property name="text"><string>MRP</string></property></column>
+     <column><property name="text"><string>Total Stock</string></property></column>
+     <column><property name="text"><string>Min. Stock</string></property></column>
+     <column><property name="text"><string>Status</string></property></column>
+    </widget>
+   </item>
+
+   <item>
+    <widget class="QLabel" name="lblRecordCount">
+     <property name="text"><string>0 item(s) found</string></property>
+     <property name="styleSheet"><string notr="true">color: #666666;</string></property>
+    </widget>
+   </item>
+
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutButtons">
+     <item><widget class="QPushButton" name="btnAdd">
+       <property name="text"><string>Add Item</string></property>
+       <property name="toolTip"><string>Add a new item (Ctrl+N)</string></property>
+     </widget></item>
+     <item><widget class="QPushButton" name="btnEdit">
+       <property name="text"><string>Edit</string></property>
+       <property name="toolTip"><string>Edit the selected item (Enter)</string></property>
+     </widget></item>
+     <item><widget class="QPushButton" name="btnDelete">
+       <property name="text"><string>Delete</string></property>
+       <property name="toolTip"><string>Soft-delete the selected item (Del)</string></property>
+     </widget></item>
+     <item><widget class="QPushButton" name="btnRestore">
+       <property name="text"><string>Restore</string></property>
+       <property name="toolTip"><string>Restore the selected deleted item</string></property>
+       <property name="enabled"><bool>false</bool></property>
+     </widget></item>
+     <item><spacer name="horizontalSpacerButtons"><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+     <item><widget class="QPushButton" name="btnClose">
+       <property name="text"><string>Close</string></property>
+       <property name="toolTip"><string>Close this screen (Esc)</string></property>
+     </widget></item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
