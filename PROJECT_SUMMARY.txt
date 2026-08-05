@@ -1,0 +1,1564 @@
+======================================================================
+MEDICAL ERP V2 -- PROJECT STRUCTURAL SUMMARY (auto-generated)
+Only signatures/docstrings/table names -- NOT full implementation.
+======================================================================
+
+----- main.py -----
+    # =========================================================
+    def main()
+
+----- config\__init__.py -----
+    [no top-level classes/functions]
+
+----- config\settings.py -----
+    # =========================================================
+
+----- database\0001_create_user_master.sql -----
+    Creates tables: companies, roles, user_audit_log, user_password_history, users
+
+----- database\0002_create_supplier.sql -----
+    [no CREATE/ALTER TABLE found]
+
+----- database\0003_create_manufacturer.sql -----
+    [no CREATE/ALTER TABLE found]
+
+----- database\0003_user_master_alignment.sql -----
+    Creates tables: user_audit_log, user_password_history
+    Alters tables: users
+
+----- database\0004_create_country_tax.sql -----
+    Creates tables: country_tax
+
+----- database\0005_create_supplier_manufacturer_discount.sql -----
+    Creates tables: supplier_manufacturer_discount
+
+----- database\0006_create_stock_transaction.sql -----
+    Creates tables: stock_transaction
+
+----- database\__init__.py -----
+    [no top-level classes/functions]
+
+----- database\cleanup_company_columns.sql -----
+    Alters tables: company
+
+----- database\db.py -----
+    # =========================================================
+    def get_connection()
+
+----- database\migrate_bscalendar.py -----
+    # =========================================================
+    def migrate()
+
+----- database\schema_auth.sql -----
+    Creates tables: audit_log, company, failed_login_history, financialyear, license, login_history, role_permissions, roles, sessions, settings, settings_history, subscription, users
+
+----- database\schema_calendar.sql -----
+    Creates tables: bscalendar
+
+----- database\schema_company.sql -----
+    Alters tables: company
+
+----- database\schema_customer.sql -----
+    Creates tables: areas, customers, price_levels, routes
+
+----- database\schema_item.sql -----
+    Creates tables: item, item_batch
+
+----- database\schema_manufacturer.sql -----
+    Creates tables: manufacturer
+
+----- database\schema_simple_masters.sql -----
+    Creates tables: category, generic, item_group, sub_category, unit
+
+----- database\schema_stock_ledger.sql -----
+    Creates tables: stock_ledger
+
+----- database\schema_supplier.sql -----
+    Creates tables: supplier
+
+----- database\user_master_schema.sql -----
+    Creates tables: blocks, companies, roles, user_audit_log, user_password_history, users
+
+----- engines\__init__.py -----
+    [no top-level classes/functions]
+
+----- engines\audit_logger.py -----
+    # =========================================================
+    def write_audit_log(action: str, userid: int | None=None, username: str | None=None, details: str='') -> None
+    def write_login_history(userid: int, username: str, companyid: str, financialyear: str, session_id: str) -> None
+    def write_logout_time(session_id: str) -> None
+    def write_failed_login(username: str, reason: str) -> None
+
+----- engines\authentication_engine.py -----
+    # =========================================================
+    class LoginResult():
+    def login(username: str, password: str, company_id: str, financial_year: str) -> LoginResult
+    def _login_workflow(username: str, password: str, company_id: str, financial_year: str) -> LoginResult
+    def logout(userid: int, username: str, session_id: str) -> None
+
+----- engines\authorization_engine.py -----
+    # =========================================================
+    def get_permissions_for_screen(roleid: int, screenname: str) -> dict
+    def has_permission(roleid: int, screenname: str, action: str) -> bool
+    def get_accessible_menus(roleid: int) -> list[str]
+
+----- engines\company_engine.py -----
+    # engines/company_engine.py
+    class CompanyDTO():
+    def _row_to_dto(row: dict) -> CompanyDTO
+    class CompanyEngine():
+        # Business logic for the Company Master. Screens call ONLY this class.
+        def create_company(self, data: dict, current_user_id) -> CompanyDTO
+        def update_company(self, company_id: str, data: dict, current_user_id) -> CompanyDTO
+        def delete_company(self, company_id: str, current_user_id) -> None
+        def restore_company(self, company_id: str, current_user_id) -> CompanyDTO
+        def get_company(self, company_id: str) -> CompanyDTO
+        def search_companies(self, search_text: Optional[str]=None, status: Optional[str]=None, include_deleted: bool=False, page: int=1, page_size: int=500) -> Tuple[List[CompanyDTO], int]
+
+----- engines\country_tax_engine.py -----
+    # engines/country_tax_engine.py
+    def _load_date_engine()
+    class CountryTaxDTO():
+        # Read-facing representation returned by the Engine to callers (Screens/tests).
+        def from_row(cls, row: dict) -> 'CountryTaxDTO'
+        def to_dict(self) -> dict
+    class CountryTaxEngine():
+        # Business-rule orchestration for Country Tax Settings.
+        def __init__(self, model: Optional[CountryTaxModel]=None, date_engine: Optional[Any]=None) -> None
+        def _now_ad(self) -> datetime
+        def _now_bs(self) -> Optional[str]
+        def _clean_payload(self, payload: dict) -> dict
+        def create_tax(self, payload: dict, current_user_id: int) -> CountryTaxDTO
+        def update_tax(self, country_tax_id: int, payload: dict, current_user_id: int) -> CountryTaxDTO
+        def get_tax_record(self, country_tax_id: int, include_deleted: bool=False) -> CountryTaxDTO
+        def search_taxes(self, search_text: Optional[str]=None, status: Optional[str]=None, include_deleted: bool=False, page: int=1, page_size: int=50) -> tuple[list[CountryTaxDTO], int]
+        def list_active(self) -> list[CountryTaxDTO]
+        def is_country_taken(self, country: str, exclude_id: Optional[int]=None) -> bool
+        def get_tax_for_country(self, country: Optional[str]) -> tuple[float, float]
+        def delete_tax(self, country_tax_id: int, current_user_id: int) -> None
+        def restore_tax(self, country_tax_id: int, current_user_id: int) -> CountryTaxDTO
+    def _is_unique_violation(exc: Exception) -> bool
+
+----- engines\customer_engine.py -----
+    # =========================================================
+    def get_lookup_data() -> dict
+    def create_customer(data: dict, created_by: str) -> tuple[bool, str, int | None]
+    def update_customer(customer_id: int, data: dict, updated_by: str) -> tuple[bool, str]
+    def get_customer(customer_id: int) -> dict | None
+    def search_customers(search_text: str | None=None, is_active: bool | None=None, area_id: int | None=None, route_id: int | None=None, price_level_id: int | None=None, include_deleted: bool=False) -> list[dict]
+    def get_active_customers() -> list[dict]
+    def soft_delete_customer(customer_id: int, deleted_by: str) -> tuple[bool, str]
+    def set_active_status(customer_id: int, is_active: bool, updated_by: str) -> tuple[bool, str]
+    def restore_customer(customer_id: int, updated_by: str) -> tuple[bool, str]
+    def _resolve_area_id(area_name: str | None) -> int | None
+    def _resolve_route_id(route_name: str | None) -> int | None
+    def _today_bs() -> str
+
+----- engines\customer_validator.py -----
+    # =========================================================
+    def validate_customer(data: dict) -> tuple[bool, str]
+    def _validate_customer_name(name) -> tuple[bool, str]
+    def _validate_mobile(value, field_label: str='Mobile') -> tuple[bool, str]
+    def _validate_email(value) -> tuple[bool, str]
+    def _validate_non_negative(value, field_label: str) -> tuple[bool, str]
+    def _validate_non_negative_int(value, field_label: str) -> tuple[bool, str]
+    def _validate_balance_type(value) -> tuple[bool, str]
+    def _validate_photo_path(value) -> tuple[bool, str]
+
+----- engines\dashboard_engine.py -----
+    # =========================================================
+    class DashboardData():
+    def build_dashboard(roleid: int, is_admin: bool) -> DashboardData
+    def _all_menu_names() -> list[str]
+    def _build_alerts(data: DashboardData) -> list[str]
+
+----- engines\date_engine.py -----
+    # =========================================================
+    class DateEngineError(Exception):
+        # Raised when a date operation cannot be completed.
+    def validate_bs_date(bs_date_text: str) -> tuple[bool, str]
+    def bs_to_ad(bs_date_text: str) -> date
+    def ad_to_bs(ad_date: date) -> str
+    def get_financial_year(bs_year: int, bs_month: int) -> str
+    def get_financial_year_from_bs_date(bs_date_text: str) -> str
+    def date_diff_days(ad_date_1: date, ad_date_2: date) -> int
+    def calculate_age(birth_ad_date: date, as_of_ad_date: date | None=None) -> int
+    def get_month_name(bs_month: int) -> str
+    def format_for_report(bs_date_text: str) -> str
+
+----- engines\exceptions.py -----
+    # engines/exceptions.py
+    class EngineError(Exception):
+        # Base class for all business-rule/engine-layer errors.
+    class ValidationError(EngineError):
+        # Raised when input fails business validation. Carries the full error list.
+        def __init__(self, errors: list[str])
+    class RecordNotFoundError(EngineError):
+        # Raised when an operation targets a record that does not exist (or is deleted).
+    class DuplicateRecordError(EngineError):
+        # Raised when a uniqueness rule is violated outside the normal validation path
+
+----- engines\item_engine.py -----
+    # engines/item_engine.py
+    def _load_date_engine()
+    def _load_settings_engine()
+    def _default_country_tax_lookup(_country: str) -> tuple[float, float]
+    def _default_manufacturer_lookup(_manufacturer_id: Optional[int]) -> Optional[dict]
+    class ItemDTO():
+        # Read-facing representation returned by the Engine to callers.
+        def from_row(cls, row: dict) -> 'ItemDTO'
+        def to_dict(self) -> dict
+    class ItemBatchDTO():
+        def from_row(cls, row: dict) -> 'ItemBatchDTO'
+    class ItemEngine():
+        # Business-rule orchestration for Item Master.
+        def __init__(self, model: Optional[ItemModel]=None, batch_model: Optional[ItemBatchModel]=None, stock_transaction_model: Optional[StockTransactionModel]=None, country_tax_lookup_fn: Optional[CountryTaxLookupFn]=None, manufacturer_lookup_fn: Optional[ManufacturerLookupFn]=None) -> None
+        def _now_ad(self) -> datetime
+        def _now_bs(self) -> Optional[str]
+        def _code_prefix(self) -> str
+        def generate_item_code(self) -> str
+        def _clean_payload(self, payload: dict) -> dict
+        def create_item(self, payload: dict, current_user_id: int) -> ItemDTO
+        def update_item(self, item_id: int, payload: dict, current_user_id: int) -> ItemDTO
+        def get_item(self, item_id: int, include_deleted: bool=False) -> ItemDTO
+        def search_items(self, search_text: Optional[str]=None, category_id: Optional[int]=None, manufacturer_id: Optional[int]=None, item_group_id: Optional[int]=None, status: Optional[str]=None, include_deleted: bool=False, page: int=1, page_size: int=50) -> tuple[list[ItemDTO], int]
+        def is_name_taken(self, item_name: str, exclude_id: Optional[int]=None) -> bool
+        def is_code_taken(self, item_code: str, exclude_id: Optional[int]=None) -> bool
+        def resolve_item_tax(self, item_id: int) -> tuple[float, float]
+        def _resolve_tax_for_row(self, item_row: dict) -> tuple[float, float]
+        def delete_item(self, item_id: int, current_user_id: int) -> None
+        def restore_item(self, item_id: int, current_user_id: int) -> ItemDTO
+        def add_batch(self, item_id: int, batch_payload: dict, current_user_id: int, transaction_type: str='OPENING', reference_type: Optional[str]=None, reference_id: Optional[int]=None) -> ItemBatchDTO
+        def post_stock_movement(self, item_batch_id: int, transaction_type: str, quantity_change: float, current_user_id: int, reference_type: Optional[str]=None, reference_id: Optional[int]=None, remarks: Optional[str]=None) -> ItemBatchDTO
+        def get_stock_ledger(self, item_id: int) -> list[dict]
+        def get_batches(self, item_id: int) -> list[ItemBatchDTO]
+        def get_total_stock(self, item_id: int) -> float
+    def _is_unique_violation(exc: Exception) -> bool
+
+----- engines\item_lookup_registry.py -----
+    # engines/item_lookup_registry.py
+    def manufacturer_engine() -> ManufacturerEngine
+    def manufacturer_lookup(manufacturer_id: Optional[int]) -> Optional[dict]
+    def country_tax_lookup(country: str) -> tuple[float, float]
+
+----- engines\license_manager.py -----
+    # =========================================================
+    def get_machine_id() -> str
+    def validate_license() -> tuple[bool, str]
+    def is_module_enabled(module_name: str) -> bool
+
+----- engines\manufacturer_engine.py -----
+    # engines/manufacturer_engine.py
+    def _load_date_engine()
+    def _load_settings_engine()
+    def generate_short_name_base(manufacturer_name: str) -> str
+    class ManufacturerDTO():
+        # Read-facing representation returned by the Engine to callers (Screens/tests).
+        def from_row(cls, row: dict) -> 'ManufacturerDTO'
+        def to_dict(self) -> dict
+    class ManufacturerEngine():
+        # Business-rule orchestration for the Manufacturer Master.
+        def __init__(self, model: Optional[ManufacturerModel]=None, date_engine: Optional[Any]=None, settings_engine: Optional[Any]=None) -> None
+        def _now_ad(self) -> datetime
+        def _now_bs(self) -> Optional[str]
+        def _code_prefix(self) -> str
+        def generate_manufacturer_code(self) -> str
+        def _resolve_unique_short_name(self, manufacturer_name: str, exclude_id: Optional[int]=None) -> str
+        def _clean_payload(self, payload: dict) -> dict
+        def create_manufacturer(self, payload: dict, current_user_id: int) -> ManufacturerDTO
+        def update_manufacturer(self, manufacturer_id: int, payload: dict, current_user_id: int) -> ManufacturerDTO
+        def get_manufacturer(self, manufacturer_id: int, include_deleted: bool=False) -> ManufacturerDTO
+        def search_manufacturers(self, search_text: Optional[str]=None, status: Optional[str]=None, country: Optional[str]=None, include_deleted: bool=False, page: int=1, page_size: int=50) -> tuple[list[ManufacturerDTO], int]
+        def list_countries(self) -> list[str]
+        def is_name_taken(self, manufacturer_name: str, exclude_id: Optional[int]=None) -> bool
+        def is_code_taken(self, manufacturer_code: str, exclude_id: Optional[int]=None) -> bool
+        def preview_short_name(self, manufacturer_name: str, exclude_id: Optional[int]=None) -> str
+        def delete_manufacturer(self, manufacturer_id: int, current_user_id: int) -> None
+        def restore_manufacturer(self, manufacturer_id: int, current_user_id: int) -> ManufacturerDTO
+    def _is_unique_violation(exc: Exception) -> bool
+
+----- engines\password_manager.py -----
+    # =========================================================
+    def hash_password(plain_password: str) -> tuple[str, str]
+    def verify_password(plain_password: str, stored_hash: str, stored_salt: str) -> bool
+    def _derive(plain_password: str, salt: str) -> str
+    def check_password_policy(plain_password: str) -> tuple[bool, str]
+    def is_password_expired(password_changed_at: datetime, expiry_days: int=PASSWORD_EXPIRY_DAYS) -> bool
+    def generate_remember_token() -> str
+
+----- engines\session_manager.py -----
+    # =========================================================
+    def create_session(userid: int, companyid: str, financialyear: str) -> dict
+    def destroy_session(session_id: str) -> None
+    def touch_session(session_id: str) -> None
+    def is_session_timed_out(last_activity: datetime, timeout_minutes: int=SESSION_TIMEOUT_MINUTES) -> bool
+    def get_current_session() -> dict | None
+
+----- engines\settings_cache.py -----
+    # =========================================================
+    def is_loaded() -> bool
+    def load_cache(settings_rows: list[dict]) -> None
+    def get_cached_value(key: str, default=None)
+    def get_cached_row(key: str) -> dict | None
+    def get_all_cached() -> dict[str, dict]
+    def update_cached_value(key: str, new_value: str) -> None
+    def clear_cache() -> None
+
+----- engines\settings_engine.py -----
+    # =========================================================
+    def load_all_settings() -> None
+    def refresh_cache() -> None
+    def get_setting(key: str, default=None)
+    def get_settings_grouped() -> dict[str, list[dict]]
+    def search_settings(search_text: str) -> list[dict]
+    def save_setting(key: str, new_value: str, updated_by: str, reason: str='') -> tuple[bool, str]
+    def apply_setting_temporarily(key: str, new_value: str) -> tuple[bool, str]
+    def reset_setting_to_default(key: str, updated_by: str) -> tuple[bool, str]
+    def requires_restart(setting_group: str) -> bool
+    def export_settings(file_path: str) -> tuple[bool, str]
+    def get_setting_history(key: str) -> list[dict]
+    def get_recent_changes(limit: int=10) -> list[dict]
+    def import_settings(file_path: str, updated_by: str) -> tuple[bool, str]
+
+----- engines\settings_validator.py -----
+    # =========================================================
+    def validate_setting_value(data_type: str, value: str) -> tuple[bool, str]
+    def _validate_integer(value: str) -> tuple[bool, str]
+    def _validate_decimal(value: str) -> tuple[bool, str]
+    def _validate_boolean(value: str) -> tuple[bool, str]
+    def _validate_color(value: str) -> tuple[bool, str]
+    def parse_setting_value(data_type: str, value: str)
+
+----- engines\simple_master_engine.py -----
+    # engines/simple_master_engine.py
+    def _load_date_engine()
+    def _load_settings_engine()
+    class MasterDTO():
+        # Read-facing representation returned by SimpleMasterEngine to callers
+    class SimpleMasterEngine():
+        # Business-rule orchestration shared by every simple lookup master.
+        def __init__(self, config: MasterTableConfig, model: Optional[SimpleMasterModel]=None) -> None
+        def _now_ad(self) -> datetime
+        def _now_bs(self) -> Optional[str]
+        def _row_to_dto(self, row: dict) -> MasterDTO
+        def _code_prefix(self) -> str
+        def generate_code(self) -> str
+        def _validate_fields(self, code: str, name: str) -> list[str]
+        def create(self, payload: dict[str, Any], current_user_id: int, scope_id: Optional[int]=None) -> MasterDTO
+        def update(self, record_id: int, payload: dict[str, Any], current_user_id: int, scope_id: Optional[int]=None) -> MasterDTO
+        def get(self, record_id: int, include_deleted: bool=False) -> MasterDTO
+        def search(self, search_text: Optional[str]=None, include_deleted: bool=False) -> list[MasterDTO]
+        def list_active(self) -> list[MasterDTO]
+        def delete(self, record_id: int, current_user_id: int) -> None
+        def restore(self, record_id: int, current_user_id: int) -> MasterDTO
+    def _is_unique_violation(exc: Exception) -> bool
+    def category_engine() -> SimpleMasterEngine
+    def sub_category_engine() -> SimpleMasterEngine
+    def item_group_engine() -> SimpleMasterEngine
+    def unit_engine() -> SimpleMasterEngine
+    def generic_engine() -> SimpleMasterEngine
+
+----- engines\subscription_manager.py -----
+    # =========================================================
+    def validate_subscription() -> tuple[bool, str]
+    def check_user_limit(current_user_count: int) -> tuple[bool, str]
+
+----- engines\supplier_engine.py -----
+    # engines/supplier_engine.py
+    def _load_date_engine()
+    def _load_settings_engine()
+    class SupplierDTO():
+        # Read-facing representation returned by the Engine to callers (Screens/tests).
+        def from_row(cls, row: dict) -> 'SupplierDTO'
+        def to_dict(self) -> dict
+    class SupplierEngine():
+        # Business-rule orchestration for the Supplier Master.
+        def __init__(self, model: Optional[SupplierModel]=None, date_engine: Optional[Any]=None, settings_engine: Optional[Any]=None) -> None
+        def _now_ad(self) -> datetime
+        def _load_date_engine()
+        def _now_bs(self) -> Optional[str]
+        def _code_prefix(self) -> str
+        def generate_supplier_code(self) -> str
+        def _clean_payload(self, payload: dict) -> dict
+        def create_supplier(self, payload: dict, current_user_id: int) -> SupplierDTO
+        def update_supplier(self, supplier_id: int, payload: dict, current_user_id: int) -> SupplierDTO
+        def get_supplier(self, supplier_id: int, include_deleted: bool=False) -> SupplierDTO
+        def search_suppliers(self, search_text: Optional[str]=None, status: Optional[str]=None, include_deleted: bool=False, page: int=1, page_size: int=50) -> tuple[list[SupplierDTO], int]
+        def is_name_taken(self, supplier_name: str, exclude_id: Optional[int]=None) -> bool
+        def is_code_taken(self, supplier_code: str, exclude_id: Optional[int]=None) -> bool
+        def delete_supplier(self, supplier_id: int, current_user_id: int) -> None
+        def restore_supplier(self, supplier_id: int, current_user_id: int) -> SupplierDTO
+    def _is_unique_violation(exc: Exception) -> bool
+
+----- engines\supplier_manufacturer_discount_engine.py -----
+    # engines/supplier_manufacturer_discount_engine.py
+    def _load_date_engine()
+    class SupplierManufacturerDiscountDTO():
+        # Read-facing representation returned by the Engine to callers (Screens/tests).
+        def from_row(cls, row: dict) -> 'SupplierManufacturerDiscountDTO'
+        def to_dict(self) -> dict
+    class SupplierManufacturerDiscountEngine():
+        # Business-rule orchestration for the Supplier-Manufacturer Discount mapping.
+        def __init__(self, model: Optional[SupplierManufacturerDiscountModel]=None, date_engine: Optional[Any]=None) -> None
+        def _now_ad(self) -> datetime
+        def _now_bs(self) -> Optional[str]
+        def _clean_payload(self, payload: dict) -> dict
+        def create_discount(self, payload: dict, current_user_id: int) -> SupplierManufacturerDiscountDTO
+        def update_discount(self, record_id: int, payload: dict, current_user_id: int) -> SupplierManufacturerDiscountDTO
+        def get_discount_record(self, record_id: int, include_deleted: bool=False) -> SupplierManufacturerDiscountDTO
+        def search_discounts(self, search_text: Optional[str]=None, supplier_id: Optional[int]=None, manufacturer_id: Optional[int]=None, include_deleted: bool=False, page: int=1, page_size: int=50) -> Tuple[List[SupplierManufacturerDiscountDTO], int]
+        def is_pair_taken(self, supplier_id: int, manufacturer_id: int, exclude_id: Optional[int]=None) -> bool
+        def get_discount(self, supplier_id: int, manufacturer_id: int) -> float
+        def delete_discount(self, record_id: int, current_user_id: int) -> None
+        def restore_discount(self, record_id: int, current_user_id: int) -> SupplierManufacturerDiscountDTO
+    def _is_unique_violation(exc: Exception) -> bool
+
+----- engines\theme_engine.py -----
+    # =========================================================
+    def apply_theme(theme_name: str) -> None
+    def toggle_theme() -> str
+    def get_current_theme() -> str
+    def get_available_themes() -> list[str]
+
+----- engines\user_engine.py -----
+    # engines/user_engine.py
+    class UserDTO():
+        def is_deleted(self) -> bool
+        def is_active(self) -> bool
+    def _row_to_dto(row: dict) -> UserDTO
+    class UserEngine():
+        # Business logic for the User Master. Screens call ONLY this class.
+        def create_user(self, data: dict, current_user_id) -> UserDTO
+        def update_user(self, user_id: int, data: dict, current_user_id) -> UserDTO
+        def set_active_status(self, user_id: int, is_active: bool, current_user_id) -> UserDTO
+        def delete_user(self, user_id: int, current_user_id, remarks: Optional[str]=None) -> None
+        def restore_user(self, user_id: int, current_user_id) -> UserDTO
+        def change_password(self, user_id: int, old_password: str, new_password: str) -> None
+        def reset_password(self, user_id: int, new_password: str, reset_by) -> None
+        def get_user(self, user_id: int) -> UserDTO
+        def search_users(self, search_text: Optional[str]=None, status: Optional[str]=None, role_id: Optional[int]=None, company_id: Optional[str]=None, include_deleted: bool=False, page: int=1, page_size: int=500) -> Tuple[List[UserDTO], int]
+    def _snapshot(row: dict) -> dict
+
+----- models\__init__.py -----
+    [no top-level classes/functions]
+
+----- models\company_model.py -----
+    # =========================================================
+    class CompanyModelError(Exception):
+        # Raised when a database operation on `company` fails.
+    def get_active_companies() -> list
+    def generate_next_company_id(cursor) -> str
+    def company_name_exists(companyname: str, exclude_companyid: Optional[str]=None) -> bool
+    def insert_company(data: Dict[str, Any], created_by: str) -> str
+    def update_company(companyid: str, data: Dict[str, Any], modified_by: str) -> bool
+    def soft_delete_company(companyid: str, deleted_by: str) -> bool
+    def restore_company(companyid: str, modified_by: str) -> bool
+    def set_company_status(companyid: str, status: str, modified_by: str) -> bool
+    def get_company_by_id(companyid: str) -> Optional[Dict[str, Any]]
+    def list_companies(search_term: Optional[str]=None, status_filter: str='active', include_deleted: bool=False) -> List[Dict[str, Any]]
+
+----- models\country_tax_model.py -----
+    # models/country_tax_model.py
+    def _get_connection()
+    def _dict_cursor_factory()
+    class CountryTaxSearchFilters():
+        # Filter parameters for country tax search/listing.
+    class CountryTaxModel():
+        # Data-access layer for the `country_tax` table. SQL only, no business logic.
+        def insert(self, data: dict[str, Any]) -> int
+        def update(self, country_tax_id: int, data: dict[str, Any]) -> bool
+        def get_by_id(self, country_tax_id: int, include_deleted: bool=False) -> Optional[dict]
+        def get_by_country(self, country: str, include_deleted: bool=False) -> Optional[dict]
+        def exists_by_country(self, country: str, exclude_id: Optional[int]=None) -> bool
+        def search(self, filters: CountryTaxSearchFilters) -> tuple[list[dict], int]
+        def list_active(self) -> list[dict]
+        def soft_delete(self, country_tax_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> bool
+        def restore(self, country_tax_id: int, updated_by: int, updated_at_ad, updated_at_bs: str) -> bool
+
+----- models\customer_model.py -----
+    # =========================================================
+    def get_next_customer_code(prefix: str) -> str
+    def customer_name_exists(name: str, exclude_id: int | None=None) -> bool
+    def customer_code_exists(code: str, exclude_id: int | None=None) -> bool
+    def create_customer(data: dict, created_by: str, created_at_bs: str) -> int
+    def update_customer(customer_id: int, data: dict, updated_by: str, updated_at_bs: str) -> None
+    def get_customer_by_id(customer_id: int) -> dict | None
+    def list_customers(search_text: str | None=None, is_active: bool | None=None, area_id: int | None=None, route_id: int | None=None, price_level_id: int | None=None, include_deleted: bool=False) -> list[dict]
+    def restore_customer(customer_id: int, updated_by: str, updated_at_bs: str) -> None
+    def get_area_by_name(name: str) -> dict | None
+    def create_area(name: str) -> int
+    def get_route_by_name(name: str) -> dict | None
+    def create_route(name: str) -> int
+    def get_active_customers() -> list[dict]
+    def soft_delete_customer(customer_id: int, deleted_by: str, deleted_at_bs: str) -> None
+    def set_active_status(customer_id: int, is_active: bool, updated_by: str, updated_at_bs: str) -> None
+    def get_areas(active_only: bool=True) -> list[dict]
+    def get_routes(active_only: bool=True) -> list[dict]
+    def get_price_levels(active_only: bool=True) -> list[dict]
+    def restore_customer(customer_id: int, updated_by: str, updated_at_bs: str) -> None
+
+----- models\dashboard_model.py -----
+    # =========================================================
+    def _safe_scalar_query(query: str, params: tuple=()) -> float
+    def get_today_sales_total(today_ad: date | None=None) -> float
+    def get_today_purchase_total(today_ad: date | None=None) -> float
+    def get_stock_value() -> float
+    def get_low_stock_count(threshold_qty: float=10) -> float
+    def get_expiring_medicines_count(within_days: int=90) -> float
+    def get_pending_payments_total() -> float
+    def get_pending_receipts_total() -> float
+    def get_active_users_count() -> float
+
+----- models\financialyear_model.py -----
+    # =========================================================
+    def get_all_financial_years() -> list[dict]
+    def get_active_financial_year() -> dict | None
+
+----- models\item_model.py -----
+    # models/item_model.py
+    def _get_connection()
+    def _dict_cursor_factory()
+    class ItemSearchFilters():
+        # Filter parameters for item search/listing.
+    class ItemModel():
+        # Data-access layer for the `item` table. SQL only, no business logic.
+        def insert(self, data: dict[str, Any]) -> int
+        def update(self, item_id: int, data: dict[str, Any]) -> bool
+        def get_by_id(self, item_id: int, include_deleted: bool=False) -> Optional[dict]
+        def exists_by_name(self, item_name: str, exclude_id: Optional[int]=None) -> bool
+        def exists_by_code(self, item_code: str, exclude_id: Optional[int]=None) -> bool
+        def get_last_code_sequence(self, prefix: str) -> int
+        def search(self, filters: ItemSearchFilters) -> tuple[list[dict], int]
+        def get_total_stock(self, item_id: int) -> float
+        def soft_delete(self, item_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: Optional[str]) -> bool
+        def restore(self, item_id: int, updated_by: int, updated_at_ad, updated_at_bs: Optional[str]) -> bool
+    class ItemBatchModel():
+        # Data-access layer for the `item_batch` table. SQL only.
+        def insert(self, data: dict[str, Any]) -> int
+        def insert_with_ledger(self, batch_data: dict[str, Any], ledger_data: dict[str, Any]) -> tuple[int, int]
+        def update_qty_with_ledger(self, item_batch_id: int, quantity_change: float, ledger_data: dict[str, Any]) -> int
+        def get_by_item(self, item_id: int) -> list[dict]
+        def get_by_id(self, item_batch_id: int) -> Optional[dict]
+        def exists_batch_no(self, item_id: int, batch_no: str) -> bool
+    class StockLedgerModel():
+        # Data-access layer for the `stock_ledger` table. Append-only -- there
+        def insert(self, data: dict[str, Any]) -> int
+        def get_by_item(self, item_id: int) -> list[dict]
+        def get_by_batch(self, item_batch_id: int) -> list[dict]
+
+----- models\manufacturer_model.py -----
+    # models/manufacturer_model.py
+    def _get_connection()
+    def _dict_cursor_factory()
+    class ManufacturerSearchFilters():
+        # Filter parameters for manufacturer search/listing.
+    class ManufacturerModel():
+        # Data-access layer for the `manufacturer` table. SQL only, no business logic.
+        def insert(self, data: dict[str, Any]) -> int
+        def update(self, manufacturer_id: int, data: dict[str, Any]) -> bool
+        def get_by_id(self, manufacturer_id: int, include_deleted: bool=False) -> Optional[dict]
+        def get_by_name(self, manufacturer_name: str, include_deleted: bool=False) -> Optional[dict]
+        def get_by_code(self, manufacturer_code: str, include_deleted: bool=False) -> Optional[dict]
+        def exists_by_name(self, manufacturer_name: str, exclude_id: Optional[int]=None) -> bool
+        def exists_by_code(self, manufacturer_code: str, exclude_id: Optional[int]=None) -> bool
+        def exists_by_short_name(self, short_name: str, exclude_id: Optional[int]=None) -> bool
+        def get_last_code_sequence(self, prefix: str) -> int
+        def search(self, filters: ManufacturerSearchFilters) -> tuple[list[dict], int]
+        def get_distinct_countries(self) -> list[str]
+        def soft_delete(self, manufacturer_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> bool
+        def restore(self, manufacturer_id: int, updated_by: int, updated_at_ad, updated_at_bs: str) -> bool
+
+----- models\role_model.py -----
+    # =========================================================
+    def get_role_by_id(roleid: int) -> dict | None
+    def get_role_name(roleid: int) -> str
+    def list_roles() -> list[dict]
+
+----- models\settings_model.py -----
+    # =========================================================
+    def get_all_settings(companyid: str | None=None, userid: int | None=None) -> list[dict]
+    def get_setting_by_key(key: str, companyid: str | None=None, userid: int | None=None) -> dict | None
+    def get_settings_by_group(setting_group: str) -> list[dict]
+    def get_all_groups() -> list[str]
+    def search_settings(search_text: str) -> list[dict]
+    def update_setting_value(key: str, value: str, updated_by: str, reason: str='') -> tuple[bool, str]
+    def reset_setting_to_default(key: str, updated_by: str) -> tuple[bool, str]
+    def create_setting(key: str, value: str, setting_group: str, data_type: str, default_value: str, description: str, display_order: int, created_by: str) -> tuple[bool, str]
+    def get_setting_history(key: str) -> list[dict]
+    def get_recent_history(limit: int=10) -> list[dict]
+
+----- models\settings_screen.py -----
+    # =========================================================
+    class SettingsScreen(QMainWindow):
+        def __init__(self, login_result, parent=None)
+        def _build_ui(self)
+        def _build_header(self)
+        def _build_landing_page(self) -> QWidget
+        def _build_group_detail_page(self) -> QWidget
+        def _build_search_results_page(self) -> QWidget
+        def _setup_shortcuts(self)
+        def _handle_escape(self)
+        def _refresh_theme_icon(self)
+        def _handle_theme_toggle(self)
+        def reload_landing(self)
+        def _load_recent_changes(self)
+        def _load_tiles(self)
+        def _refresh_restart_banner(self)
+        def open_group(self, group_name: str)
+        def _handle_discard_group(self)
+        def _handle_save_group(self)
+        def _handle_field_dirty_check(self)
+        def _handle_apply(self, key: str, value: str)
+        def _handle_reset(self, key: str)
+        def _handle_history(self, key: str)
+        def _handle_search_text_changed(self, text: str)
+        def _run_search(self)
+        def _handle_search_apply(self, key: str, value: str)
+        def _handle_export(self)
+        def _handle_import(self)
+
+----- models\simple_master_model.py -----
+    # models/simple_master_model.py
+    class MasterTableConfig():
+        # Describes one simple lookup master table's shape so SimpleMasterModel /
+    class SimpleMasterModel():
+        # Data-access layer for any table described by a MasterTableConfig. SQL only.
+        def __init__(self, config: MasterTableConfig) -> None
+        def insert(self, data: dict[str, Any]) -> int
+        def update(self, record_id: int, data: dict[str, Any]) -> bool
+        def get_by_id(self, record_id: int, include_deleted: bool=False) -> Optional[dict]
+        def exists_by_name(self, name: str, exclude_id: Optional[int]=None, scope_id: Optional[int]=None) -> bool
+        def exists_by_code(self, code: str, exclude_id: Optional[int]=None, scope_id: Optional[int]=None) -> bool
+        def get_last_code_sequence(self, prefix: str) -> int
+        def search(self, search_text: Optional[str]=None, include_deleted: bool=False) -> list[dict]
+        def list_active(self) -> list[dict]
+        def soft_delete(self, record_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: Optional[str]) -> bool
+        def restore(self, record_id: int, updated_by: int, updated_at_ad, updated_at_bs: Optional[str]) -> bool
+
+----- models\stock_transaction_model.py -----
+    # models/stock_transaction_model.py
+    def _get_connection()
+    def _dict_cursor_factory()
+    class StockTransactionModel():
+        # Data-access layer for `stock_transaction`. Insert + read only -- no update/delete.
+        def insert(self, data: dict[str, Any]) -> int
+        def get_by_item(self, item_id: int) -> list[dict]
+        def get_by_batch(self, item_batch_id: int) -> list[dict]
+
+----- models\supplier_manufacturer_discount_model.py -----
+    # models/supplier_manufacturer_discount_model.py
+    def _get_connection()
+    def _dict_cursor_factory()
+    class SupplierManufacturerDiscountSearchFilters():
+        # Filter parameters for search/listing.
+    class SupplierManufacturerDiscountModel():
+        # Data-access layer for `supplier_manufacturer_discount`. SQL only, no business logic.
+        def insert(self, data: dict[str, Any]) -> int
+        def update(self, record_id: int, data: dict[str, Any]) -> bool
+        def get_by_id(self, record_id: int, include_deleted: bool=False) -> Optional[dict]
+        def get_by_pair(self, supplier_id: int, manufacturer_id: int, include_deleted: bool=False) -> Optional[dict]
+        def exists_by_pair(self, supplier_id: int, manufacturer_id: int, exclude_id: Optional[int]=None) -> bool
+        def search(self, filters: SupplierManufacturerDiscountSearchFilters) -> tuple[list[dict], int]
+        def soft_delete(self, record_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> bool
+        def restore(self, record_id: int, updated_by: int, updated_at_ad, updated_at_bs: str) -> bool
+
+----- models\supplier_model.py -----
+    # models/supplier_model.py
+    def _get_connection()
+    def _dict_cursor_factory()
+    class SupplierSearchFilters():
+        # Filter parameters for supplier search/listing.
+    class SupplierModel():
+        # Data-access layer for the `supplier` table. SQL only, no business logic.
+        def insert(self, data: dict[str, Any]) -> int
+        def update(self, supplier_id: int, data: dict[str, Any]) -> bool
+        def get_by_id(self, supplier_id: int, include_deleted: bool=False) -> Optional[dict]
+        def get_by_name(self, supplier_name: str, include_deleted: bool=False) -> Optional[dict]
+        def get_by_code(self, supplier_code: str, include_deleted: bool=False) -> Optional[dict]
+        def exists_by_name(self, supplier_name: str, exclude_id: Optional[int]=None) -> bool
+        def exists_by_code(self, supplier_code: str, exclude_id: Optional[int]=None) -> bool
+        def get_last_code_sequence(self, prefix: str) -> int
+        def search(self, filters: SupplierSearchFilters) -> tuple[list[dict], int]
+        def soft_delete(self, supplier_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> bool
+        def restore(self, supplier_id: int, updated_by: int, updated_at_ad, updated_at_bs: str) -> bool
+
+----- models\user_model.py -----
+    # =========================================================
+    class UserModelError(Exception):
+        # Raised when a database operation on `users` (User Master side) fails.
+    def get_user_by_username(username: str) -> dict | None
+    def create_user(username: str, plain_password: str, fullname: str, roleid: int, companyid: str, created_by: str) -> tuple[bool, str]
+    def register_failed_attempt(username: str) -> None
+    def reset_failed_attempts(username: str) -> None
+    def auto_unlock_if_due(user: dict) -> dict
+    def update_password(userid: int, plain_password: str) -> tuple[bool, str]
+    def count_active_users() -> int
+    def exists_username(username: str, exclude_userid: Optional[int]=None) -> bool
+    def get_user_by_id(userid: int) -> Optional[dict]
+    def insert_user(data: Dict[str, Any], created_by: str) -> int
+    def update_user(userid: int, data: Dict[str, Any], modified_by: str) -> None
+    def set_user_status(userid: int, status: str, modified_by: str) -> None
+    def soft_delete_user(userid: int, deleted_by: str) -> None
+    def restore_user(userid: int, restored_by: str) -> None
+    def update_user_password(userid: int, plain_password: str, must_change: bool) -> tuple[str, str]
+    def list_users(search_term: Optional[str]=None, status_filter: str='all', role_id: Optional[int]=None, company_id: Optional[str]=None, include_deleted: bool=False) -> List[dict]
+    def insert_password_history(userid: int, passwordhash: str, passwordsalt: str) -> None
+    def get_password_history(userid: int, limit: int=5) -> List[dict]
+    def insert_user_audit(userid: int, action: str, performed_by: str, old_value: Optional[dict]=None, new_value: Optional[dict]=None, remarks: Optional[str]=None) -> None
+
+----- screens\__init__.py -----
+    [no top-level classes/functions]
+
+----- screens\change_password_screen.py -----
+    # screens/change_password_screen.py
+    class ChangePasswordScreen(QDialog):
+        # Logged-in user changes their own password.
+        def __init__(self, parent: Optional[QWidget]=None, user_id: Optional[int]=None, engine: Optional[UserEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _show_validation_message(self, message: str) -> None
+        def _on_change_clicked(self) -> None
+
+----- screens\company_form_screen.py -----
+    # screens/company_form_screen.py
+    class CompanyFormScreen(QDialog):
+        # Add/Edit dialog for a single company. Create mode when company_id is None.
+        def __init__(self, parent: Optional[QWidget]=None, company_id: Optional[str]=None, engine: Optional[CompanyEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _load_existing_company(self) -> None
+        def _collect_form_values(self) -> dict
+        def _on_save_clicked(self) -> None
+        def _show_validation_message(self, message: str) -> None
+
+----- screens\company_list_screen.py -----
+    # screens/company_list_screen.py
+    class CompanyListScreen(QWidget):
+        # Company Master list/search/filter screen. Opens CompanyFormScreen for Add/Edit.
+        def __init__(self, parent: Optional[QWidget]=None, engine: Optional[CompanyEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _on_search_text_changed(self, _text: str) -> None
+        def refresh(self) -> None
+        def _populate_table(self, rows: list[CompanyDTO]) -> None
+        def _selected_dto(self) -> Optional[CompanyDTO]
+        def _on_selection_changed(self) -> None
+        def _on_add_clicked(self) -> None
+        def _on_edit_clicked(self) -> None
+        def _on_delete_clicked(self) -> None
+        def _on_restore_clicked(self) -> None
+        def _on_export_clicked(self) -> None
+        def _on_print_clicked(self) -> None
+        def _on_close_clicked(self) -> None
+
+----- screens\country_tax_form_screen.py -----
+    # screens/country_tax_form_screen.py
+    class CountryTaxFormScreen(QDialog):
+        # Add/Edit dialog for a single country tax row. Create mode when country_tax_id is None.
+        def __init__(self, parent: Optional[QWidget]=None, country_tax_id: Optional[int]=None, engine: Optional[CountryTaxEngine]=None, manufacturer_engine: Optional[ManufacturerEngine]=None) -> None
+        def _populate_country_combo(self) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _load_existing_country_tax(self) -> None
+        def _collect_form_values(self) -> dict
+        def _on_save_clicked(self) -> None
+        def _on_clear_clicked(self) -> None
+        def _show_validation_message(self, message: str) -> None
+
+----- screens\country_tax_list_screen.py -----
+    # screens/country_tax_list_screen.py
+    class CountryTaxListScreen(QWidget):
+        # Country Tax Settings list/search/filter screen. Opens CountryTaxFormScreen for Add/Edit.
+        def __init__(self, parent: Optional[QWidget]=None, engine: Optional[CountryTaxEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _on_search_text_changed(self, _text: str) -> None
+        def refresh(self) -> None
+        def _populate_table(self, rows: list[CountryTaxDTO]) -> None
+        def _selected_dto(self) -> Optional[CountryTaxDTO]
+        def _on_selection_changed(self) -> None
+        def _on_add_clicked(self) -> None
+        def _on_edit_clicked(self) -> None
+        def _on_delete_clicked(self) -> None
+        def _on_restore_clicked(self) -> None
+        def _on_close_clicked(self) -> None
+
+----- screens\customer_form_screen.py -----
+    # =========================================================
+    class CustomerFormScreen(QDialog):
+        def __init__(self, login_result, customer_id: int | None=None, parent=None)
+        def _build_ui(self)
+        def _build_header(self) -> QWidget
+        def _build_photo_and_status_column(self) -> QWidget
+        def _build_fields_column(self) -> QWidget
+        def _build_identification_group(self) -> QGroupBox
+        def _build_contact_group(self) -> QGroupBox
+        def _build_address_group(self) -> QGroupBox
+        def _build_business_group(self) -> QGroupBox
+        def _build_financial_group(self) -> QGroupBox
+        def _build_classification_group(self) -> QGroupBox
+        def _build_remarks_group(self) -> QGroupBox
+        def _build_footer(self) -> QWidget
+        def _populate_lookup_combo(combo: QComboBox, rows: list[dict], id_key: str, name_key: str)
+        def _select_combo_by_data(combo: QComboBox, value)
+        def _select_editable_by_name(combo: QComboBox, rows: list[dict], id_key: str, name_key: str, value)
+        def _load_existing_customer(self)
+        def _editable_combo_text(combo: QComboBox) -> str | None
+        def _collect_form_data(self) -> dict
+        def _handle_save(self)
+        def _handle_cancel(self)
+
+----- screens\customer_list_screen.py -----
+    # =========================================================
+    class CustomerListScreen(QMainWindow):
+        def __init__(self, login_result, parent=None)
+        def _build_ui(self)
+        def _build_header(self) -> QWidget
+        def _build_filter_bar(self) -> QWidget
+        def _build_detail_panel(self) -> QWidget
+        def _detail_field_row(parent_layout: QVBoxLayout, label_text: str) -> QLabel
+        def reload(self)
+        def _refresh_filter_lookup_combos(self)
+        def _repopulate_lookup_combo(combo: QComboBox, rows: list[dict], id_key: str, name_key: str, all_label: str)
+        def _add_table_row(self, row_data: dict)
+        def _build_actions_widget(self, row_data: dict) -> QWidget
+        def _lookup_name(rows: list[dict], id_key: str, value, name_key: str) -> str
+        def _handle_selection_changed(self)
+        def _show_detail_placeholder(self)
+        def _format_audit(by, at_bs, at_ad) -> str
+        def _show_detail(self, row_data: dict)
+        def _handle_row_double_clicked(self, row_index: int, column_index: int)
+        def _open_form(self, customer_id: int | None)
+        def _handle_toggle_active(self, customer_id: int, activate: bool)
+        def _handle_delete(self, customer_id: int)
+        def _handle_restore(self, customer_id: int)
+
+----- screens\dashboard_screen.py -----
+    # =========================================================
+    class DashboardScreen(QMainWindow):
+        def __init__(self, login_result)
+        def initialize(self)
+        def _apply_icons(self)
+        def _apply_tooltips_and_status_tips(self)
+        def _setup_shortcuts(self)
+        def _handle_theme_toggle(self)
+        def _show_user_context(self)
+        def _build_sidebar_menu(self)
+        def _filter_sidebar_menu(self, search_text: str)
+        def _start_clock(self)
+        def _update_clock(self)
+        def load_dashboard_data(self)
+        def open_supplier_form(self)
+        def open_customer_form(self)
+        def open_module_from_sidebar(self, item, column)
+        def handle_logout(self)
+
+----- screens\item_batch_dialog.py -----
+    # screens/item_batch_dialog.py
+    class ItemBatchDialog(QDialog):
+        # Add a single batch (quantity + AD month/year expiry) for one item.
+        def __init__(self, parent: Optional[QWidget], item_engine, item_id: int, item_name: str) -> None
+        def _build_ui(self, item_name: str) -> None
+        def _connect_signals(self) -> None
+        def _collect_form_values(self) -> dict
+        def _on_save_clicked(self) -> None
+
+----- screens\item_form_screen.py -----
+    # screens/item_form_screen.py
+    class ItemFormScreen(QDialog):
+        # Add/Edit dialog for a single item. Create mode when item_id is None.
+        def __init__(self, parent: Optional[QWidget]=None, item_id: Optional[int]=None, engine: Optional[ItemEngine]=None) -> None
+        def _set_opening_stock_fields_visible(self, visible: bool) -> None
+        def _fit_to_screen(self) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _safe_manufacturer_lookup(self, manufacturer_id)
+        def _populate_static_lookup_combos(self) -> None
+        def _populate_manufacturer_combo(self) -> None
+        def _refresh_sub_category_combo(self, category_id: Optional[int]) -> None
+        def _on_category_changed(self, _index: int) -> None
+        def _wire_manage_buttons(self) -> None
+        def _open_manage_dialog(self, engine, label, refresh_fn, scope_engine=None, scope_label=None) -> None
+        def _snapshot_combo_selections(self) -> dict
+        def _restore_combo_selections(self, snapshot: dict) -> None
+        def _open_manufacturer_manage_dialog(self) -> None
+        def _on_tax_mode_toggled(self, checked: bool) -> None
+        def _load_existing_item(self) -> None
+        def _set_combo_by_data(combo, value) -> None
+        def _on_add_batch_clicked(self) -> None
+        def _collect_form_values(self) -> dict
+        def _on_save_clicked(self) -> None
+        def _build_opening_batch_payload_if_needed(self) -> Optional[dict]
+        def _show_validation_message(self, message: str) -> None
+
+----- screens\item_list_screen.py -----
+    # screens/item_list_screen.py
+    class ItemListScreen(QWidget):
+        # Item Master list/search/filter screen. Opens ItemFormScreen for Add/Edit.
+        def __init__(self, parent: Optional[QWidget]=None, engine: Optional[ItemEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _populate_filter_dropdowns(self) -> None
+        def _on_search_text_changed(self, _text: str) -> None
+        def refresh(self) -> None
+        def _populate_table(self, rows: list[ItemDTO]) -> None
+        def _selected_dto(self) -> Optional[ItemDTO]
+        def _on_selection_changed(self) -> None
+        def _on_add_clicked(self) -> None
+        def _on_edit_clicked(self) -> None
+        def _on_delete_clicked(self) -> None
+        def _on_restore_clicked(self) -> None
+        def _on_close_clicked(self) -> None
+
+----- screens\language_dialog.py -----
+    # =========================================================
+    class LanguageDialog(QDialog):
+        def __init__(self, parent=None)
+        def _handle_ok(self)
+
+----- screens\login_screen.py -----
+    # =========================================================
+    class LoginScreen(QMainWindow):
+        def __init__(self)
+        def initialize(self)
+        def _apply_icons(self)
+        def _apply_tooltips_and_status_tips(self)
+        def _setup_shortcuts(self)
+        def _handle_theme_toggle(self)
+        def _handle_forgot_password(self)
+        def _handle_change_language(self)
+        def _start_clock(self)
+        def _update_clock(self)
+        def _toggle_password_visibility(self, checked: bool)
+        def _update_caps_lock_hint(self)
+        def _is_caps_lock_on() -> bool
+        def _load_companies(self)
+        def _load_financial_years(self)
+        def _show_license_and_subscription_status(self)
+        def handle_login(self)
+
+----- screens\manufacturer_form_screen.py -----
+    # screens/manufacturer_form_screen.py
+    class ManufacturerFormScreen(QDialog):
+        # Add/Edit dialog for a single manufacturer. Create mode when manufacturer_id is None.
+        def __init__(self, parent: Optional[QWidget]=None, manufacturer_id: Optional[int]=None, engine: Optional[ManufacturerEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _on_name_changed(self, text: str) -> None
+        def _load_existing_manufacturer(self) -> None
+        def _collect_form_values(self) -> dict
+        def _on_save_clicked(self) -> None
+        def _on_clear_clicked(self) -> None
+        def _show_validation_message(self, message: str) -> None
+
+----- screens\manufacturer_list_screen.py -----
+    # screens/manufacturer_list_screen.py
+    class ManufacturerListScreen(QWidget):
+        # Manufacturer Master list/search/filter screen. Opens ManufacturerFormScreen for Add/Edit.
+        def __init__(self, parent: Optional[QWidget]=None, engine: Optional[ManufacturerEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _on_search_text_changed(self, _text: str) -> None
+        def refresh(self) -> None
+        def _populate_table(self, rows: list[ManufacturerDTO]) -> None
+        def _selected_dto(self) -> Optional[ManufacturerDTO]
+        def _on_selection_changed(self) -> None
+        def _on_add_clicked(self) -> None
+        def _on_edit_clicked(self) -> None
+        def _on_delete_clicked(self) -> None
+        def _on_restore_clicked(self) -> None
+        def _on_close_clicked(self) -> None
+
+----- screens\master_manage_screen.py -----
+    # screens/master_manage_screen.py
+    class MasterManageDialog(QDialog):
+        # Generic Add/Edit/Delete/Restore dialog for one simple lookup master.
+        def __init__(self, parent: Optional[QWidget], engine: SimpleMasterEngine, entity_label: str, current_user_id: int, scope_engine: Optional[SimpleMasterEngine]=None, scope_label: Optional[str]=None) -> None
+        def _build_ui(self) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _populate_scope_combo(self) -> None
+        def _current_scope_id(self) -> Optional[int]
+        def refresh(self) -> None
+        def _scope_extra_key(self) -> str
+        def _populate_table(self, rows: list[MasterDTO]) -> None
+        def _selected_dto(self) -> Optional[MasterDTO]
+        def _on_selection_changed(self) -> None
+        def _set_form_mode(self, editing: bool) -> None
+        def _on_clear_clicked(self) -> None
+        def _on_save_clicked(self) -> None
+        def _on_delete_clicked(self) -> None
+        def _on_restore_clicked(self) -> None
+
+----- screens\reset_password_screen.py -----
+    # screens/reset_password_screen.py
+    class ResetPasswordScreen(QDialog):
+        # Admin resets another user's password. Always operates on an existing user_id.
+        def __init__(self, parent: Optional[QWidget]=None, user_id: Optional[int]=None, username: str='', engine: Optional[UserEngine]=None, current_user_id: Optional[int]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _show_validation_message(self, message: str) -> None
+        def _on_reset_clicked(self) -> None
+
+----- screens\settings_screen.py -----
+    # =========================================================
+    class SettingsScreen(QMainWindow, Ui_SettingsScreen):
+        # Settings screen: left category tree, right dynamic settings
+        def __init__(self, current_username: str, is_admin: bool, parent: Optional[QWidget]=None) -> None
+        def _connect_signals(self) -> None
+        def _apply_permission_lock(self) -> None
+        def _load_categories(self) -> None
+        def _on_category_selected(self, current: Optional[QTreeWidgetItem], previous: Optional[QTreeWidgetItem]) -> None
+        def _on_search_text_changed(self, text: str) -> None
+        def _render_settings(self, title: str, settings: list[dict[str, Any]]) -> None
+        def _clear_dynamic_layout(self) -> None
+        def _build_setting_row(self, setting: dict[str, Any]) -> QFrame
+        def _humanize_key(setting_key: str) -> str
+        def _make_input_widget(self, setting_key: str, data_type: str, current_value: str) -> QWidget
+        def _make_path_widget(self, setting_key: str, current_value: str) -> QWidget
+        def _on_setting_changed(self, setting_key: str) -> None
+        def _get_widget_value(self, widget: QWidget, data_type: str) -> str
+        def _mark_unsaved(self, has_changes: bool) -> None
+        def _confirm_discard_if_unsaved(self) -> bool
+        def _on_btn_apply_clicked(self) -> None
+        def _on_btn_save_clicked(self) -> None
+        def _apply_screen_side_effects(self, setting_key: str, value: str) -> None
+        def _on_btn_restore_default_clicked(self) -> None
+        def _on_btn_import_clicked(self) -> None
+        def _on_btn_export_clicked(self) -> None
+        def _on_btn_close_clicked(self) -> None
+        def closeEvent(self, event) -> None
+
+----- screens\supplier_form_screen.py -----
+    # screens/supplier_form_screen.py
+    class SupplierFormScreen(QDialog):
+        # Add/Edit dialog for a single supplier. Create mode when supplier_id is None.
+        def __init__(self, parent: Optional[QWidget]=None, supplier_id: Optional[int]=None, engine: Optional[SupplierEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _load_existing_supplier(self) -> None
+        def _collect_form_values(self) -> dict
+        def _on_save_clicked(self) -> None
+        def _show_validation_message(self, message: str) -> None
+
+----- screens\supplier_list_screen.py -----
+    # screens/supplier_list_screen.py
+    class SupplierListScreen(QWidget):
+        # Supplier Master list/search/filter screen. Opens SupplierFormScreen for Add/Edit.
+        def __init__(self, parent: Optional[QWidget]=None, engine: Optional[SupplierEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _on_search_text_changed(self, _text: str) -> None
+        def refresh(self) -> None
+        def _populate_table(self, rows: list[SupplierDTO]) -> None
+        def _selected_dto(self) -> Optional[SupplierDTO]
+        def _on_selection_changed(self) -> None
+        def _on_add_clicked(self) -> None
+        def _on_edit_clicked(self) -> None
+        def _on_delete_clicked(self) -> None
+        def _on_restore_clicked(self) -> None
+        def _on_close_clicked(self) -> None
+
+----- screens\supplier_manufacturer_discount_form_screen.py -----
+    # screens/supplier_manufacturer_discount_form_screen.py
+    class SupplierManufacturerDiscountFormScreen(QDialog):
+        # Add/Edit dialog for a single discount mapping. Create mode when discount_id is None.
+        def __init__(self, parent: Optional[QWidget]=None, discount_id: Optional[int]=None, engine: Optional[SupplierManufacturerDiscountEngine]=None, supplier_engine: Optional[SupplierEngine]=None, manufacturer_engine: Optional[ManufacturerEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _populate_supplier_combo(self) -> None
+        def _populate_manufacturer_combo(self) -> None
+        def _set_combo_by_data(combo, value) -> None
+        def _load_existing_discount(self) -> None
+        def _collect_form_values(self) -> dict
+        def _on_save_clicked(self) -> None
+        def _show_validation_message(self, message: str) -> None
+
+----- screens\supplier_manufacturer_discount_list_screen.py -----
+    # screens/supplier_manufacturer_discount_list_screen.py
+    class SupplierManufacturerDiscountListScreen(QWidget):
+        # Supplier-Manufacturer Discount list/search screen. Opens
+        def __init__(self, parent: Optional[QWidget]=None, engine: Optional[SupplierManufacturerDiscountEngine]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _on_search_text_changed(self, _text: str) -> None
+        def refresh(self) -> None
+        def _populate_table(self, rows: list[SupplierManufacturerDiscountDTO]) -> None
+        def _selected_dto(self) -> Optional[SupplierManufacturerDiscountDTO]
+        def _on_selection_changed(self) -> None
+        def _on_add_clicked(self) -> None
+        def _on_edit_clicked(self) -> None
+        def _on_delete_clicked(self) -> None
+        def _on_restore_clicked(self) -> None
+        def _on_close_clicked(self) -> None
+
+----- screens\user_form_screen.py -----
+    # screens/user_form_screen.py
+    class UserFormScreen(QDialog):
+        # Add/Edit dialog for a single user. Create mode when user_id is None.
+        def __init__(self, parent: Optional[QWidget]=None, user_id: Optional[int]=None, engine: Optional[UserEngine]=None, current_user_id: Optional[int]=None) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _show_validation_message(self, message: str) -> None
+        def _clear_validation_message(self) -> None
+        def _load_roles(self) -> None
+        def _load_companies(self) -> None
+        def _load_existing_user(self) -> None
+        def _on_save_clicked(self) -> None
+
+----- screens\user_list_screen.py -----
+    # screens/user_list_screen.py
+    def _dto_to_table_row(dto: UserDTO) -> list[str]
+    def _status_filter_value(label: str) -> Optional[str]
+    class UserListScreen(QWidget):
+        # User Master list/search/filter screen. Opens UserFormScreen for Add/Edit.
+        def __init__(self, parent: Optional[QWidget]=None, engine: Optional[UserEngine]=None, current_user_id: Optional[int]=None) -> None
+        def _configure_column_widths(self) -> None
+        def _load_filter_options(self) -> None
+        def _connect_signals(self) -> None
+        def _setup_shortcuts(self) -> None
+        def _on_search_text_changed(self, _text: str) -> None
+        def refresh(self) -> None
+        def _populate_table(self, rows: list[UserDTO]) -> None
+        def _selected_dto(self) -> Optional[UserDTO]
+        def _on_selection_changed(self) -> None
+        def _on_add_clicked(self) -> None
+        def _on_edit_clicked(self) -> None
+        def _on_delete_clicked(self) -> None
+        def _on_restore_clicked(self) -> None
+        def _on_toggle_active_clicked(self) -> None
+        def _on_reset_password_clicked(self) -> None
+        def _on_export_clicked(self) -> None
+        def _on_print_clicked(self) -> None
+
+----- ui\__init__.py -----
+    [no top-level classes/functions]
+
+----- ui\change_password.ui -----
+    Qt class: ChangePasswordDialog
+    Widgets: 15 total
+    Key controls: QLineEdit:input_old_password, QLineEdit:input_new_password, QLineEdit:input_confirm_password, QPushButton:btn_cancel, QPushButton:btn_change
+
+----- ui\company_form.ui -----
+    Qt class: CompanyFormDialog
+    Widgets: 30 total
+    Key controls: QLineEdit:txtCompanyCode, QLineEdit:txtCompanyName, QLineEdit:txtAddress, QLineEdit:txtContactPerson, QLineEdit:txtMobileNo, QLineEdit:txtPhoneNo, QLineEdit:txtEmail, QLineEdit:txtPanVatNo, QLineEdit:txtRegistrationNo, QComboBox:cmbStatus, QPushButton:btnCancel, QPushButton:btnSave
+
+----- ui\company_list.ui -----
+    Qt class: CompanyListWidget
+    Widgets: 21 total
+    Key controls: QLineEdit:txtSearch, QComboBox:cmbStatusFilter, QPushButton:btnRefresh, QPushButton:btnAdd, QPushButton:btnEdit, QPushButton:btnDelete, QPushButton:btnRestore, QPushButton:btnExport, QPushButton:btnPrint, QPushButton:btnClose, QTableWidget:tblCompany
+
+----- ui\country_tax_form.ui -----
+    Qt class: CountryTaxFormDialog
+    Widgets: 19 total
+    Key controls: QComboBox:cmbCountry, QLineEdit:txtVatPercent, QLineEdit:txtCustomPercent, QComboBox:cmbStatus, QPushButton:btnSave, QPushButton:btnUpdate, QPushButton:btnClear, QPushButton:btnClose
+
+----- ui\country_tax_list.ui -----
+    Qt class: CountryTaxListWidget
+    Widgets: 16 total
+    Key controls: QLineEdit:txtSearch, QComboBox:cmbStatusFilter, QPushButton:btnRefresh, QTableWidget:tblCountryTax, QPushButton:btnAdd, QPushButton:btnEdit, QPushButton:btnDelete, QPushButton:btnRestore, QPushButton:btnClose
+
+----- ui\dashboard.ui -----
+    Qt class: MainWindow
+    Widgets: 60 total
+    Key controls: QLineEdit:txtSearchMenu, QPushButton:btnNotifications, QPushButton:btnTheme, QPushButton:btnLogout, QPushButton:btnNewSale, QPushButton:btnNewPurchase, QPushButton:btnAddCustomer, QPushButton:btnAddSupplier, QPushButton:btnAddItem, QPushButton:btnBackupDatabase
+
+----- ui\item_form.ui -----
+    Qt class: ItemFormDialog
+    Widgets: 60 total
+    Key controls: QLineEdit:txtItemCode, QLineEdit:txtItemName, QComboBox:cmbCategory, QComboBox:cmbSubCategory, QComboBox:cmbItemGroup, QComboBox:cmbManufacturer, QComboBox:cmbGeneric, QComboBox:cmbUnit, QComboBox:cmbPurchaseUnit, QLineEdit:txtPurchaseRate, QLineEdit:txtSaleRate, QLineEdit:txtMrp, QLineEdit:txtMinimumStock, QLineEdit:txtOpeningQty, QComboBox:cmbOpeningExpiryMonth, QLineEdit:txtOpeningExpiryYear, QPushButton:btnAddBatch, QLineEdit:txtVatPercent, QLineEdit:txtCustomPercent, QComboBox:cmbStatus
+
+----- ui\item_list.ui -----
+    Qt class: ItemListWidget
+    Widgets: 20 total
+    Key controls: QLineEdit:txtSearch, QComboBox:cmbCategoryFilter, QComboBox:cmbManufacturerFilter, QComboBox:cmbStatusFilter, QPushButton:btnRefresh, QTableWidget:tblItem, QPushButton:btnAdd, QPushButton:btnEdit, QPushButton:btnDelete, QPushButton:btnRestore, QPushButton:btnClose
+
+----- ui\login.ui -----
+    Qt class: MainWindow
+    Widgets: 54 total
+    Key controls: QLineEdit:txtUsername, QLineEdit:txtPassword, QComboBox:cmbCompany, QComboBox:cmbFinancialYear, QPushButton:btnLogin, QPushButton:btnExit, QPushButton:btnForgotPassword, QPushButton:btnChangeLanguage, QPushButton:btnTheme
+
+----- ui\manufacturer_form.ui -----
+    Qt class: ManufacturerFormDialog
+    Widgets: 19 total
+    Key controls: QLineEdit:txtManufacturerCode, QLineEdit:txtManufacturerName, QLineEdit:txtManufacturerShortName, QLineEdit:txtCountry, QComboBox:cmbStatus, QPushButton:btnSave, QPushButton:btnUpdate, QPushButton:btnClear, QPushButton:btnClose
+
+----- ui\manufacturer_list.ui -----
+    Qt class: ManufacturerListWidget
+    Widgets: 16 total
+    Key controls: QLineEdit:txtSearch, QComboBox:cmbStatusFilter, QPushButton:btnRefresh, QTableWidget:tblManufacturer, QPushButton:btnAdd, QPushButton:btnEdit, QPushButton:btnDelete, QPushButton:btnRestore, QPushButton:btnClose
+
+----- ui\reset_password.ui -----
+    Qt class: ResetPasswordDialog
+    Widgets: 15 total
+    Key controls: QLineEdit:input_new_password, QLineEdit:input_confirm_password, QPushButton:btn_cancel, QPushButton:btn_reset
+
+----- ui\settings.ui -----
+    Qt class: SettingsScreen
+    Widgets: 24 total
+    Key controls: QLineEdit:txtSearch, QPushButton:btnRestoreDefault, QPushButton:btnImport, QPushButton:btnExport, QPushButton:btnApply, QPushButton:btnSave, QPushButton:btnClose
+
+----- ui\supplier_form.ui -----
+    Qt class: SupplierFormDialog
+    Widgets: 38 total
+    Key controls: QLineEdit:txtSupplierCode, QLineEdit:txtSupplierName, QLineEdit:txtContactPerson, QLineEdit:txtMobileNo, QLineEdit:txtPhoneNo, QLineEdit:txtEmail, QLineEdit:txtAddress, QLineEdit:txtCity, QLineEdit:txtPanVatNo, QLineEdit:txtOpeningBalance, QComboBox:cmbBalanceType, QLineEdit:txtCreditLimit, QLineEdit:txtCreditDays, QComboBox:cmbStatus, QPushButton:btnSave, QPushButton:btnCancel
+
+----- ui\supplier_list.ui -----
+    Qt class: SupplierListWidget
+    Widgets: 16 total
+    Key controls: QLineEdit:txtSearch, QComboBox:cmbStatusFilter, QPushButton:btnRefresh, QTableWidget:tblSupplier, QPushButton:btnAdd, QPushButton:btnEdit, QPushButton:btnDelete, QPushButton:btnRestore, QPushButton:btnClose
+
+----- ui\supplier_manufacturer_discount_form.ui -----
+    Qt class: SupplierManufacturerDiscountFormDialog
+    Widgets: 14 total
+    Key controls: QComboBox:cmbSupplier, QComboBox:cmbManufacturer, QLineEdit:txtDiscountPercent, QPushButton:btnSave, QPushButton:btnCancel
+
+----- ui\supplier_manufacturer_discount_list.ui -----
+    Qt class: SupplierManufacturerDiscountListWidget
+    Widgets: 14 total
+    Key controls: QLineEdit:txtSearch, QPushButton:btnRefresh, QTableWidget:tblDiscount, QPushButton:btnAdd, QPushButton:btnEdit, QPushButton:btnDelete, QPushButton:btnRestore, QPushButton:btnClose
+
+----- ui\ui_change_password.py -----
+    class Ui_ChangePasswordDialog(object):
+        def setupUi(self, ChangePasswordDialog)
+        def retranslateUi(self, ChangePasswordDialog)
+
+----- ui\ui_company_form.py -----
+    class Ui_CompanyFormDialog(object):
+        def setupUi(self, CompanyFormDialog)
+        def retranslateUi(self, CompanyFormDialog)
+
+----- ui\ui_company_list.py -----
+    class Ui_CompanyListWidget(object):
+        def setupUi(self, CompanyListWidget)
+        def retranslateUi(self, CompanyListWidget)
+
+----- ui\ui_country_tax_form.py -----
+    # ui/ui_country_tax_form.py
+    class Ui_CountryTaxFormDialog(object):
+        def setupUi(self, CountryTaxFormDialog)
+
+----- ui\ui_country_tax_list.py -----
+    # ui/ui_country_tax_list.py
+    class Ui_CountryTaxListWidget(object):
+        def setupUi(self, CountryTaxListWidget)
+
+----- ui\ui_dashboard.py -----
+    def _kpi_card(parent, title_text, title_attr, value_attr, icon_path=None)
+    class Ui_MainWindow(object):
+        def setupUi(self, MainWindow)
+        def retranslateUi(self, MainWindow)
+
+----- ui\ui_item_form.py -----
+    # ui/ui_item_form.py
+    class Ui_ItemFormDialog(object):
+        def setupUi(self, ItemFormDialog)
+
+----- ui\ui_item_list.py -----
+    # ui/ui_item_list.py
+    class Ui_ItemListWidget(object):
+        def setupUi(self, ItemListWidget)
+
+----- ui\ui_login.py -----
+    class Ui_MainWindow(object):
+        def setupUi(self, MainWindow)
+        def retranslateUi(self, MainWindow)
+
+----- ui\ui_manufacturer_form.py -----
+    # ui/ui_manufacturer_form.py
+    class Ui_ManufacturerFormDialog(object):
+        def setupUi(self, ManufacturerFormDialog)
+
+----- ui\ui_manufacturer_list.py -----
+    # ui/ui_manufacturer_list.py
+    class Ui_ManufacturerListWidget(object):
+        def setupUi(self, ManufacturerListWidget)
+
+----- ui\ui_reset_password.py -----
+    class Ui_ResetPasswordDialog(object):
+        def setupUi(self, ResetPasswordDialog)
+        def retranslateUi(self, ResetPasswordDialog)
+
+----- ui\ui_settings.py -----
+    class Ui_SettingsScreen(object):
+        def setupUi(self, SettingsScreen)
+        def retranslateUi(self, SettingsScreen)
+
+----- ui\ui_supplier_form.py -----
+    # ui/ui_supplier_form.py
+    class Ui_SupplierFormDialog(object):
+        def setupUi(self, SupplierFormDialog)
+
+----- ui\ui_supplier_list.py -----
+    # ui/ui_supplier_list.py
+    class Ui_SupplierListWidget(object):
+        def setupUi(self, SupplierListWidget)
+
+----- ui\ui_supplier_manufacturer_discount_form.py -----
+    # ui/ui_supplier_manufacturer_discount_form.py
+    class Ui_SupplierManufacturerDiscountFormDialog(object):
+        def setupUi(self, SupplierManufacturerDiscountFormDialog)
+
+----- ui\ui_supplier_manufacturer_discount_list.py -----
+    # ui/ui_supplier_manufacturer_discount_list.py
+    class Ui_SupplierManufacturerDiscountListWidget(object):
+        def setupUi(self, SupplierManufacturerDiscountListWidget)
+
+----- ui\ui_user_form.py -----
+    class Ui_UserFormView(object):
+        def setupUi(self, UserFormView)
+        def retranslateUi(self, UserFormView)
+
+----- ui\ui_user_list.py -----
+    class Ui_UserListView(object):
+        def setupUi(self, UserListView)
+        def retranslateUi(self, UserListView)
+
+----- ui\user_form.ui -----
+    Qt class: UserFormView
+    Widgets: 32 total
+    Key controls: QLineEdit:input_username, QLineEdit:input_display_name, QLineEdit:input_email, QLineEdit:input_phone, QComboBox:combo_role, QComboBox:combo_company, QLineEdit:input_password, QLineEdit:input_confirm_password, QPushButton:btn_cancel, QPushButton:btn_save
+
+----- ui\user_list.ui -----
+    Qt class: UserListView
+    Widgets: 24 total
+    Key controls: QLineEdit:search_input, QComboBox:filter_status, QComboBox:filter_role, QComboBox:filter_company, QPushButton:btn_refresh, QPushButton:btn_new, QPushButton:btn_edit, QPushButton:btn_delete, QPushButton:btn_restore, QPushButton:btn_toggle_active, QPushButton:btn_reset_password, QPushButton:btn_export, QPushButton:btn_print
+
+----- utils\__init__.py -----
+    [no top-level classes/functions]
+
+----- utils\app_logger.py -----
+    # =========================================================
+    def get_logger(name: str='medical_erp') -> logging.Logger
+
+----- utils\combo_helpers.py -----
+    # utils/combo_helpers.py
+    def make_searchable(combo: QComboBox) -> None
+    def make_searchable_many(*combos: QComboBox) -> None
+    def attach_manage_button(form_layout: QFormLayout, combo: QComboBox, on_click: Callable[[], None]) -> None
+
+----- utils\company_form_helpers.py -----
+    # utils/company_form_helpers.py
+    def build_company_payload(raw: dict) -> dict
+    def dto_to_table_row(dto) -> List[str]
+    def status_filter_value(combo_text: str)
+
+----- utils\country_tax_form_helpers.py -----
+    # utils/country_tax_form_helpers.py
+    def parse_percent(text: Optional[str], field_label: str) -> float
+    def build_country_tax_payload(form_values: dict[str, Any]) -> dict[str, Any]
+    def dto_to_table_row(dto: Any) -> list[str]
+    def status_filter_value(combo_text: Optional[str]) -> Optional[str]
+
+----- utils\image_manager.py -----
+    # =========================================================
+    def save_image(source_path: str, subfolder: str, filename_stem: str) -> tuple[bool, str]
+    def delete_image(relative_path: str | None) -> bool
+    def _remove_existing_variants(target_dir: Path, filename_stem: str) -> None
+
+----- utils\integration_adapters.py -----
+    # utils/integration_adapters.py
+    def get_current_user_id() -> int
+    def _dispatch(kind: str, parent, title: str, message: str) -> None
+    def show_info(parent, title: str, message: str) -> None
+    def show_success(parent, title: str, message: str) -> None
+    def show_warning(parent, title: str, message: str) -> None
+    def show_error(parent, title: str, message: str) -> None
+    def confirm(parent, title: str, message: str) -> bool
+
+----- utils\item_form_helpers.py -----
+    # utils/item_form_helpers.py
+    def parse_decimal(text: Optional[str], field_label: str) -> float
+    def parse_int(text: Optional[str], field_label: str) -> int
+    def combo_id_value(current_data: Any) -> Optional[int]
+    def build_item_payload(form_values: dict[str, Any]) -> dict[str, Any]
+    def build_batch_payload(form_values: dict[str, Any]) -> dict[str, Any]
+    def format_amount(value: Any) -> str
+    def format_qty(value: Any) -> str
+    def dto_to_table_row(dto: Any) -> list[str]
+    def status_filter_value(combo_text: Optional[str]) -> Optional[str]
+    def format_expiry_display(expiry_year: Any, expiry_month: Any) -> str
+
+----- utils\item_validator.py -----
+    # utils/item_validator.py
+    class ValidationResult():
+        def is_valid(self) -> bool
+        def add(self, message: str) -> None
+    class ItemValidator():
+        # Stateless validation rules for Item Master.
+        def __init__(self, name_exists_fn: Callable[[str, Optional[int]], bool], code_exists_fn: Callable[[str, Optional[int]], bool]) -> None
+        def validate_for_create(self, data: dict) -> ValidationResult
+        def validate_for_update(self, item_id: int, data: dict) -> ValidationResult
+        def _validate_common_fields(self, data: dict, result: ValidationResult) -> None
+        def _validate_tax_fields(self, data: dict, result: ValidationResult) -> None
+        def _validate_name_uniqueness(self, item_name: str, result: ValidationResult, exclude_id: Optional[int]) -> None
+        def validate_item_code_unique(self, item_code: str, exclude_id: Optional[int]=None) -> ValidationResult
+    def validate_batch_entry(batch_no: str, expiry_year, expiry_month, batch_qty, batch_purchase_rate) -> ValidationResult
+
+----- utils\language_manager.py -----
+    # =========================================================
+    class LanguageChangeResult():
+    def get_available_languages() -> list[tuple[str, str]]
+    def get_current_language_code() -> str
+    def set_current_language(code: str) -> LanguageChangeResult
+
+----- utils\login_validator.py -----
+    # =========================================================
+    def validate_login_input(username: str, password: str, company_id: str, financial_year: str) -> tuple[bool, str]
+
+----- utils\manufacturer_form_helpers.py -----
+    # utils/manufacturer_form_helpers.py
+    def build_manufacturer_payload(form_values: dict[str, Any]) -> dict[str, Any]
+    def dto_to_table_row(dto: Any) -> list[str]
+    def status_filter_value(combo_text: Optional[str]) -> Optional[str]
+
+----- utils\manufacturer_validator.py -----
+    # utils/manufacturer_validator.py
+    class ValidationResult():
+        def is_valid(self) -> bool
+        def add(self, message: str) -> None
+    class ManufacturerValidator():
+        # Stateless validation rules for the Manufacturer Master.
+        def __init__(self, name_exists_fn: Callable[[str, Optional[int]], bool], code_exists_fn: Callable[[str, Optional[int]], bool]) -> None
+        def validate_for_create(self, data: dict) -> ValidationResult
+        def validate_for_update(self, manufacturer_id: int, data: dict) -> ValidationResult
+        def _validate_common_fields(self, data: dict, result: ValidationResult) -> None
+        def _validate_name_uniqueness(self, manufacturer_name: str, result: ValidationResult, exclude_id: Optional[int]) -> None
+        def validate_manufacturer_code_unique(self, manufacturer_code: str, exclude_id: Optional[int]=None) -> ValidationResult
+
+----- utils\message.py -----
+    # =========================================================
+    def show_info(message: str, title: str=APP_TITLE) -> None
+    def show_success(message: str, title: str=APP_TITLE) -> None
+    def show_warning(message: str, title: str=APP_TITLE) -> None
+    def show_error(message: str, title: str=APP_TITLE) -> None
+    def confirm(message: str, title: str=APP_TITLE) -> bool
+
+----- utils\password_field_helper.py -----
+    # utils/password_field_helper.py
+    def attach_show_password_toggle(line_edit: QLineEdit) -> None
+
+----- utils\settings_ui_helpers.py -----
+    # =========================================================
+    def group_icon_name(setting_group: str) -> str
+    def group_tagline(setting_group: str) -> str
+    def humanize_setting_key(setting_key: str) -> str
+    def parse_enum_options(description: str) -> list[str] | None
+    def is_file_path_setting(setting_key: str, description: str) -> bool
+    def is_image_path_setting(setting_key: str, description: str) -> bool
+
+----- utils\supplier_form_helpers.py -----
+    # utils/supplier_form_helpers.py
+    def parse_decimal(text: Optional[str], field_label: str) -> float
+    def parse_int(text: Optional[str], field_label: str) -> int
+    def build_supplier_payload(form_values: dict[str, Any]) -> dict[str, Any]
+    def format_amount(value: Any) -> str
+    def dto_to_table_row(dto: Any) -> list[str]
+    def status_filter_value(combo_text: Optional[str]) -> Optional[str]
+
+----- utils\supplier_manufacturer_discount_form_helpers.py -----
+    # utils/supplier_manufacturer_discount_form_helpers.py
+    def parse_decimal(text: Optional[str], field_label: str) -> float
+    def combo_id_value(current_data: Any) -> Optional[int]
+    def build_discount_payload(form_values: dict[str, Any]) -> dict[str, Any]
+    def format_percent(value: Any) -> str
+    def dto_to_table_row(dto: Any) -> list[str]
+
+----- utils\supplier_validator.py -----
+    # utils/supplier_validator.py
+    class ValidationResult():
+        def is_valid(self) -> bool
+        def add(self, message: str) -> None
+    class SupplierValidator():
+        # Stateless validation rules for the Supplier Master.
+        def __init__(self, name_exists_fn: Callable[[str, Optional[int]], bool], code_exists_fn: Callable[[str, Optional[int]], bool]) -> None
+        def validate_for_create(self, data: dict) -> ValidationResult
+        def validate_for_update(self, supplier_id: int, data: dict) -> ValidationResult
+        def _validate_common_fields(self, data: dict, result: ValidationResult) -> None
+        def _validate_name_uniqueness(self, supplier_name: str, result: ValidationResult, exclude_id: Optional[int]) -> None
+        def validate_supplier_code_unique(self, supplier_code: str, exclude_id: Optional[int]=None) -> ValidationResult
+
+----- validators\company_validator.py -----
+    # =========================================================
+    def validate_company_data(data: Dict[str, Any]) -> List[str]
+
+----- validators\country_tax_validator.py -----
+    # validators/country_tax_validator.py
+    class ValidationResult():
+        def is_valid(self) -> bool
+        def add(self, message: str) -> None
+    class CountryTaxValidator():
+        # Stateless validation rules for Country Tax Settings.
+        def __init__(self, country_exists_fn: Callable[[str, Optional[int]], bool]) -> None
+        def validate_for_create(self, data: dict) -> ValidationResult
+        def validate_for_update(self, country_tax_id: int, data: dict) -> ValidationResult
+        def _validate_common_fields(self, data: dict, result: ValidationResult) -> None
+        def _validate_percent(value, field_label: str, result: ValidationResult) -> None
+        def _validate_country_uniqueness(self, country: str, result: ValidationResult, exclude_id: Optional[int]) -> None
+
+----- validators\supplier_manufacturer_discount_validator.py -----
+    # validators/supplier_manufacturer_discount_validator.py
+    class ValidationResult():
+        def is_valid(self) -> bool
+        def add(self, message: str) -> None
+    class SupplierManufacturerDiscountValidator():
+        # Stateless validation rules for the Supplier-Manufacturer Discount mapping.
+        def __init__(self, pair_exists_fn: Callable[[int, int, Optional[int]], bool]) -> None
+        def validate_for_create(self, data: dict) -> ValidationResult
+        def validate_for_update(self, record_id: int, data: dict) -> ValidationResult
+        def _validate_common_fields(self, data: dict, result: ValidationResult) -> None
+        def _validate_pair_uniqueness(self, supplier_id: Optional[int], manufacturer_id: Optional[int], result: ValidationResult, exclude_id: Optional[int]) -> None
+
+----- validators\user_validator.py -----
+    # validators/user_validator.py
+    def validate_user_data(data: dict, is_update: bool=False, exclude_userid: Optional[int]=None) -> List[str]
+    def validate_password_strength(password: Optional[str]) -> List[str]
+    def validate_password_change(new_password: str, history_rows: List[dict], verify_password_fn) -> List[str]
+    def _validate_username(username: Optional[str]) -> List[str]
+    def _validate_fullname(name: Optional[str]) -> List[str]
+    def _validate_email(email: Optional[str]) -> List[str]
+
+----- widgets\__init__.py -----
+    [no top-level classes/functions]
+
+----- widgets\photo_picker.py -----
+    # =========================================================
+    class PhotoPicker(QWidget):
+        # Emits `photo_staged()` whenever the user picks or removes a photo.
+        def __init__(self, parent=None)
+        def _build_ui(self)
+        def load_existing(self, photo_path: str | None)
+        def get_photo_update(self) -> dict
+        def _handle_pick_photo(self)
+        def _handle_remove_photo(self)
+        def _show_pixmap(self, path: str)
+        def _show_placeholder(self)
+
+----- widgets\settings_field_row.py -----
+    # =========================================================
+    class SettingsFieldRow(QFrame):
+        # Signals (all pass the setting_key so the screen knows which
+        def __init__(self, setting_row: dict, show_group_tag: bool=False, parent=None)
+        def _build_ui(self, show_group_tag: bool)
+        def _set_input_enabled(self, enabled: bool)
+        def _connect_change_signal(self)
+        def _build_input_widget(self)
+        def _build_color_picker(self, value: str)
+        def _build_path_picker(self, value: str, description: str)
+        def _build_font_picker(self, value: str)
+        def _build_printer_picker(self, value: str)
+        def current_value_str(self) -> str | None
+        def is_dirty(self) -> bool
+        def mark_saved(self, new_value: str)
+        def _handle_apply_clicked(self)
+
+----- widgets\settings_tile.py -----
+    # =========================================================
+    class SettingsTile(QFrame):
+        # Emits `clicked(setting_group)` when the card is activated.
+        def __init__(self, setting_group: str, item_count: int, requires_restart: bool, parent=None)
+        def _build_ui(self, item_count: int, requires_restart: bool)
+        def update_count(self, item_count: int)
+        def mousePressEvent(self, event)
+        def keyPressEvent(self, event)

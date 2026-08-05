@@ -184,12 +184,43 @@ class Ui_ItemFormDialog(object):
         self.lblCurrentStockDisplay = QLabel("Current Total Stock:", self.grpPricing)
         self.lblCurrentStockValue = QLabel("0", self.grpPricing)
         self.lblCurrentStockValue.setObjectName("lblCurrentStockValue")
-        self.lblCurrentStockValue.setToolTip("Read-only -- sum of all batch quantities. Add stock via 'Add Batch'.")
+        self.lblCurrentStockValue.setToolTip("Read-only -- sum of all batch quantities.")
         self.formLayoutPricing.addRow(self.lblCurrentStockDisplay, self.lblCurrentStockValue)
 
-        self.btnAddBatch = QPushButton("Add Batch (Opening Stock)", self.grpPricing)
+        # ---- Opening Stock (create mode only -- creates the item's first
+        # batch in the SAME save click. Hidden in edit mode; use "Add Batch"
+        # there instead to add further batches, e.g. from Purchase.) ----
+        self.lblOpeningQty = QLabel("Opening Quantity:", self.grpPricing)
+        self.txtOpeningQty = QLineEdit(self.grpPricing)
+        self.txtOpeningQty.setObjectName("txtOpeningQty")
+        self.txtOpeningQty.setText("0")
+        self.txtOpeningQty.setToolTip("Leave 0 if this item has no stock yet -- the item still saves fine.")
+        self.formLayoutPricing.addRow(self.lblOpeningQty, self.txtOpeningQty)
+
+        self.lblOpeningExpiry = QLabel("Expiry (Month/Year, AD):", self.grpPricing)
+        self.horizontalLayoutOpeningExpiry = QHBoxLayout()
+        self.cmbOpeningExpiryMonth = QComboBox(self.grpPricing)
+        self.cmbOpeningExpiryMonth.setObjectName("cmbOpeningExpiryMonth")
+        self.cmbOpeningExpiryMonth.addItems([
+            "01 - January", "02 - February", "03 - March", "04 - April",
+            "05 - May", "06 - June", "07 - July", "08 - August",
+            "09 - September", "10 - October", "11 - November", "12 - December",
+        ])
+        self.txtOpeningExpiryYear = QLineEdit(self.grpPricing)
+        self.txtOpeningExpiryYear.setObjectName("txtOpeningExpiryYear")
+        self.txtOpeningExpiryYear.setPlaceholderText("e.g. 2027")
+        self.horizontalLayoutOpeningExpiry.addWidget(self.cmbOpeningExpiryMonth, 2)
+        self.horizontalLayoutOpeningExpiry.addWidget(self.txtOpeningExpiryYear, 1)
+        self.formLayoutPricing.addRow(self.lblOpeningExpiry, self.horizontalLayoutOpeningExpiry)
+        self.lblOpeningExpiryHint = QLabel(
+            "Only needed if Opening Quantity is more than 0.", self.grpPricing
+        )
+        self.lblOpeningExpiryHint.setStyleSheet("color: #666666;")
+        self.formLayoutPricing.addRow(QLabel(""), self.lblOpeningExpiryHint)
+
+        self.btnAddBatch = QPushButton("Add Batch", self.grpPricing)
         self.btnAddBatch.setObjectName("btnAddBatch")
-        self.btnAddBatch.setToolTip("Add a batch with quantity + expiry. An item can also be saved with zero stock.")
+        self.btnAddBatch.setToolTip("Add another batch (e.g. a new Purchase lot) to this item.")
         self.formLayoutPricing.addRow(QLabel(""), self.btnAddBatch)
 
         self.verticalLayoutScroll.addWidget(self.grpPricing)

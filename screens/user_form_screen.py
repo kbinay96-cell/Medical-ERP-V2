@@ -120,7 +120,10 @@ class UserFormScreen(QDialog):
             return
 
         self.ui.input_username.setText(dto.username)
-        self.ui.input_username.setEnabled(False)  # username immutable after creation
+        self.ui.input_username.setEnabled(True)
+        self.ui.input_username.setToolTip(
+            "Changing the username changes this user's login ID immediately after Save."
+        )
         self.ui.input_display_name.setText(dto.fullname)
         self.ui.input_email.setText(dto.email or "")
         self.ui.input_phone.setText(dto.phone or "")

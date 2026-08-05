@@ -24,6 +24,8 @@ from engines.date_engine import ad_to_bs, DateEngineError
 from screens.supplier_list_screen import SupplierListScreen
 from screens.supplier_form_screen import SupplierFormScreen
 from screens.manufacturer_list_screen import ManufacturerListScreen
+from screens.supplier_manufacturer_discount_list_screen import SupplierManufacturerDiscountListScreen
+from screens.country_tax_list_screen import CountryTaxListScreen
 
 from screens.company_list_screen import CompanyListScreen
 from screens.item_list_screen import ItemListScreen
@@ -262,6 +264,16 @@ class DashboardScreen(QMainWindow):
             self.manufacturer_list = ManufacturerListScreen(self)
             self.manufacturer_list.setWindowFlag(Qt.Window)
             self.manufacturer_list.show()
+
+        elif module_name == "supplier-mfg discount":
+            self.supplier_manufacturer_discount_list = SupplierManufacturerDiscountListScreen(self)
+            self.supplier_manufacturer_discount_list.setWindowFlag(Qt.Window)
+            self.supplier_manufacturer_discount_list.show()
+
+        elif module_name == "country tax":                          # <-- NAYA BLOCK
+            self.country_tax_list = CountryTaxListScreen(self)
+            self.country_tax_list.setWindowFlag(Qt.Window)
+            self.country_tax_list.show()
 
         elif module_name == "customer":
             self.customer_list = CustomerListScreen(self.login_result, parent=self)

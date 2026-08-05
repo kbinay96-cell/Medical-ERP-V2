@@ -263,6 +263,24 @@ class ManufacturerModel:
 
         return rows, total_count
 
+    def get_distinct_countries(self) -> list[str]:
+        """
+        Returns distinct, non-empty country names among non-deleted
+        manufacturers, sorted alphabetically. Backs Country Tax Settings'
+        Country dropdown (see screens/country_tax_form_screen.py) so tax
+        rows are always defined against a real, already-in-use country
+        name rather than a free-typed variant.
+        """
+        sql = """
+            SELECT DISTINCT country FROM manufacturer
+            WHERE is_deleted = FALSE AND country IS NOT NULL AND TRIM(country) != ''
+            ORDER BY country ASC;
+        """
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql)
+                return [r["country"] for r in cur.fetchall()]
+            
     # ------------------------------------------------------------------ #
     # SOFT DELETE / RESTORE
     # ------------------------------------------------------------------ #

@@ -317,6 +317,18 @@ class ManufacturerEngine:
         rows, total_count = self._model.search(filters)
         return [ManufacturerDTO.from_row(r) for r in rows], total_count
 
+    def list_countries(self) -> list[str]:
+        """
+        Distinct countries currently in use across Manufacturer records.
+        Backs Country Tax Settings' Country dropdown -- never raises;
+        an empty list simply means the dropdown falls back to free typing.
+        """
+        try:
+            return self._model.get_distinct_countries()
+        except Exception:  # noqa: BLE001 -- dropdown population must never crash the form
+            logger.exception("list_countries: could not load distinct countries.")
+            return []
+
     # ------------------------------------------------------------------ #
     # DUPLICATE CHECKS (exposed for Screens to call live, e.g. on-blur checks)
     # ------------------------------------------------------------------ #

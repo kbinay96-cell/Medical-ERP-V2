@@ -95,11 +95,42 @@
           <item row="4" column="0"><widget class="QLabel" name="lblCurrentStockDisplay"><property name="text"><string>Current Total Stock:</string></property></widget></item>
           <item row="4" column="1"><widget class="QLabel" name="lblCurrentStockValue">
             <property name="text"><string>0</string></property>
-            <property name="toolTip"><string>Read-only -- sum of all batch quantities. Add stock via 'Add Batch'.</string></property>
+            <property name="toolTip"><string>Read-only -- sum of all batch quantities.</string></property>
           </widget></item>
-          <item row="5" column="1"><widget class="QPushButton" name="btnAddBatch">
-            <property name="text"><string>Add Batch (Opening Stock)</string></property>
-            <property name="toolTip"><string>Add a batch with quantity + expiry. An item can also be saved with zero stock.</string></property>
+          <item row="5" column="0"><widget class="QLabel" name="lblOpeningQty"><property name="text"><string>Opening Quantity:</string></property></widget></item>
+          <item row="5" column="1"><widget class="QLineEdit" name="txtOpeningQty">
+            <property name="text"><string>0</string></property>
+            <property name="toolTip"><string>Leave 0 if this item has no stock yet -- the item still saves fine.</string></property>
+          </widget></item>
+          <item row="6" column="0"><widget class="QLabel" name="lblOpeningExpiry"><property name="text"><string>Expiry (Month/Year, AD):</string></property></widget></item>
+          <item row="6" column="1">
+           <layout class="QHBoxLayout" name="horizontalLayoutOpeningExpiry">
+            <item><widget class="QComboBox" name="cmbOpeningExpiryMonth">
+              <item><property name="text"><string>01 - January</string></property></item>
+              <item><property name="text"><string>02 - February</string></property></item>
+              <item><property name="text"><string>03 - March</string></property></item>
+              <item><property name="text"><string>04 - April</string></property></item>
+              <item><property name="text"><string>05 - May</string></property></item>
+              <item><property name="text"><string>06 - June</string></property></item>
+              <item><property name="text"><string>07 - July</string></property></item>
+              <item><property name="text"><string>08 - August</string></property></item>
+              <item><property name="text"><string>09 - September</string></property></item>
+              <item><property name="text"><string>10 - October</string></property></item>
+              <item><property name="text"><string>11 - November</string></property></item>
+              <item><property name="text"><string>12 - December</string></property></item>
+            </widget></item>
+            <item><widget class="QLineEdit" name="txtOpeningExpiryYear">
+              <property name="placeholderText"><string>e.g. 2027</string></property>
+            </widget></item>
+           </layout>
+          </item>
+          <item row="7" column="1"><widget class="QLabel" name="lblOpeningExpiryHint">
+            <property name="text"><string>Only needed if Opening Quantity is more than 0.</string></property>
+            <property name="styleSheet"><string notr="true">color: #666666;</string></property>
+          </widget></item>
+          <item row="8" column="1"><widget class="QPushButton" name="btnAddBatch">
+            <property name="text"><string>Add Batch</string></property>
+            <property name="toolTip"><string>Add another batch (e.g. a new Purchase lot) to this item.</string></property>
           </widget></item>
          </layout>
         </widget>

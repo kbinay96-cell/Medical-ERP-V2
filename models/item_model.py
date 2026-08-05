@@ -84,7 +84,7 @@ class ItemModel:
         with _get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, data)
-                new_id = cur.fetchone()[0]
+                new_id = cur.fetchone()["item_id"]
                 conn.commit()
                 logger.info("Item inserted: id=%s code=%s", new_id, data.get("item_code"))
                 return new_id
@@ -203,7 +203,19 @@ class ItemModel:
         count_sql = f"SELECT COUNT(*) AS total FROM item i WHERE {where_clause};"
         data_sql = f"""
             SELECT i.*,
-                   COALESCE((SELECT SUM(b.batch_qty) FROM item_batch b WHERE b.item_id = i.item_id), 0) AS total_stock
+                   COALESCE((SELECT SUM(b.batch_qty) FROM item_batch b WHERE b.item_id = i.item_id), 0) AS total_stock,
+                   (
+                       SELECT b.batch_no FROM item_batch b
+                       WHERE b.item_id = i.item_id AND b.batch_qty > 0
+                       ORDER BY b.expiry_year ASC, b.expiry_month ASC
+                       LIMIT 1
+                   ) AS nearest_batch_no,
+                   (
+                       SELECT b.expiry_display FROM item_batch b
+                       WHERE b.item_id = i.item_id AND b.batch_qty > 0
+                       ORDER BY b.expiry_year ASC, b.expiry_month ASC
+                       LIMIT 1
+                   ) AS nearest_expiry_display
             FROM item i
             WHERE {where_clause}
             ORDER BY i.item_name ASC
@@ -275,6 +287,12 @@ class ItemBatchModel:
         """
         `data` keys: item_id, batch_no, expiry_year, expiry_month, batch_qty,
         batch_purchase_rate, remarks, created_by, created_at_ad, created_at_bs.
+
+        NOTE: this is the plain, non-ledger insert -- kept for callers that
+        genuinely don't need a stock_ledger row (there are none in the
+        Engine layer today; every real caller should go through
+        insert_with_ledger() below instead, so batch_qty and stock_ledger
+        never drift apart). Left in place only as a low-level primitive.
         """
         columns = [
             "item_id", "batch_no", "expiry_year", "expiry_month",
@@ -291,10 +309,129 @@ class ItemBatchModel:
         with _get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, data)
-                new_id = cur.fetchone()[0]
+                new_id = cur.fetchone()["item_batch_id"]
                 conn.commit()
                 logger.info("Item batch inserted: id=%s item_id=%s batch_no=%s", new_id, data.get("item_id"), data.get("batch_no"))
                 return new_id
+
+    def insert_with_ledger(self, batch_data: dict[str, Any], ledger_data: dict[str, Any]) -> tuple[int, int]:
+        """
+        Creates a brand-new item_batch row AND its matching stock_ledger
+        entry in ONE database transaction -- either both are saved or
+        neither is, so batch_qty and the ledger can never disagree.
+
+        Used for: Opening Stock (today) and the first lot of a future
+        Purchase (transaction_type='PURCHASE' in ledger_data instead of
+        'OPENING' -- everything else about this call stays the same).
+
+        `batch_data`: same keys as insert() above.
+        `ledger_data`: item_id, item_batch_id (filled in here once the
+        batch's id is known), transaction_type, quantity_change,
+        balance_after, reference_type, reference_id, remarks,
+        created_by, created_at_ad, created_at_bs.
+
+        Returns (new_item_batch_id, new_stock_ledger_id).
+        """
+        batch_columns = [
+            "item_id", "batch_no", "expiry_year", "expiry_month",
+            "batch_qty", "batch_purchase_rate", "remarks",
+            "created_by", "created_at_ad", "created_at_bs",
+        ]
+        batch_col_sql = ", ".join(batch_columns)
+        batch_placeholder_sql = ", ".join(f"%({c})s" for c in batch_columns)
+        batch_sql = f"""
+            INSERT INTO item_batch ({batch_col_sql})
+            VALUES ({batch_placeholder_sql})
+            RETURNING item_batch_id;
+        """
+
+        ledger_columns = [
+            "item_id", "item_batch_id", "transaction_type", "quantity_change",
+            "balance_after", "reference_type", "reference_id", "remarks",
+            "created_by", "created_at_ad", "created_at_bs",
+        ]
+        ledger_col_sql = ", ".join(ledger_columns)
+        ledger_placeholder_sql = ", ".join(f"%({c})s" for c in ledger_columns)
+        ledger_sql = f"""
+            INSERT INTO stock_ledger ({ledger_col_sql})
+            VALUES ({ledger_placeholder_sql})
+            RETURNING stock_ledger_id;
+        """
+
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(batch_sql, batch_data)
+                new_batch_id = cur.fetchone()["item_batch_id"]
+
+                ledger_data = dict(ledger_data)
+                ledger_data["item_batch_id"] = new_batch_id
+                cur.execute(ledger_sql, ledger_data)
+                new_ledger_id = cur.fetchone()["stock_ledger_id"]
+
+            conn.commit()
+            logger.info(
+                "Item batch + ledger inserted atomically: batch_id=%s ledger_id=%s item_id=%s type=%s",
+                new_batch_id, new_ledger_id, batch_data.get("item_id"), ledger_data.get("transaction_type"),
+            )
+            return new_batch_id, new_ledger_id
+
+    def update_qty_with_ledger(self, item_batch_id: int, quantity_change: float, ledger_data: dict[str, Any]) -> int:
+        """
+        Adjusts an EXISTING batch's balance (up for Purchase/Sale Return,
+        down for Sale/Purchase Return/a downward Adjustment) and writes
+        the matching stock_ledger row, atomically. Not called anywhere
+        yet (Purchase/Sale modules don't exist in this repo), but built
+        now so ItemEngine.post_stock_movement() has a real Model method
+        to call the day they land -- see its docstring in
+        engines/item_engine.py.
+
+        `ledger_data` must NOT include balance_after -- this method
+        computes it from the batch's current balance_after locking the
+        row (SELECT ... FOR UPDATE) to stay correct under concurrent
+        writes, then sets it before inserting.
+        """
+        ledger_columns = [
+            "item_id", "item_batch_id", "transaction_type", "quantity_change",
+            "balance_after", "reference_type", "reference_id", "remarks",
+            "created_by", "created_at_ad", "created_at_bs",
+        ]
+        ledger_col_sql = ", ".join(ledger_columns)
+        ledger_placeholder_sql = ", ".join(f"%({c})s" for c in ledger_columns)
+        ledger_sql = f"""
+            INSERT INTO stock_ledger ({ledger_col_sql})
+            VALUES ({ledger_placeholder_sql})
+            RETURNING stock_ledger_id;
+        """
+
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT batch_qty FROM item_batch WHERE item_batch_id = %(id)s FOR UPDATE;",
+                    {"id": item_batch_id},
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise ValueError(f"item_batch {item_batch_id} not found.")
+                new_balance = float(row["batch_qty"]) + quantity_change
+
+                cur.execute(
+                    "UPDATE item_batch SET batch_qty = %(new_qty)s WHERE item_batch_id = %(id)s;",
+                    {"new_qty": new_balance, "id": item_batch_id},
+                )
+
+                data = dict(ledger_data)
+                data["item_batch_id"] = item_batch_id
+                data["quantity_change"] = quantity_change
+                data["balance_after"] = new_balance
+                cur.execute(ledger_sql, data)
+                new_ledger_id = cur.fetchone()["stock_ledger_id"]
+
+            conn.commit()
+            logger.info(
+                "Item batch %s qty adjusted by %s (new balance %s); ledger_id=%s",
+                item_batch_id, quantity_change, new_balance, new_ledger_id,
+            )
+            return new_ledger_id
 
     def get_by_item(self, item_id: int) -> list[dict]:
         sql = """
@@ -307,6 +444,14 @@ class ItemBatchModel:
                 cur.execute(sql, {"item_id": item_id})
                 return [dict(r) for r in cur.fetchall()]
 
+    def get_by_id(self, item_batch_id: int) -> Optional[dict]:
+        sql = "SELECT * FROM item_batch WHERE item_batch_id = %(id)s;"
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"id": item_batch_id})
+                row = cur.fetchone()
+                return dict(row) if row else None
+
     def exists_batch_no(self, item_id: int, batch_no: str) -> bool:
         sql = """
             SELECT 1 FROM item_batch
@@ -318,4 +463,59 @@ class ItemBatchModel:
                 return cur.fetchone() is not None
 
 
-__all__ = ["ItemModel", "ItemBatchModel", "ItemSearchFilters", "ITEM_COLUMNS"]
+class StockLedgerModel:
+    """
+    Data-access layer for the `stock_ledger` table. Append-only -- there
+    is deliberately no update() or delete() here (see
+    database/schema_stock_ledger.sql's design notes). Most inserts
+    happen via ItemBatchModel.insert_with_ledger()/update_qty_with_ledger()
+    above (same transaction as the batch change); this class's own
+    insert() exists for the rare case of logging a movement against an
+    EXISTING batch with NO quantity change of its own tracked elsewhere
+    (not used by ItemEngine today, kept for completeness/future modules).
+    """
+
+    def insert(self, data: dict[str, Any]) -> int:
+        columns = [
+            "item_id", "item_batch_id", "transaction_type", "quantity_change",
+            "balance_after", "reference_type", "reference_id", "remarks",
+            "created_by", "created_at_ad", "created_at_bs",
+        ]
+        col_sql = ", ".join(columns)
+        placeholder_sql = ", ".join(f"%({c})s" for c in columns)
+        sql = f"""
+            INSERT INTO stock_ledger ({col_sql})
+            VALUES ({placeholder_sql})
+            RETURNING stock_ledger_id;
+        """
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, data)
+                new_id = cur.fetchone()["stock_ledger_id"]
+                conn.commit()
+                return new_id
+
+    def get_by_item(self, item_id: int) -> list[dict]:
+        sql = """
+            SELECT * FROM stock_ledger
+            WHERE item_id = %(item_id)s
+            ORDER BY created_at_ad DESC;
+        """
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"item_id": item_id})
+                return [dict(r) for r in cur.fetchall()]
+
+    def get_by_batch(self, item_batch_id: int) -> list[dict]:
+        sql = """
+            SELECT * FROM stock_ledger
+            WHERE item_batch_id = %(item_batch_id)s
+            ORDER BY created_at_ad ASC;
+        """
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"item_batch_id": item_batch_id})
+                return [dict(r) for r in cur.fetchall()]
+
+
+__all__ = ["ItemModel", "ItemBatchModel", "StockLedgerModel", "ItemSearchFilters", "ITEM_COLUMNS"]

@@ -86,13 +86,31 @@ class ItemFormScreen(QDialog):
         if self._is_edit_mode:
             self.setWindowTitle("Edit Item")
             self.ui.lblFormTitle.setText("Edit Item")
+            self._set_opening_stock_fields_visible(False)
             self._load_existing_item()
         else:
             self.setWindowTitle("Add Item")
             self.ui.lblFormTitle.setText("Add Item")
             self.ui.txtItemName.setFocus()
+            self._set_opening_stock_fields_visible(True)
             self.ui.btnAddBatch.setEnabled(False)
-            self.ui.btnAddBatch.setToolTip("Save the item first, then add its opening batch.")
+            self.ui.btnAddBatch.setToolTip("Save the item first, then use Add Batch for any further stock.")
+            from PySide6.QtCore import QDate
+            self.ui.txtOpeningExpiryYear.setText(str(QDate.currentDate().year() + 1))
+
+    def _set_opening_stock_fields_visible(self, visible: bool) -> None:
+        """
+        Opening Quantity/Expiry only make sense while CREATING an item --
+        they create the item's first batch in the same save click. In
+        Edit mode, "Add Batch" is the way to add further stock instead
+        (Purchase will use the same mechanism later).
+        """
+        self.ui.lblOpeningQty.setVisible(visible)
+        self.ui.txtOpeningQty.setVisible(visible)
+        self.ui.lblOpeningExpiry.setVisible(visible)
+        self.ui.cmbOpeningExpiryMonth.setVisible(visible)
+        self.ui.txtOpeningExpiryYear.setVisible(visible)
+        self.ui.lblOpeningExpiryHint.setVisible(visible)
 
     # ------------------------------------------------------------------ #
     # Wiring
@@ -396,6 +414,17 @@ class ItemFormScreen(QDialog):
             self._show_validation_message(str(exc))
             return
 
+        # Opening Stock (create mode only) -- validate BEFORE creating the
+        # item, so a bad expiry never leaves an item saved without its
+        # intended opening batch.
+        opening_batch_payload: Optional[dict] = None
+        if not self._is_edit_mode:
+            try:
+                opening_batch_payload = self._build_opening_batch_payload_if_needed()
+            except ValueError as exc:
+                self._show_validation_message(str(exc))
+                return
+
         try:
             if self._is_edit_mode:
                 dto = self._engine.update_item(self._item_id, payload, self._current_user_id)
@@ -415,9 +444,60 @@ class ItemFormScreen(QDialog):
             self._show_validation_message(f"Unexpected error: {exc}")
             return
 
+        if opening_batch_payload is not None:
+            try:
+                self._engine.add_batch(dto.item_id, opening_batch_payload, self._current_user_id)
+            except (ValidationError, DuplicateRecordError, RecordNotFoundError) as exc:
+                # Item itself is already saved (0-qty item creation is valid
+                # by design) -- surface the batch problem separately rather
+                # than pretending the whole save failed.
+                message = "\n".join(exc.errors) if isinstance(exc, ValidationError) else str(exc)
+                show_error(
+                    self, "Item Master",
+                    f"Item '{dto.item_name}' was created, but Opening Stock could not be saved: {message}\n"
+                    f"Use 'Add Batch' after reopening this item to add it.",
+                )
+                self.accept()
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Unexpected error saving opening batch for item %s.", dto.item_id)
+                show_error(
+                    self, "Item Master",
+                    f"Item '{dto.item_name}' was created, but Opening Stock could not be saved: {exc}\n"
+                    f"Use 'Add Batch' after reopening this item to add it.",
+                )
+                self.accept()
+                return
+
         action = "updated" if self._is_edit_mode else "created"
         show_success(self, "Item Master", f"Item '{dto.item_name}' {action}.")
         self.accept()
+
+    def _build_opening_batch_payload_if_needed(self) -> Optional[dict]:
+        """
+        Returns None if Opening Quantity is 0 (perfectly valid -- item
+        just has no batch yet). Returns a ready-to-use add_batch() payload
+        if Opening Quantity > 0, after validating Expiry was given.
+        Raises ValueError (shown to the user directly) on bad input.
+        """
+        from utils.item_form_helpers import build_batch_payload, parse_decimal
+
+        qty = parse_decimal(self.ui.txtOpeningQty.text(), "Opening Quantity")
+        if qty <= 0:
+            return None
+
+        expiry_year_text = self.ui.txtOpeningExpiryYear.text().strip()
+        if not expiry_year_text:
+            raise ValueError("Expiry Year is required when Opening Quantity is more than 0.")
+
+        return build_batch_payload({
+            "batch_no": "OPENING",
+            "expiry_year_text": expiry_year_text,
+            "expiry_month_text": str(self.ui.cmbOpeningExpiryMonth.currentIndex() + 1),
+            "batch_qty_text": self.ui.txtOpeningQty.text(),
+            "batch_purchase_rate_text": self.ui.txtPurchaseRate.text(),
+            "remarks": "Opening Stock",
+        })
 
     def _show_validation_message(self, message: str) -> None:
         self.ui.lblValidationMessage.setText(message)

@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from models.item_model import ITEM_COLUMNS, ItemBatchModel, ItemModel, ItemSearchFilters
+from models.stock_transaction_model import StockTransactionModel
 from utils.item_validator import ItemValidator, validate_batch_entry
 
 logger = logging.getLogger(__name__)
@@ -121,11 +122,18 @@ class ItemDTO:
     deleted_at_ad: Any
     deleted_at_bs: Optional[str]
     total_stock: float = 0.0
+    nearest_batch_no: Optional[str] = None
+    nearest_expiry_display: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ItemDTO":
-        known = {k: row.get(k) for k in cls.__dataclass_fields__.keys() if k != "total_stock"}
+        known = {
+            k: row.get(k) for k in cls.__dataclass_fields__.keys()
+            if k not in ("total_stock", "nearest_batch_no", "nearest_expiry_display")
+        }
         known["total_stock"] = float(row.get("total_stock", 0) or 0)
+        known["nearest_batch_no"] = row.get("nearest_batch_no")
+        known["nearest_expiry_display"] = row.get("nearest_expiry_display")
         return cls(**known)
 
     def to_dict(self) -> dict:
@@ -159,11 +167,13 @@ class ItemEngine:
         self,
         model: Optional[ItemModel] = None,
         batch_model: Optional[ItemBatchModel] = None,
+        stock_transaction_model: Optional[StockTransactionModel] = None,
         country_tax_lookup_fn: Optional[CountryTaxLookupFn] = None,
         manufacturer_lookup_fn: Optional[ManufacturerLookupFn] = None,
     ) -> None:
         self._model = model or ItemModel()
         self._batch_model = batch_model or ItemBatchModel()
+        self._stock_transaction_model = stock_transaction_model or StockTransactionModel()
         self._country_tax_lookup_fn = country_tax_lookup_fn or _default_country_tax_lookup
         self._manufacturer_lookup_fn = manufacturer_lookup_fn or _default_manufacturer_lookup
         self._validator = ItemValidator(
@@ -409,7 +419,25 @@ class ItemEngine:
     # add_batch() the same way once it is built -- same "never mutate an
     # old batch, always insert a new one" rule holds for both callers)
     # ------------------------------------------------------------------ #
-    def add_batch(self, item_id: int, batch_payload: dict, current_user_id: int) -> ItemBatchDTO:
+    def add_batch(
+        self,
+        item_id: int,
+        batch_payload: dict,
+        current_user_id: int,
+        transaction_type: str = "OPENING",
+        reference_type: Optional[str] = None,
+        reference_id: Optional[int] = None,
+    ) -> ItemBatchDTO:
+        """
+        Creates a brand-new batch for an item AND logs its starting
+        quantity to stock_ledger, atomically (see
+        ItemBatchModel.insert_with_ledger()). `transaction_type` defaults
+        to 'OPENING' (today's only real caller -- the Item Form's Opening
+        Stock fields and the "Add Batch" button); a future Purchase module
+        adding a brand-new lot would call this the same way with
+        transaction_type='PURCHASE' and reference_type='purchase',
+        reference_id=<purchase_id>.
+        """
         item_row = self._model.get_by_id(item_id)
         if item_row is None:
             raise RecordNotFoundError(f"Item {item_id} not found or has been deleted.")
@@ -428,6 +456,9 @@ class ItemEngine:
         if self._batch_model.exists_batch_no(item_id, batch_no):
             raise DuplicateRecordError(f"Batch No. '{batch_no}' already exists for this item.")
 
+        now_ad = self._now_ad()
+        now_bs = self._now_bs()
+
         insert_data = {
             "item_id": item_id,
             "batch_no": batch_no,
@@ -437,8 +468,23 @@ class ItemEngine:
             "batch_purchase_rate": float(batch_purchase_rate),
             "remarks": remarks,
             "created_by": current_user_id,
-            "created_at_ad": self._now_ad(),
-            "created_at_bs": self._now_bs(),
+            "created_at_ad": now_ad,
+            "created_at_bs": now_bs,
+        }
+
+        # A new batch has no prior balance -- its starting qty IS both the
+        # movement amount and the resulting balance.
+        ledger_data = {
+            "item_id": item_id,
+            "transaction_type": transaction_type,
+            "quantity_change": float(batch_qty),
+            "balance_after": float(batch_qty),
+            "reference_type": reference_type,
+            "reference_id": reference_id,
+            "remarks": remarks,
+            "created_by": current_user_id,
+            "created_at_ad": now_ad,
+            "created_at_bs": now_bs,
         }
 
         try:
@@ -449,9 +495,91 @@ class ItemEngine:
             logger.exception("Unexpected error inserting batch for item %s.", item_id)
             raise
 
+        # Every batch entry (Opening Stock today; Purchase will call add_batch()
+        # the same way once built) is also recorded in the append-only stock
+        # ledger, so stock movement history exists from day one -- never rely
+        # on item_batch.batch_qty alone as "why did the stock become this".
+        try:
+            self._stock_transaction_model.insert({
+                "item_id": item_id,
+                "item_batch_id": new_id,
+                "transaction_type": "Opening",
+                "quantity_in": float(batch_qty),
+                "quantity_out": 0,
+                "reference_table": "item_batch",
+                "reference_id": new_id,
+                "remarks": "Opening stock entry via Item Master.",
+                "created_by": current_user_id,
+                "created_at_ad": self._now_ad(),
+                "created_at_bs": self._now_bs(),
+            })
+        except Exception:  # noqa: BLE001 -- ledger failure must never roll back a successful batch save
+            logger.exception("Failed to write stock_transaction ledger entry for batch %s (item %s). Batch itself was saved successfully.", new_id, item_id)
+
         rows = self._batch_model.get_by_item(item_id)
         row = next(r for r in rows if r["item_batch_id"] == new_id)
         return ItemBatchDTO.from_row(row)
+
+    def post_stock_movement(
+        self,
+        item_batch_id: int,
+        transaction_type: str,
+        quantity_change: float,
+        current_user_id: int,
+        reference_type: Optional[str] = None,
+        reference_id: Optional[int] = None,
+        remarks: Optional[str] = None,
+    ) -> ItemBatchDTO:
+        """
+        FOR FUTURE PURCHASE/SALE MODULES: adjusts an EXISTING batch's
+        balance and logs the movement to stock_ledger, atomically.
+        Positive quantity_change = stock IN (e.g. Purchase adding to an
+        existing lot, a Sale Return); negative = stock OUT (e.g. a Sale,
+        a Purchase Return, a downward Adjustment).
+
+        Not called anywhere in this repo today -- built now so those
+        future modules have ONE safe, shared entry point for changing an
+        existing batch's quantity, instead of each writing its own
+        item_batch UPDATE statement (which is exactly how batch_qty and
+        stock_ledger would eventually drift apart).
+        """
+        valid_types = ("PURCHASE", "SALE", "SALE_RETURN", "PURCHASE_RETURN", "ADJUSTMENT")
+        if transaction_type not in valid_types:
+            raise ValidationError([f"transaction_type must be one of {valid_types}."])
+
+        batch_row = self._batch_model.get_by_id(item_batch_id)
+        if batch_row is None:
+            raise RecordNotFoundError(f"Batch {item_batch_id} not found.")
+
+        prospective_balance = float(batch_row["batch_qty"]) + quantity_change
+        if prospective_balance < 0:
+            raise ValidationError([
+                f"This movement would take batch '{batch_row['batch_no']}' below zero "
+                f"(current: {batch_row['batch_qty']}, change: {quantity_change})."
+            ])
+
+        ledger_data = {
+            "item_id": batch_row["item_id"],
+            "transaction_type": transaction_type,
+            "reference_type": reference_type,
+            "reference_id": reference_id,
+            "remarks": remarks,
+            "created_by": current_user_id,
+            "created_at_ad": self._now_ad(),
+            "created_at_bs": self._now_bs(),
+        }
+
+        self._batch_model.update_qty_with_ledger(item_batch_id, quantity_change, ledger_data)
+
+        updated_row = self._batch_model.get_by_id(item_batch_id)
+        return ItemBatchDTO.from_row(updated_row)
+
+    def get_stock_ledger(self, item_id: int) -> list[dict]:
+        """Raw ledger rows for an item, newest first -- for a future
+        "Stock History" view. Returned as plain dicts (no DTO wrapper
+        yet -- add one if/when a Screen needs to display this)."""
+        from models.item_model import StockLedgerModel
+        return StockLedgerModel().get_by_item(item_id)
 
     def get_batches(self, item_id: int) -> list[ItemBatchDTO]:
         rows = self._batch_model.get_by_item(item_id)
