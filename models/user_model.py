@@ -178,7 +178,8 @@ def count_active_users() -> int:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) AS total FROM users WHERE status = %s", (STATUS_ACTIVE,))
-            return cur.fetchone()["total"]
+            result = cur.fetchone()
+            return result["total"] if result else 0
 
 
 # =========================================================

@@ -242,6 +242,39 @@ class ItemModel:
                 cur.execute(sql, {"item_id": item_id})
                 return float(cur.fetchone()["total"])
 
+    def get_low_stock_items(self) -> list[dict]:
+        """
+        Returns active, non-deleted items where total_stock <= minimum_stock.
+        Each returned row is a dict with keys:
+        - item_id
+        - item_name
+        - total_stock
+        - minimum_stock
+
+        Live query — no caching. Caller should snapshot stock_at_order_time/minimum_stock_at_order_time
+        from the returned rows if they want to persist why an item was suggested.
+        """
+        # Use the file's _get_connection() which returns a psycopg2 connection (context manager)
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                sql = """
+                    SELECT i.item_id,
+                        i.item_name,
+                        COALESCE(SUM(b.batch_qty), 0) AS total_stock,
+                        i.minimum_stock
+                    FROM item i
+                    LEFT JOIN item_batch b ON i.item_id = b.item_id
+                    WHERE i.is_deleted = FALSE
+                    AND i.status = 'Active'
+                    GROUP BY i.item_id, i.item_name, i.minimum_stock
+                    HAVING COALESCE(SUM(b.batch_qty), 0) <= i.minimum_stock
+                    ORDER BY (i.minimum_stock - COALESCE(SUM(b.batch_qty),0)) DESC
+                """
+                cur.execute(sql)
+                rows = cur.fetchall()
+                # RealDictCursor => each row is already a dict
+                return rows
+
     # ------------------------------------------------------------------ #
     # SOFT DELETE / RESTORE
     # ------------------------------------------------------------------ #

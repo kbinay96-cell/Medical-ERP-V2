@@ -27,6 +27,7 @@ Models and other Engines. No UI code here.
 import socket
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 
 from config.settings import (
     STATUS_LOCKED, STATUS_DISABLED, STATUS_SUSPENDED,

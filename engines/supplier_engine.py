@@ -349,6 +349,28 @@ class SupplierEngine:
         return self._model.exists_by_code(supplier_code, exclude_id)
 
     # ------------------------------------------------------------------ #
+    # ACTIVE SUPPLIERS
+    # ------------------------------------------------------------------ #
+    def get_active_suppliers(self, include_deleted: bool = False) -> list[SupplierDTO]:
+        """
+        Returns a list of active suppliers (status='Active').
+        This is the ONLY function screens should call when they need
+        a selection list of suppliers (e.g., for purchase entries).
+        """
+        try:
+            filters = SupplierSearchFilters(
+                status="Active",
+                include_deleted=include_deleted,
+                page=1,
+                page_size=1000,  # large enough to get all active suppliers
+            )
+            rows, _ = self._model.search(filters)
+            return [SupplierDTO.from_row(r) for r in rows]
+        except Exception as e:
+            logger.exception("get_active_suppliers: database error.")
+            return []
+
+    # ------------------------------------------------------------------ #
     # SOFT DELETE / RESTORE
     # ------------------------------------------------------------------ #
     def delete_supplier(self, supplier_id: int, current_user_id: int) -> None:
