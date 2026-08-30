@@ -88,6 +88,7 @@ class ManufacturerDTO:
     manufacturer_name: str
     manufacturer_short_name: str
     country: Optional[str]
+    default_margin_percent: Optional[float]
     status: str
     is_deleted: bool
     created_by: int
@@ -194,6 +195,8 @@ class ManufacturerEngine:
         data["manufacturer_name"] = (data.get("manufacturer_name") or "").strip()
         data["country"] = (data.get("country") or "").strip() or None
         data["status"] = data.get("status") or "Active"
+        margin = data.get("default_margin_percent")
+        data["default_margin_percent"] = float(margin) if margin not in (None, "") else None
         return data
 
     # ------------------------------------------------------------------ #
@@ -224,6 +227,7 @@ class ManufacturerEngine:
             "manufacturer_name": data["manufacturer_name"],
             "manufacturer_short_name": short_name,
             "country": data["country"],
+            "default_margin_percent": data["default_margin_percent"],
             "status": data["status"],
             "created_by": current_user_id,
             "created_at_ad": now_ad,
@@ -268,6 +272,7 @@ class ManufacturerEngine:
             "manufacturer_name": data["manufacturer_name"],
             "manufacturer_short_name": short_name,
             "country": data["country"],
+            "default_margin_percent": data["default_margin_percent"],
             "status": data["status"],
             "updated_by": current_user_id,
             "updated_at_ad": now_ad,

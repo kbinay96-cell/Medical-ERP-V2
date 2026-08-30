@@ -40,6 +40,8 @@ from ui.ui_supplier_manufacturer_discount_form import Ui_SupplierManufacturerDis
 from utils.combo_helpers import make_searchable_many
 from utils.integration_adapters import get_current_user_id, show_success
 from utils.supplier_manufacturer_discount_form_helpers import build_discount_payload
+from utils.ui_standards import standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,8 @@ class SupplierManufacturerDiscountFormScreen(QDialog):
         super().__init__(parent)
         self.ui = Ui_SupplierManufacturerDiscountFormDialog()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=720, height=560)
+        standardize_action_buttons(self)
 
         self._engine = engine or SupplierManufacturerDiscountEngine()
         self._supplier_engine = supplier_engine or SupplierEngine()

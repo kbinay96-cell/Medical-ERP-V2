@@ -31,12 +31,15 @@ from PySide6.QtWidgets import QTableWidgetItem, QWidget
 
 from engines.exceptions import RecordNotFoundError
 from engines.item_engine import ItemDTO, ItemEngine
-from engines.item_lookup_registry import category_engine, manufacturer_engine
+from engines.item_lookup_registry import category_engine, manufacturer_engine, unit_engine
 from screens.item_form_screen import ItemFormScreen
 from ui.ui_item_list import Ui_ItemListWidget
 from utils.combo_helpers import make_searchable_many
 from utils.integration_adapters import confirm, get_current_user_id, show_error, show_success
-from utils.item_form_helpers import combo_id_value, dto_to_table_row, status_filter_value
+from utils.item_form_helpers import combo_id_value, dto_to_table_row, format_qty, status_filter_value
+from utils.ui_standards import configure_table_columns, install_detail_splitter, standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
+from widgets.master_detail_panel import MasterDetailPanel
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +53,26 @@ class ItemListScreen(QWidget):
         super().__init__(parent)
         self.ui = Ui_ItemListWidget()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=1360, height=760)
+        standardize_action_buttons(self)
 
         self._engine = engine or ItemEngine()
         self._rows: list[ItemDTO] = []
+        self._category_names: dict[int, str] = {}
+        self._manufacturer_names: dict[int, str] = {}
+        self._unit_names: dict[int, str] = {}
+
+        self._detail = MasterDetailPanel(
+            placeholder_title="Select an item",
+            placeholder_icon="box.svg",
+            field_captions=(
+                "Category:", "Manufacturer:", "Unit:", "Purchase Rate:", "Sale Rate:",
+                "MRP:", "Stock:", "Min. Stock:", "Nearest Batch:", "Expiry:", "Status:",
+                "Created:", "Updated:", "Deleted:",
+            ),
+        )
+        install_detail_splitter(self.ui.verticalLayoutRoot, self.ui.tblItem, self._detail)
+        configure_table_columns(self.ui.tblItem, stretch_columns=(1, 2, 3))
 
         self._search_debounce_timer = QTimer(self)
         self._search_debounce_timer.setSingleShot(True)
@@ -120,6 +140,18 @@ class ItemListScreen(QWidget):
         self.ui.cmbManufacturerFilter.setCurrentIndex(restored_index if restored_index >= 0 else 0)
         self.ui.cmbManufacturerFilter.blockSignals(False)
 
+        self._category_names = {
+            self.ui.cmbCategoryFilter.itemData(i): self.ui.cmbCategoryFilter.itemText(i)
+            for i in range(self.ui.cmbCategoryFilter.count())
+            if self.ui.cmbCategoryFilter.itemData(i) is not None
+        }
+        self._manufacturer_names = {
+            self.ui.cmbManufacturerFilter.itemData(i): self.ui.cmbManufacturerFilter.itemText(i)
+            for i in range(self.ui.cmbManufacturerFilter.count())
+            if self.ui.cmbManufacturerFilter.itemData(i) is not None
+        }
+        self._unit_names = {dto.id: dto.name for dto in unit_engine().list_active()}
+
     # ------------------------------------------------------------------ #
     # Search / Filter / Refresh
     # ------------------------------------------------------------------ #
@@ -160,13 +192,19 @@ class ItemListScreen(QWidget):
         table.setRowCount(0)
         for row_index, dto in enumerate(rows):
             table.insertRow(row_index)
-            for col_index, value in enumerate(dto_to_table_row(dto)):
+            for col_index, value in enumerate(
+                dto_to_table_row(
+                    dto,                    
+                    unit_name=self._unit_names.get(dto.unit_id, ""),
+                )
+            ):
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, dto.item_id)
                 if dto.is_deleted:
                     item.setForeground(Qt.gray)
                 table.setItem(row_index, col_index, item)
         table.setSortingEnabled(True)
+        configure_table_columns(table, stretch_columns=(1, 2, 3))
         self._on_selection_changed()
 
     # ------------------------------------------------------------------ #
@@ -190,6 +228,43 @@ class ItemListScreen(QWidget):
         self.ui.btnEdit.setEnabled(has_selection and not is_deleted)
         self.ui.btnDelete.setEnabled(has_selection and not is_deleted)
         self.ui.btnRestore.setEnabled(has_selection and is_deleted)
+
+        if dto is None:
+            self._detail.show_placeholder()
+            return
+        self._show_detail(dto)
+
+    def _show_detail(self, dto: ItemDTO) -> None:
+        self._detail.set_photo(getattr(dto, "photo_path", None))
+        self._detail.set_heading(dto.item_name or "-", dto.item_code or "")
+        if dto.is_deleted:
+            status_text = "Deleted"
+        else:
+            status_text = dto.status or "-"
+        self._detail.set_field("Category:", self._category_names.get(dto.category_id, "") or "-")
+        self._detail.set_field("Manufacturer:", self._manufacturer_names.get(dto.manufacturer_id, "") or "-")
+        self._detail.set_field("Unit:", self._unit_names.get(dto.unit_id, "") or "-")
+        self._detail.set_field("Purchase Rate:", f"{float(dto.purchase_rate or 0):,.2f}")
+        self._detail.set_field("Sale Rate:", f"{float(dto.sale_rate or 0):,.2f}")
+        self._detail.set_field("MRP:", f"{float(dto.mrp or 0):,.2f}")
+        self._detail.set_field("Stock:", format_qty(dto.total_stock))
+        self._detail.set_field("Min. Stock:", format_qty(dto.minimum_stock))
+        self._detail.set_field("Nearest Batch:", dto.nearest_batch_no or "-")
+        self._detail.set_field("Expiry:", dto.nearest_expiry_display or "-")
+        self._detail.set_field("Status:", status_text)
+        self._detail.set_field(
+            "Created:",
+            MasterDetailPanel.format_audit(dto.created_by, dto.created_at_bs, dto.created_at_ad),
+        )
+        self._detail.set_field(
+            "Updated:",
+            MasterDetailPanel.format_audit(dto.updated_by, dto.updated_at_bs, dto.updated_at_ad),
+        )
+        self._detail.set_field(
+            "Deleted:",
+            MasterDetailPanel.format_audit(dto.deleted_by, dto.deleted_at_bs, dto.deleted_at_ad)
+            if dto.is_deleted else "-",
+        )
 
     # ------------------------------------------------------------------ #
     # CRUD actions

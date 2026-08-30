@@ -44,7 +44,7 @@ class DashboardData:
 # (per get_accessible_menus) OR is Administrator (sees all).
 SIDEBAR_MODULES = {
     "Masters": ["Company", "Supplier", "Manufacturer", "Customer", "Item", "Supplier-Mfg Discount", "Country Tax"],
-    "Purchase": ["New Purchase", "Purchase List"],
+    "Purchase": ["Purchase", "Purchase Order", "Purchase Return"],
     "Sales": ["New Sale", "Sale List"],
     "Inventory": ["Stock Ledger", "Stock Master"],
     "Accounts": ["Payment", "Receipt"],

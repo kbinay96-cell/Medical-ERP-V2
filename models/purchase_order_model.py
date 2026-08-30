@@ -102,18 +102,24 @@ class PurchaseOrderModel:
                 return cur.fetchall()
 
     def get_last_po_number_sequence(self, prefix: str) -> int:
+        """Same pattern as SupplierModel.get_last_code_sequence()."""
         get_connection = _get_connection()
+        factory = _dict_cursor_factory()
         sql = """
-            SELECT MAX(NULLIF(REGEXP_REPLACE(po_number, '^\\D+', ''), '')::integer) AS max_seq
+            SELECT COALESCE(MAX(
+                CAST(REGEXP_REPLACE(po_number, %(prefix_pattern)s, '') AS INTEGER)
+            ), 0) AS max_seq
             FROM purchase_order
-            WHERE po_number LIKE %s
+            WHERE po_number ~ %(pattern)s;
         """
-        like_pattern = f"{prefix}%"
+        params = {
+            "prefix_pattern": f"^{prefix}",
+            "pattern": f"^{prefix}[0-9]+$",
+        }
         with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (like_pattern,))
-                res = cur.fetchone()
-                return int(res[0]) if res and res[0] else 0
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, params)
+                return cur.fetchone()["max_seq"]
 
     def search(self, filters: PurchaseOrderSearchFilters) -> Tuple[List[dict], int]:
         get_connection = _get_connection()

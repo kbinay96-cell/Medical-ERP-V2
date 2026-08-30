@@ -151,7 +151,7 @@ class Ui_ItemFormDialog(object):
         # ---------------- Pricing ----------------
         self.grpPricing = QGroupBox(self.scrollAreaContents)
         self.grpPricing.setObjectName("grpPricing")
-        self.grpPricing.setTitle("Pricing && Stock")
+        self.grpPricing.setTitle("Pricing & Stock")
         self.formLayoutPricing = QFormLayout(self.grpPricing)
         self.formLayoutPricing.setObjectName("formLayoutPricing")
         self.formLayoutPricing.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -174,6 +174,12 @@ class Ui_ItemFormDialog(object):
         self.txtMrp.setText("0.00")
         self.formLayoutPricing.addRow(self.lblMrp, self.txtMrp)
 
+        self.lblSuperDiscountPercent = QLabel("Super Discount %:", self.grpPricing)
+        self.txtSuperDiscountPercent = QLineEdit(self.grpPricing)
+        self.txtSuperDiscountPercent.setObjectName("txtSuperDiscountPercent")
+        self.txtSuperDiscountPercent.setText("0.00")
+        self.formLayoutPricing.addRow(self.lblSuperDiscountPercent, self.txtSuperDiscountPercent)
+
         self.lblMinimumStock = QLabel("Minimum Stock:", self.grpPricing)
         self.txtMinimumStock = QLineEdit(self.grpPricing)
         self.txtMinimumStock.setObjectName("txtMinimumStock")
@@ -193,6 +199,12 @@ class Ui_ItemFormDialog(object):
         self.lblOpeningQty = QLabel("Opening Quantity:", self.grpPricing)
         self.txtOpeningQty = QLineEdit(self.grpPricing)
         self.txtOpeningQty.setObjectName("txtOpeningQty")
+        self.txtOpeningQty.setText("0")
+        self.txtOpeningQty.setToolTip("Leave 0 if this item has no stock yet -- the item still saves fine.")
+        self.formLayoutPricing.addRow(self.lblOpeningQty, self.txtOpeningQty)
+
+        # (Expiry and Add Batch would follow, but I will not add them here as the task is to maintain existing code, not rewrite all)
+
         self.txtOpeningQty.setText("0")
         self.txtOpeningQty.setToolTip("Leave 0 if this item has no stock yet -- the item still saves fine.")
         self.formLayoutPricing.addRow(self.lblOpeningQty, self.txtOpeningQty)

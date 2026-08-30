@@ -190,7 +190,7 @@ def count_active_users() -> int:
 _USER_MASTER_COLUMNS = (
     "userid, username, fullname, email, phone, roleid, companyid, status, "
     "mustchangepassword, failedattempts, lockeduntil, passwordchangedat, "
-    "createddate, createdby, modifieddate, modifiedby"
+    "photo_path, createddate, createdby, modifieddate, modifiedby"
 )
 
 
@@ -235,10 +235,10 @@ def insert_user(data: Dict[str, Any], created_by: str) -> int:
                     """
                     INSERT INTO users (
                         username, fullname, email, phone, passwordhash, passwordsalt,
-                        roleid, companyid, status, mustchangepassword,
+                        roleid, companyid, status, mustchangepassword, photo_path,
                         passwordchangedat, createddate, createdby
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING userid
                     """,
                     (
@@ -247,6 +247,7 @@ def insert_user(data: Dict[str, Any], created_by: str) -> int:
                         password_hash, password_salt,
                         data["role_id"], data.get("company_id"), STATUS_ACTIVE,
                         data.get("must_change_password", True),
+                        data.get("photo_path"),
                         datetime.now(), datetime.now(), created_by,
                     )
                 )
@@ -267,7 +268,8 @@ def insert_user(data: Dict[str, Any], created_by: str) -> int:
 
 def update_user(userid: int, data: Dict[str, Any], modified_by: str) -> None:
     allowed_fields = {"username": "username", "fullname": "fullname", "email": "email",
-                       "phone": "phone", "role_id": "roleid", "company_id": "companyid"}
+                       "phone": "phone", "role_id": "roleid", "company_id": "companyid",
+                       "photo_path": "photo_path"}
     set_clauses = []
     params: List[Any] = []
 
@@ -380,7 +382,7 @@ def list_users(
                     SELECT u.userid, u.username, u.fullname, u.email, u.phone, u.roleid,
                            r.rolename, u.companyid, u.status, u.mustchangepassword,
                            u.failedattempts, u.lockeduntil, u.passwordchangedat,
-                           u.createddate, u.createdby, u.modifieddate, u.modifiedby
+                           u.photo_path, u.createddate, u.createdby, u.modifieddate, u.modifiedby
                     FROM users u
                     LEFT JOIN roles r ON r.roleid = u.roleid
                     {where_clause}

@@ -112,12 +112,12 @@ def insert_company(data: Dict[str, Any], created_by: str) -> str:
             cur.execute("""
                 INSERT INTO company (
                     companyid, companyname, address, contactperson, mobileno,
-                    phone, email, panno, registrationno, remarks,
+                    phone, email, panno, registrationno, ddano, logopath, remarks,
                     status, isdeleted, createdby
                 ) VALUES (
                     %(companyid)s, %(companyname)s, %(address)s, %(contactperson)s,
                     %(mobileno)s, %(phone)s, %(email)s, %(panno)s, %(registrationno)s,
-                    %(remarks)s, 'Active', FALSE, %(createdby)s
+                    %(ddano)s, %(logopath)s, %(remarks)s, 'Active', FALSE, %(createdby)s
                 )
             """, {
                 "companyid": companyid,
@@ -129,6 +129,8 @@ def insert_company(data: Dict[str, Any], created_by: str) -> str:
                 "email": data.get("email"),
                 "panno": data.get("panno"),
                 "registrationno": data.get("registrationno"),
+                "ddano": data.get("ddano"),
+                "logopath": data.get("logopath"),
                 "remarks": data.get("remarks"),
                 "createdby": created_by,
             })
@@ -157,6 +159,8 @@ def update_company(companyid: str, data: Dict[str, Any], modified_by: str) -> bo
                     email = %(email)s,
                     panno = %(panno)s,
                     registrationno = %(registrationno)s,
+                    ddano = %(ddano)s,
+                    logopath = %(logopath)s,
                     remarks = %(remarks)s,
                     modifiedby = %(modifiedby)s,
                     modifiedat = CURRENT_TIMESTAMP
@@ -171,6 +175,8 @@ def update_company(companyid: str, data: Dict[str, Any], modified_by: str) -> bo
                 "email": data.get("email"),
                 "panno": data.get("panno"),
                 "registrationno": data.get("registrationno"),
+                "ddano": data.get("ddano"),
+                "logopath": data.get("logopath"),
                 "remarks": data.get("remarks"),
                 "modifiedby": modified_by,
             })

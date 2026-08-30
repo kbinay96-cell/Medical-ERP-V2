@@ -104,7 +104,7 @@ THEME_SETTING_KEY = "general.theme"
 # QComboBox regardless of their declared data_type.
 FIXED_CHOICE_SETTINGS: dict[str, list[str]] = {
     "general.business_type": [
-        "Retail", "Wholesale", "Hospital", "Distributor", "Surgical", "Veterinary",
+        "Retail", "Wholesale",
     ],
     "date.primary_calendar": ["BS", "AD"],
     "date.week_start_day": [

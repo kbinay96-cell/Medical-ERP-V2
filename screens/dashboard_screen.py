@@ -1,4 +1,3 @@
-
 """
 =========================================================
 Medical ERP V2
@@ -36,6 +35,31 @@ from screens.user_list_screen import UserListScreen
 from screens.customer_list_screen import CustomerListScreen
 from screens.customer_form_screen import CustomerFormScreen
 
+# Purchase module imports
+from screens.purchase_order_list_screen import PurchaseOrderListScreen
+from screens.purchase_order_form_screen import PurchaseOrderFormScreen
+from screens.purchase_invoice_list_screen import PurchaseInvoiceListScreen
+from screens.purchase_invoice_form_screen import PurchaseInvoiceFormScreen
+from screens.sale_invoice_form_screen import SaleInvoiceFormScreen
+from screens.sale_invoice_list_screen import SaleInvoiceListScreen
+from screens.stock_ledger_screen import StockLedgerScreen
+from screens.stock_master_screen import StockMasterScreen
+from utils.window_chrome import apply_standard_window_chrome
+
+# Purchase engines
+from engines.purchase_order_engine import PurchaseOrderEngine
+from engines.purchase_engine import PurchaseEngine
+from engines.sale_engine import SaleEngine
+from engines.supplier_engine import SupplierEngine
+from engines.item_engine import ItemEngine
+from engines.item_lookup_registry import manufacturer_lookup, country_tax_lookup
+
+# Models
+from models.purchase_order_model import PurchaseOrderModel
+from models.purchase_invoice_model import PurchaseInvoiceModel
+from models.sale_invoice_model import SaleInvoiceModel
+from models.item_model import ItemModel
+
 logger = get_logger()
 
 REFRESH_INTERVAL_MS = 60_000  # KPI auto-refresh, configurable later via Settings
@@ -62,13 +86,83 @@ class DashboardScreen(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
+        # lblDashboardClock is defined inside the statusbar in the .ui file,
+        # which pyside6-uic wires up as a normal (left-aligned) status bar
+        # widget by default. Move it to the permanent (right-aligned) slot
+        # here in code, since that placement isn't expressible in the .ui
+        # XML itself — the widget object and all its existing
+        # setText()/clock-update code elsewhere stay unchanged.
+        self.ui.statusbar.removeWidget(self.ui.lblDashboardClock)
+        self.ui.statusbar.addPermanentWidget(self.ui.lblDashboardClock)
+
         self.initialize()
+
+    def _init_purchase_engines(self):
+        """Initialize Purchase module engines for dashboard use.
+
+        self._item_engine is a fresh ItemEngine() instance. Confirmed safe
+        via the real engines/item_engine.py: ItemEngine holds no in-memory
+        state of its own (every method is a pure pass-through to
+        ItemModel/ItemBatchModel/StockTransactionModel, which are thin DB
+        wrappers) — so a second instance behaves identically to whichever
+        one Item Master's own screens construct. It MUST still be given
+        the real manufacturer_lookup/country_tax_lookup functions from
+        item_lookup_registry.py — without them, resolve_item_tax() (and
+        therefore Purchase's CC%) would silently always return (0, 0),
+        since ItemEngine's own defaults are no-op fallbacks.
+        """
+        try:
+            from engines import date_engine, settings_engine
+
+            self._supplier_engine = SupplierEngine()
+            self._po_model = PurchaseOrderModel()
+            self._pi_model = PurchaseInvoiceModel()
+            self._item_model = ItemModel()
+            self._item_engine = ItemEngine(
+                country_tax_lookup_fn=country_tax_lookup,
+                manufacturer_lookup_fn=manufacturer_lookup,
+            )
+
+            self._purchase_order_engine = PurchaseOrderEngine(
+                model=self._po_model,
+                item_model=self._item_model,
+                date_engine=date_engine,
+                settings_engine=settings_engine,
+            )
+
+            self._purchase_engine = PurchaseEngine(
+                model=self._pi_model,
+                date_engine=date_engine,
+                settings_engine=settings_engine,
+                item_engine=self._item_engine,
+                purchase_order_engine=self._purchase_order_engine,
+            )
+
+            self._sale_engine = SaleEngine(
+                model=SaleInvoiceModel(),
+                date_engine=date_engine,
+                item_engine=self._item_engine,
+            )
+        except Exception as e:
+            from utils.app_logger import get_logger
+            logger = get_logger()
+            logger.error(f"Failed to initialize Purchase engines: {e}")
+            self._purchase_order_engine = None
+            self._purchase_engine = None
+            self._sale_engine = None
+            self._supplier_engine = None
+            self._item_engine = None
 
     # -----------------------------------------------------
     # SETUP
     # -----------------------------------------------------
 
     def initialize(self):
+        # ---- INITIALIZE PURCHASE ENGINES (must happen before sidebar/menu
+        #      actions can safely reference self._purchase_order_engine /
+        #      self._purchase_engine) ----
+        self._init_purchase_engines()
+
         self._show_user_context()
         self._apply_icons()
         self._build_sidebar_menu()
@@ -251,43 +345,43 @@ class DashboardScreen(QMainWindow):
 
         if module_name == "supplier":
             self.supplier_list = SupplierListScreen(self)
-            self.supplier_list.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.supplier_list)
             self.supplier_list.show()
 
         elif module_name == "company":
             
             self.company_list = CompanyListScreen(self)
-            self.company_list.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.company_list)
             self.company_list.show()
 
         elif module_name == "manufacturer":
             self.manufacturer_list = ManufacturerListScreen(self)
-            self.manufacturer_list.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.manufacturer_list)
             self.manufacturer_list.show()
 
         elif module_name == "supplier-mfg discount":
             self.supplier_manufacturer_discount_list = SupplierManufacturerDiscountListScreen(self)
-            self.supplier_manufacturer_discount_list.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.supplier_manufacturer_discount_list)
             self.supplier_manufacturer_discount_list.show()
 
         elif module_name == "country tax":                          # <-- NAYA BLOCK
             self.country_tax_list = CountryTaxListScreen(self)
-            self.country_tax_list.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.country_tax_list)
             self.country_tax_list.show()
 
         elif module_name == "customer":
             self.customer_list = CustomerListScreen(self.login_result, parent=self)
-            self.customer_list.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.customer_list)
             self.customer_list.show()
 
         elif module_name == "item":
             self.item_list = ItemListScreen(self)
-            self.item_list.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.item_list)
             self.item_list.show()
 
         elif module_name == "user master":
             self.user_list = UserListScreen(self, current_user_id=self.login_result.userid)
-            self.user_list.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.user_list)
             self.user_list.show()
 
         elif module_name == "settings":
@@ -296,8 +390,120 @@ class DashboardScreen(QMainWindow):
                 is_admin=self.login_result.is_admin,
                 parent=self,
             )
-            self.settings_screen.setWindowFlag(Qt.Window)
+            apply_standard_window_chrome(self.settings_screen)
             self.settings_screen.show()
+
+        # ---- PURCHASE MODULE ----
+        elif module_name == "purchase order":
+            if self._purchase_order_engine is None or self._supplier_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Purchase Order", "Purchase engines not initialized. Please restart the application.")
+                return
+
+            self.purchase_order_form = PurchaseOrderFormScreen(
+                parent=self,
+                engine=self._purchase_order_engine,
+                supplier_engine=self._supplier_engine,
+                item_engine=self._item_engine,
+                current_user_id=self.login_result.userid,
+            )
+            apply_standard_window_chrome(self.purchase_order_form)
+            self.purchase_order_form.show()
+
+        elif module_name == "purchase":
+            if self._purchase_engine is None or self._purchase_order_engine is None or self._supplier_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Purchase Invoice", "Purchase engines not initialized. Please restart the application.")
+                return
+
+            self.purchase_invoice_form = PurchaseInvoiceFormScreen(
+                parent=self,
+                engine=self._purchase_engine,
+                purchase_order_engine=self._purchase_order_engine,
+                supplier_engine=self._supplier_engine,
+                item_engine=self._item_engine,
+                current_user_id=self.login_result.userid,
+            )
+            apply_standard_window_chrome(self.purchase_invoice_form)
+            self.purchase_invoice_form.show()
+
+        elif module_name == "purchase list":
+            if self._purchase_order_engine is None or self._supplier_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Purchase Order", "Purchase engines not initialized. Please restart the application.")
+                return
+
+            self.purchase_order_list = PurchaseOrderListScreen(
+                parent=self,
+                engine=self._purchase_order_engine,
+                supplier_engine=self._supplier_engine,
+                item_engine=self._item_engine,
+                current_user_id=self.login_result.userid,
+            )
+            apply_standard_window_chrome(self.purchase_order_list)
+            self.purchase_order_list.show()
+
+        elif module_name == "new sale":
+            if self._sale_engine is None or self._item_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
+                return
+            self.sale_invoice_form = SaleInvoiceFormScreen(
+                parent=self,
+                engine=self._sale_engine,
+                item_engine=self._item_engine,
+                current_user_id=self.login_result.userid,
+            )
+            apply_standard_window_chrome(self.sale_invoice_form)
+            self.sale_invoice_form.show()
+
+        elif module_name == "sale list":
+            if self._sale_engine is None or self._item_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
+                return
+            self.sale_invoice_list = SaleInvoiceListScreen(
+                parent=self,
+                engine=self._sale_engine,
+                item_engine=self._item_engine,
+                current_user_id=self.login_result.userid,
+            )
+            apply_standard_window_chrome(self.sale_invoice_list)
+            self.sale_invoice_list.show()
+
+        elif module_name == "stock ledger":
+            if self._item_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Inventory", "Item engine not initialized. Please restart the application.")
+                return
+            self.stock_ledger_screen = StockLedgerScreen(self, self._item_engine)
+            apply_standard_window_chrome(self.stock_ledger_screen)
+            self.stock_ledger_screen.show()
+
+        elif module_name == "stock master":
+            if self._item_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Inventory", "Item engine not initialized. Please restart the application.")
+                return
+            self.stock_master_screen = StockMasterScreen(self, self._item_engine)
+            apply_standard_window_chrome(self.stock_master_screen)
+            self.stock_master_screen.show()
+
+        elif module_name == "purchase invoice list":
+            if self._purchase_engine is None or self._supplier_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Purchase Invoice", "Purchase engines not initialized. Please restart the application.")
+                return
+
+            self.purchase_invoice_list = PurchaseInvoiceListScreen(
+                parent=self,
+                engine=self._purchase_engine,
+                supplier_engine=self._supplier_engine,
+                item_engine=self._item_engine,
+                current_user_id=self.login_result.userid,
+            )
+            apply_standard_window_chrome(self.purchase_invoice_list)
+            self.purchase_invoice_list.show()
     # -----------------------------------------------------
     # LOGOUT
     # -----------------------------------------------------
@@ -309,6 +515,3 @@ class DashboardScreen(QMainWindow):
         logout(self.login_result.userid, self.login_result.username, self.login_result.session_id)
         show_info("You have been logged out.")
         self.close()
-
-
-

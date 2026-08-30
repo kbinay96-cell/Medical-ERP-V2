@@ -27,6 +27,17 @@ class PurchaseInvoiceSearchFilters:
     include_deleted: bool = False
     page: int = 1
     page_size: int = 50
+    order_by: Optional[str] = None
+    order_dir: str = "ASC"
+
+_SORTABLE_COLUMNS = {
+    "internal_ref_number": "pi.internal_ref_number",
+    "invoice_number": "pi.invoice_number",
+    "supplier_name": "s.supplier_name",
+    "invoice_date_bs": "pi.invoice_date_bs",
+    "grand_total": "pi.grand_total",
+    "status": "pi.status",
+}
 
 
 class PurchaseInvoiceModel:
@@ -46,7 +57,7 @@ class PurchaseInvoiceModel:
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, values)
-                new_id = cur.fetchone()[0]
+                new_id = cur.fetchone()["purchase_invoice_id"]
                 conn.commit()
                 return new_id
 
@@ -64,7 +75,7 @@ class PurchaseInvoiceModel:
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, values)
-                new_id = cur.fetchone()[0]
+                new_id = cur.fetchone()["purchase_invoice_item_id"]
                 conn.commit()
                 return new_id
 
@@ -114,25 +125,29 @@ class PurchaseInvoiceModel:
                 return cur.fetchone() is not None
 
     def get_last_internal_ref_sequence(self, prefix: str) -> int:
-        """Return highest numeric suffix currently present for internal_ref_number starting with prefix.
-        Returns 0 if none exist."""
-        get_connection = _get_connection()
-        # PostgreSQL: strip non-digits at start and cast remainder
-        sql = """
-            SELECT MAX(
-                NULLIF(REGEXP_REPLACE(internal_ref_number, '^\\D+', ''), '')::integer
-            ) AS max_seq
-            FROM purchase_invoice
-            WHERE internal_ref_number LIKE %s
         """
-        like_pattern = f"{prefix}%"
+        Returns the highest numeric suffix currently used among
+        internal_ref_number values starting with `prefix` (including
+        soft-deleted rows, so numbers are never reused) — same pattern
+        as SupplierModel.get_last_code_sequence(). Returns 0 if none exist.
+        """
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = """
+            SELECT COALESCE(MAX(
+                CAST(REGEXP_REPLACE(internal_ref_number, %(prefix_pattern)s, '') AS INTEGER)
+            ), 0) AS max_seq
+            FROM purchase_invoice
+            WHERE internal_ref_number ~ %(pattern)s;
+        """
+        params = {
+            "prefix_pattern": f"^{prefix}",
+            "pattern": f"^{prefix}[0-9]+$",
+        }
         with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, (like_pattern,))
-                res = cur.fetchone()
-                if res and res[0]:
-                    return int(res[0])
-                return 0
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, params)
+                return cur.fetchone()["max_seq"]
 
     def search(self, filters: PurchaseInvoiceSearchFilters) -> Tuple[List[dict], int]:
         """Return (rows, total_count). Joins supplier for display convenience."""
@@ -168,13 +183,17 @@ class PurchaseInvoiceModel:
 
         where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        count_sql = "SELECT COUNT(1) FROM purchase_invoice pi" + where_sql
+        count_sql = "SELECT COUNT(*) AS total FROM purchase_invoice pi" + where_sql
+
+        order_column = _SORTABLE_COLUMNS.get(filters.order_by, "pi.created_at_ad")
+        order_direction = "DESC" if (filters.order_dir or "").upper() == "DESC" else "ASC"
+
         query_sql = (
             "SELECT pi.*, s.supplier_name "
             "FROM purchase_invoice pi "
             "LEFT JOIN supplier s ON pi.supplier_id = s.supplier_id "
             + where_sql +
-            " ORDER BY pi.created_at_ad DESC "
+            f" ORDER BY {order_column} {order_direction} "
             " LIMIT %s OFFSET %s"
         )
 
@@ -183,18 +202,14 @@ class PurchaseInvoiceModel:
         with get_connection() as conn:
             with conn.cursor(cursor_factory=factory) as cur:
                 cur.execute(count_sql, params)
-                total = cur.fetchone()["count"] if isinstance(cur.fetchone(), dict) else None
-            # run again (we reused cursor; re-run properly)
-            with conn.cursor(cursor_factory=factory) as cur2:
-                cur2.execute(count_sql, params)
-                count_row = cur2.fetchone()
-                total = int(count_row["count"]) if count_row and "count" in count_row else int(count_row[0]) if count_row else 0
+                count_row = cur.fetchone()
+                total = int(count_row["total"]) if count_row else 0
 
-                cur2.execute(query_sql, params + [limit, offset])
-                rows = cur2.fetchall()
+                cur.execute(query_sql, params + [limit, offset])
+                rows = cur.fetchall()
                 return rows, total
 
-    def soft_delete(self, purchase_invoice_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> None:
+    def soft_delete(self, purchase_invoice_id: int, deleted_by: int, deleted_at_ad: str, deleted_at_bs: str) -> None:
         get_connection = _get_connection()
         sql = "UPDATE purchase_invoice SET is_deleted = TRUE, deleted_by = %s, deleted_at_ad = %s, deleted_at_bs = %s WHERE purchase_invoice_id = %s"
         with get_connection() as conn:

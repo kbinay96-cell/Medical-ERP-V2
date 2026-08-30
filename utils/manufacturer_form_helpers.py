@@ -21,10 +21,12 @@ def build_manufacturer_payload(form_values: dict[str, Any]) -> dict[str, Any]:
     Expected keys in `form_values`: manufacturer_code, manufacturer_name,
     country, status (already the combo box's selected text).
     """
+    margin_text = (form_values.get("default_margin_percent_text") or "").strip()
     return {
         "manufacturer_code": (form_values.get("manufacturer_code") or "").strip(),
         "manufacturer_name": (form_values.get("manufacturer_name") or "").strip(),
         "country": (form_values.get("country") or "").strip(),
+        "default_margin_percent": float(margin_text) if margin_text else None,
         "status": form_values.get("status") or "Active",
     }
 

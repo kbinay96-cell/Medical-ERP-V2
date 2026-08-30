@@ -82,13 +82,13 @@ class SupplierModel:
                 supplier_code, supplier_name, contact_person, mobile_no,
                 phone_no, email, address, city, pan_vat_no,
                 opening_balance, balance_type, credit_limit, credit_days,
-                status, remarks, company_id,
+                status, remarks, company_id, photo_path,
                 created_by, created_at_ad, created_at_bs
             ) VALUES (
                 %(supplier_code)s, %(supplier_name)s, %(contact_person)s, %(mobile_no)s,
                 %(phone_no)s, %(email)s, %(address)s, %(city)s, %(pan_vat_no)s,
                 %(opening_balance)s, %(balance_type)s, %(credit_limit)s, %(credit_days)s,
-                %(status)s, %(remarks)s, %(company_id)s,
+                %(status)s, %(remarks)s, %(company_id)s, %(photo_path)s,
                 %(created_by)s, %(created_at_ad)s, %(created_at_bs)s
             )
             RETURNING supplier_id;
@@ -127,6 +127,7 @@ class SupplierModel:
                 status          = %(status)s,
                 remarks         = %(remarks)s,
                 company_id      = %(company_id)s,
+                photo_path      = %(photo_path)s,
                 updated_by      = %(updated_by)s,
                 updated_at_ad   = %(updated_at_ad)s,
                 updated_at_bs   = %(updated_at_bs)s

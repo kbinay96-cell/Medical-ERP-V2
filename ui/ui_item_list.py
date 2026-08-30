@@ -98,9 +98,10 @@ class Ui_ItemListWidget(object):
 
         self.tblItem = QTableWidget(ItemListWidget)
         self.tblItem.setObjectName("tblItem")
-        self.tblItem.setColumnCount(8)
+        self.tblItem.setColumnCount(11)
         self.tblItem.setHorizontalHeaderLabels([
-            "Code", "Item Name", "Purchase Rate", "Sale Rate", "MRP",
+            "Code", "Item Name", "Expiry", "Batch", "Unit",
+            "Purchase Rate", "Sale Rate", "MRP",
             "Total Stock", "Min. Stock", "Status",
         ])
         self.tblItem.setAlternatingRowColors(True)

@@ -36,6 +36,8 @@ from screens.supplier_manufacturer_discount_form_screen import SupplierManufactu
 from ui.ui_supplier_manufacturer_discount_list import Ui_SupplierManufacturerDiscountListWidget
 from utils.integration_adapters import confirm, get_current_user_id, show_error, show_success
 from utils.supplier_manufacturer_discount_form_helpers import dto_to_table_row
+from utils.ui_standards import configure_table_columns, standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,8 @@ class SupplierManufacturerDiscountListScreen(QWidget):
         super().__init__(parent)
         self.ui = Ui_SupplierManufacturerDiscountListWidget()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=1100, height=700)
+        standardize_action_buttons(self)
 
         self._engine = engine or SupplierManufacturerDiscountEngine()
         self._rows: list[SupplierManufacturerDiscountDTO] = []
@@ -127,6 +131,7 @@ class SupplierManufacturerDiscountListScreen(QWidget):
                     item.setForeground(Qt.gray)
                 table.setItem(row_index, col_index, item)
         table.setSortingEnabled(True)
+        configure_table_columns(table, stretch_columns=(0, 1))
         self._on_selection_changed()
 
     # ------------------------------------------------------------------ #

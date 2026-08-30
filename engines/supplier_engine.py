@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from models.supplier_model import SupplierModel, SupplierSearchFilters
+from utils import image_manager
 from utils.supplier_validator import SupplierValidator
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,7 @@ class SupplierDTO:
     status: str
     remarks: Optional[str]
     company_id: Optional[int]
+    photo_path: Optional[str]
     is_deleted: bool
     created_by: int
     created_at_ad: Any
@@ -207,6 +209,7 @@ class SupplierEngine:
     # CREATE
     # ------------------------------------------------------------------ #
     def create_supplier(self, payload: dict, current_user_id: int) -> SupplierDTO:
+        payload = dict(payload)
         data = self._clean_payload(payload)
 
         validation = self._validator.validate_for_create(data)
@@ -241,6 +244,9 @@ class SupplierEngine:
             "status": data["status"],
             "remarks": data["remarks"],
             "company_id": data["company_id"],
+            "photo_path": image_manager.apply_entity_photo(
+                payload, existing_path=None, subfolder="suppliers", filename_stem=supplier_code,
+            ),
             "created_by": current_user_id,
             "created_at_ad": now_ad,
             "created_at_bs": now_bs,
@@ -269,6 +275,7 @@ class SupplierEngine:
         if existing is None:
             raise RecordNotFoundError(f"Supplier {supplier_id} not found or has been deleted.")
 
+        payload = dict(payload)
         data = self._clean_payload(payload)
         validation = self._validator.validate_for_update(supplier_id, data)
         if not validation.is_valid:
@@ -293,6 +300,12 @@ class SupplierEngine:
             "status": data["status"],
             "remarks": data["remarks"],
             "company_id": data["company_id"],
+            "photo_path": image_manager.apply_entity_photo(
+                payload,
+                existing_path=existing.get("photo_path"),
+                subfolder="suppliers",
+                filename_stem=existing.get("supplier_code") or data.get("supplier_code") or str(supplier_id),
+            ),
             "updated_by": current_user_id,
             "updated_at_ad": now_ad,
             "updated_at_bs": now_bs,
@@ -320,6 +333,16 @@ class SupplierEngine:
         if row is None:
             raise RecordNotFoundError(f"Supplier {supplier_id} not found.")
         return SupplierDTO.from_row(row)
+
+    def get_current_balance(self, supplier_id: int) -> float:
+        """Placeholder until the full Supplier Ledger (invoices minus
+        payments) exists. Returns opening_balance for now. Callers (e.g.
+        the Purchase Invoice View dialog) should always call this method
+        rather than reading opening_balance directly, so the real
+        calculation can replace this internal logic later without any
+        other file needing to change."""
+        supplier = self.get_supplier(supplier_id)
+        return supplier.opening_balance or 0.0
 
     def search_suppliers(
         self,

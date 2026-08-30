@@ -31,7 +31,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QDialog, QLineEdit, QWidget
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from engines.item_engine import ItemEngine
@@ -43,12 +43,15 @@ from engines.item_lookup_registry import (
     sub_category_engine,
     unit_engine,
 )
-from screens.item_batch_dialog import ItemBatchDialog
 from screens.master_manage_screen import MasterManageDialog
 from ui.ui_item_form import Ui_ItemFormDialog
 from utils.combo_helpers import attach_manage_button, make_searchable_many
 from utils.integration_adapters import get_current_user_id, show_error, show_success
 from utils.item_form_helpers import build_item_payload, combo_id_value, format_qty
+from utils.ui_standards import standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
+from widgets.expiry_date_picker import ExpiryDatePicker
+from widgets.photo_picker import host_photo_beside_scroll
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +68,18 @@ class ItemFormScreen(QDialog):
         super().__init__(parent)
         self.ui = Ui_ItemFormDialog()
         self.ui.setupUi(self)
-        self._fit_to_screen()
+        apply_standard_window_chrome(self, width=920, height=760)
+        self._photo_picker = host_photo_beside_scroll(self.ui.verticalLayoutRoot, self.ui.scrollArea)
+        self._install_batch_fields()
+        standardize_action_buttons(self)
 
         self._engine = engine or ItemEngine(
-            manufacturer_lookup_fn=self._safe_manufacturer_lookup,
+          manufacturer_lookup_fn=self._safe_manufacturer_lookup,
         )
         self._item_id = item_id
         self._is_edit_mode = item_id is not None
+        self._current_manufacturer_margin: Optional[float] = None
+        self._purchase_rate_is_autofilled = False
         self._current_user_id = get_current_user_id()
 
         self._connect_signals()
@@ -79,38 +87,55 @@ class ItemFormScreen(QDialog):
         self._populate_static_lookup_combos()
         self._wire_manage_buttons()
         make_searchable_many(
-            self.ui.cmbCategory, self.ui.cmbSubCategory,
-            self.ui.cmbManufacturer, self.ui.cmbGeneric,
+          self.ui.cmbCategory, self.ui.cmbSubCategory,
+          self.ui.cmbManufacturer, self.ui.cmbGeneric,
         )
 
         if self._is_edit_mode:
-            self.setWindowTitle("Edit Item")
-            self.ui.lblFormTitle.setText("Edit Item")
-            self._set_opening_stock_fields_visible(False)
-            self._load_existing_item()
+          self.setWindowTitle("Edit Item")
+          self.ui.lblFormTitle.setText("Edit Item")
+          self._load_existing_item()
         else:
-            self.setWindowTitle("Add Item")
-            self.ui.lblFormTitle.setText("Add Item")
-            self.ui.txtItemName.setFocus()
-            self._set_opening_stock_fields_visible(True)
-            self.ui.btnAddBatch.setEnabled(False)
-            self.ui.btnAddBatch.setToolTip("Save the item first, then use Add Batch for any further stock.")
-            from PySide6.QtCore import QDate
-            self.ui.txtOpeningExpiryYear.setText(str(QDate.currentDate().year() + 1))
+          self.setWindowTitle("Add Item")
+          self.ui.lblFormTitle.setText("Add Item")
+          self.ui.txtItemName.setFocus()
+
+    def _install_batch_fields(self) -> None:
+        """Batch registration is part of Save (including qty 0). No extra Add Batch step."""
+        self.ui.btnAddBatch.hide()
+        self.ui.lblOpeningQty.setText("Batch Quantity:")
+        self.ui.txtOpeningQty.setToolTip(
+          "May be 0 — registers an initial zero-stock batch when Batch No. is filled."
+        )
+        self.ui.lblOpeningExpiry.setText("Expiry Date:")
+        self.ui.cmbOpeningExpiryMonth.hide()
+        self.ui.txtOpeningExpiryYear.hide()
+        self._expiry_picker = ExpiryDatePicker(self.ui.grpPricing)
+        self.ui.horizontalLayoutOpeningExpiry.addWidget(self._expiry_picker)
+        self.ui.lblOpeningExpiryHint.setText(
+          "Save registers this batch on the item (qty may be 0). Expiry is stored as AD month/year."
+        )
+        self.ui.lblOpeningQty.setVisible(True)
+        self.ui.txtOpeningQty.setVisible(True)
+        self.ui.lblOpeningExpiry.setVisible(True)
+        self.ui.lblOpeningExpiryHint.setVisible(True)
+
+        self.txtBatchNo = QLineEdit(self.ui.grpPricing)
+        self.txtBatchNo.setObjectName("txtBatchNo")
+        self.txtBatchNo.setPlaceholderText("e.g. OPENING or B-2027-045")
+        self.ui.formLayoutPricing.insertRow(
+          self.ui.formLayoutPricing.indexOf(self.ui.txtOpeningQty),
+          "Batch No.",
+          self.txtBatchNo,
+        )
 
     def _set_opening_stock_fields_visible(self, visible: bool) -> None:
-        """
-        Opening Quantity/Expiry only make sense while CREATING an item --
-        they create the item's first batch in the same save click. In
-        Edit mode, "Add Batch" is the way to add further stock instead
-        (Purchase will use the same mechanism later).
-        """
         self.ui.lblOpeningQty.setVisible(visible)
         self.ui.txtOpeningQty.setVisible(visible)
         self.ui.lblOpeningExpiry.setVisible(visible)
-        self.ui.cmbOpeningExpiryMonth.setVisible(visible)
-        self.ui.txtOpeningExpiryYear.setVisible(visible)
+        self._expiry_picker.setVisible(visible)
         self.ui.lblOpeningExpiryHint.setVisible(visible)
+        self.txtBatchNo.setVisible(visible)
 
     # ------------------------------------------------------------------ #
     # Wiring
@@ -125,11 +150,11 @@ class ItemFormScreen(QDialog):
         """
         screen = self.screen()
         if screen is None:
-            return
+          return
         available = screen.availableGeometry()
         max_height = int(available.height() * 0.9)
         if self.height() > max_height:
-            self.resize(self.width(), max_height)
+          self.resize(self.width(), max_height)
         frame = self.frameGeometry()
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
@@ -141,7 +166,20 @@ class ItemFormScreen(QDialog):
         self.ui.chkVat.toggled.connect(self.ui.txtVatPercent.setEnabled)
         self.ui.chkCustom.toggled.connect(self.ui.txtCustomPercent.setEnabled)
         self.ui.cmbCategory.currentIndexChanged.connect(self._on_category_changed)
-        self.ui.btnAddBatch.clicked.connect(self._on_add_batch_clicked)
+        self.ui.cmbManufacturer.currentIndexChanged.connect(self._on_manufacturer_changed)
+        self.ui.txtMrp.editingFinished.connect(self._maybe_autofill_pricing_fields)
+        self.ui.txtPurchaseRate.textEdited.connect(self._on_purchase_rate_manually_edited)
+        self.ui.txtSuperDiscountPercent.editingFinished.connect(self._on_super_discount_percent_changed)
+
+
+
+
+
+
+
+
+
+
 
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
@@ -149,6 +187,91 @@ class ItemFormScreen(QDialog):
     def _safe_manufacturer_lookup(self, manufacturer_id):
         from engines.item_lookup_registry import manufacturer_lookup
         return manufacturer_lookup(manufacturer_id)
+
+    def _on_manufacturer_changed(self, _index: int) -> None:
+        manufacturer_id = self.ui.cmbManufacturer.currentData()
+        self._current_manufacturer_margin = None
+        if manufacturer_id is not None:
+          try:
+              dto = manufacturer_engine().get_manufacturer(manufacturer_id)
+              self._current_manufacturer_margin = dto.default_margin_percent
+          except Exception:  # noqa: BLE001 -- margin is a convenience, never block the form
+              logger.exception("Failed to load manufacturer margin for id=%s.", manufacturer_id)
+        self._maybe_autofill_pricing_fields()
+
+    def _on_super_discount_percent_changed(self) -> None:
+        self._maybe_autofill_pricing_fields()
+
+    def _update_sale_rate_field_visibility(self) -> None:
+        """Disables the Sale Rate field if business type is Retailer."""
+        business_type = self._get_business_type()
+        self.ui.txtSaleRate.setEnabled(business_type != 'Retailer')
+
+    # Checks whether the global business type is Wholesaler.
+    def _is_wholesaler(self) -> bool:
+        """Checks if the business type is Wholesaler."""
+        return self._get_business_type() == 'Wholesaler'
+
+    def _get_business_type(self) -> str:
+        """Reads the business type setting from the settings engine."""
+        try:
+          from engines import settings_engine
+          return settings_engine.get_setting('general.business_type', 'Retailer')
+        except Exception:
+          logger.exception("Failed to load business type setting.")
+          return 'Retailer'
+
+    def _maybe_autofill_pricing_fields(self) -> None:
+        """
+        Estimates Purchase Rate (and Sale Rate, in Wholesaler mode) from
+        MRP using the selected Manufacturer's default_margin_percent and
+        the item's own Super Discount % -- ONLY when the target field is
+        still blank/zero (never overwrites a value the user already typed
+        or that came from a real Purchase Invoice). Purely a starting
+        guess for Opening Stock entry; always stays editable.
+
+        Chain: PTR = MRP x (1 - manufacturer_margin% / 100)
+               Purchase Rate = PTR x (1 - super_discount% / 100)
+               Sale Rate (Wholesaler mode only) = PTR
+        """
+        mrp_text = self.ui.txtMrp.text().strip()
+        try:
+          mrp = float(mrp_text) if mrp_text else 0
+        except ValueError:
+          mrp = 0
+
+        margin_raw = getattr(self, "_current_manufacturer_margin", None)
+        try:
+          margin = float(margin_raw) if margin_raw is not None else 0.0
+        except (TypeError, ValueError):
+          margin = 0.0
+        ptr = mrp * (1 - margin / 100)
+
+        super_discount_percent_text = self.ui.txtSuperDiscountPercent.text().strip()
+        try:
+          super_discount_percent = float(super_discount_percent_text) if super_discount_percent_text else 0
+        except ValueError:
+          super_discount_percent = 0
+        purchase_rate = ptr * (1 - super_discount_percent / 100)
+
+        def _is_blank_or_zero(text: str) -> bool:
+          text = text.strip()
+          if not text:
+              return True
+          try:
+              return float(text) == 0
+          except ValueError:
+              return False  # unparseable text -- treat as a real value, leave it alone
+
+        if _is_blank_or_zero(self.ui.txtPurchaseRate.text()) or self._purchase_rate_is_autofilled:
+          self.ui.txtPurchaseRate.setText(f"{purchase_rate:.2f}")
+          self._purchase_rate_is_autofilled = True
+
+        if self._is_wholesaler() and _is_blank_or_zero(self.ui.txtSaleRate.text()):
+          self.ui.txtSaleRate.setText(f"{ptr:.2f}")
+
+    def _on_purchase_rate_manually_edited(self, _text: str) -> None:
+        self._purchase_rate_is_autofilled = False
 
     # ------------------------------------------------------------------ #
     # Lookup combo population
@@ -158,25 +281,25 @@ class ItemFormScreen(QDialog):
         self.ui.cmbCategory.clear()
         self.ui.cmbCategory.addItem("-- Select --", None)
         for dto in category_engine().list_active():
-            self.ui.cmbCategory.addItem(dto.name, dto.id)
+          self.ui.cmbCategory.addItem(dto.name, dto.id)
         self.ui.cmbCategory.blockSignals(False)
 
         self.ui.cmbItemGroup.clear()
         self.ui.cmbItemGroup.addItem("-- Select --", None)
         for dto in item_group_engine().list_active():
-            self.ui.cmbItemGroup.addItem(dto.name, dto.id)
+          self.ui.cmbItemGroup.addItem(dto.name, dto.id)
 
         self.ui.cmbGeneric.clear()
         self.ui.cmbGeneric.addItem("-- Select --", None)
         for dto in generic_engine().list_active():
-            self.ui.cmbGeneric.addItem(dto.name, dto.id)
+          self.ui.cmbGeneric.addItem(dto.name, dto.id)
 
         self.ui.cmbUnit.clear()
         self.ui.cmbPurchaseUnit.clear()
         self.ui.cmbPurchaseUnit.addItem("-- Same as Unit --", None)
         for dto in unit_engine().list_active():
-            self.ui.cmbUnit.addItem(dto.name, dto.id)
-            self.ui.cmbPurchaseUnit.addItem(dto.name, dto.id)
+          self.ui.cmbUnit.addItem(dto.name, dto.id)
+          self.ui.cmbPurchaseUnit.addItem(dto.name, dto.id)
 
         self._populate_manufacturer_combo()
         self._refresh_sub_category_combo(combo_id_value(self.ui.cmbCategory.currentData()))
@@ -185,23 +308,23 @@ class ItemFormScreen(QDialog):
         self.ui.cmbManufacturer.clear()
         self.ui.cmbManufacturer.addItem("-- Select --", None)
         try:
-            rows, _total = manufacturer_engine().search_manufacturers(status="Active", page_size=1000)
-            for dto in rows:
-                self.ui.cmbManufacturer.addItem(dto.manufacturer_name, dto.manufacturer_id)
+          rows, _total = manufacturer_engine().search_manufacturers(status="Active", page_size=1000)
+          for dto in rows:
+              self.ui.cmbManufacturer.addItem(dto.manufacturer_name, dto.manufacturer_id)
         except Exception:  # noqa: BLE001
-            logger.exception("ItemFormScreen: failed to load Manufacturer list.")
-            self.ui.cmbManufacturer.setEnabled(False)
-            self.ui.cmbManufacturer.setToolTip("Could not load Manufacturer list.")
+          logger.exception("ItemFormScreen: failed to load Manufacturer list.")
+          self.ui.cmbManufacturer.setEnabled(False)
+          self.ui.cmbManufacturer.setToolTip("Could not load Manufacturer list.")
 
     def _refresh_sub_category_combo(self, category_id: Optional[int]) -> None:
         self.ui.cmbSubCategory.blockSignals(True)
         self.ui.cmbSubCategory.clear()
         self.ui.cmbSubCategory.addItem("-- Select --", None)
         if category_id is not None:
-            all_sub = sub_category_engine().search(search_text=None, include_deleted=False)
-            for dto in all_sub:
-                if dto.extra.get("category_id") == category_id and dto.status == "Active":
-                    self.ui.cmbSubCategory.addItem(dto.name, dto.id)
+          all_sub = sub_category_engine().search(search_text=None, include_deleted=False)
+          for dto in all_sub:
+              if dto.extra.get("category_id") == category_id and dto.status == "Active":
+                  self.ui.cmbSubCategory.addItem(dto.name, dto.id)
         self.ui.cmbSubCategory.setEnabled(category_id is not None)
         self.ui.cmbSubCategory.blockSignals(False)
 
@@ -213,38 +336,38 @@ class ItemFormScreen(QDialog):
     # ------------------------------------------------------------------ #
     def _wire_manage_buttons(self) -> None:
         attach_manage_button(
-            self.ui.formLayoutClassification, self.ui.cmbCategory,
-            lambda: self._open_manage_dialog(category_engine(), "Category", self._populate_static_lookup_combos),
+          self.ui.formLayoutClassification, self.ui.cmbCategory,
+          lambda: self._open_manage_dialog(category_engine(), "Category", self._populate_static_lookup_combos),
         )
         attach_manage_button(
-            self.ui.formLayoutClassification, self.ui.cmbSubCategory,
-            lambda: self._open_manage_dialog(
-                sub_category_engine(), "Sub Category", self._populate_static_lookup_combos,
-                scope_engine=category_engine(), scope_label="Category",
-            ),
+          self.ui.formLayoutClassification, self.ui.cmbSubCategory,
+          lambda: self._open_manage_dialog(
+              sub_category_engine(), "Sub Category", self._populate_static_lookup_combos,
+              scope_engine=category_engine(), scope_label="Category",
+          ),
         )
         attach_manage_button(
-            self.ui.formLayoutClassification, self.ui.cmbItemGroup,
-            lambda: self._open_manage_dialog(item_group_engine(), "Item Type", self._populate_static_lookup_combos),
+          self.ui.formLayoutClassification, self.ui.cmbItemGroup,
+          lambda: self._open_manage_dialog(item_group_engine(), "Item Type", self._populate_static_lookup_combos),
         )
         attach_manage_button(
-            self.ui.formLayoutClassification, self.ui.cmbManufacturer,
-            lambda: self._open_manufacturer_manage_dialog(),
+          self.ui.formLayoutClassification, self.ui.cmbManufacturer,
+          lambda: self._open_manufacturer_manage_dialog(),
         )
         attach_manage_button(
-            self.ui.formLayoutClassification, self.ui.cmbGeneric,
-            lambda: self._open_manage_dialog(generic_engine(), "Generic", self._populate_static_lookup_combos),
+          self.ui.formLayoutClassification, self.ui.cmbGeneric,
+          lambda: self._open_manage_dialog(generic_engine(), "Generic", self._populate_static_lookup_combos),
         )
         attach_manage_button(
-            self.ui.formLayoutUnits, self.ui.cmbUnit,
-            lambda: self._open_manage_dialog(unit_engine(), "Unit", self._populate_static_lookup_combos),
+          self.ui.formLayoutUnits, self.ui.cmbUnit,
+          lambda: self._open_manage_dialog(unit_engine(), "Unit", self._populate_static_lookup_combos),
         )
 
     def _open_manage_dialog(self, engine, label, refresh_fn, scope_engine=None, scope_label=None) -> None:
         snapshot = self._snapshot_combo_selections()
         dialog = MasterManageDialog(
-            self, engine, label, self._current_user_id,
-            scope_engine=scope_engine, scope_label=scope_label,
+          self, engine, label, self._current_user_id,
+          scope_engine=scope_engine, scope_label=scope_label,
         )
         dialog.exec()
         refresh_fn()
@@ -257,12 +380,12 @@ class ItemFormScreen(QDialog):
         Manage button was clicked), so every combo's selection needs
         saving, not just one."""
         return {
-            "category_id": combo_id_value(self.ui.cmbCategory.currentData()),
-            "sub_category_id": combo_id_value(self.ui.cmbSubCategory.currentData()),
-            "item_group_id": combo_id_value(self.ui.cmbItemGroup.currentData()),
-            "generic_id": combo_id_value(self.ui.cmbGeneric.currentData()),
-            "unit_id": combo_id_value(self.ui.cmbUnit.currentData()),
-            "purchase_unit_id": combo_id_value(self.ui.cmbPurchaseUnit.currentData()),
+          "category_id": combo_id_value(self.ui.cmbCategory.currentData()),
+          "sub_category_id": combo_id_value(self.ui.cmbSubCategory.currentData()),
+          "item_group_id": combo_id_value(self.ui.cmbItemGroup.currentData()),
+          "generic_id": combo_id_value(self.ui.cmbGeneric.currentData()),
+          "unit_id": combo_id_value(self.ui.cmbUnit.currentData()),
+          "purchase_unit_id": combo_id_value(self.ui.cmbPurchaseUnit.currentData()),
         }
 
     def _restore_combo_selections(self, snapshot: dict) -> None:
@@ -284,26 +407,26 @@ class ItemFormScreen(QDialog):
         # already has its own dedicated management screen (same one wired
         # on the Dashboard sidebar), so open that instead.
         try:
-            from screens.manufacturer_list_screen import ManufacturerListScreen
+          from screens.manufacturer_list_screen import ManufacturerListScreen
         except ImportError:
-            show_error(
-                self, "Manufacturer",
-                "Could not open Manufacturer management -- "
-                "screens/manufacturer_list_screen.py (ManufacturerListScreen) not found. "
-                "Check the actual module path and update _open_manufacturer_manage_dialog() in item_form_screen.py.",
-            )
-            return
+          show_error(
+              self, "Manufacturer",
+              "Could not open Manufacturer management -- "
+              "screens/manufacturer_list_screen.py (ManufacturerListScreen) not found. "
+              "Check the actual module path and update _open_manufacturer_manage_dialog() in item_form_screen.py.",
+          )
+          return
         dialog = ManufacturerListScreen(self)
         dialog.setWindowFlag(Qt.Window)
         if hasattr(dialog, "exec"):
-            dialog.exec()
-            self._populate_manufacturer_combo()
+          dialog.exec()
+          self._populate_manufacturer_combo()
         else:
-            # Non-modal (QWidget, same as the Dashboard's own usage) --
-            # refresh the combo once this window actually closes rather
-            # than immediately, since show() returns right away.
-            dialog.destroyed.connect(self._populate_manufacturer_combo)
-            dialog.show()
+          # Non-modal (QWidget, same as the Dashboard's own usage) --
+          # refresh the combo once this window actually closes rather
+          # than immediately, since show() returns right away.
+          dialog.destroyed.connect(self._populate_manufacturer_combo)
+          dialog.show()
 
     # ------------------------------------------------------------------ #
     # Tax Mode UI behaviour
@@ -318,11 +441,11 @@ class ItemFormScreen(QDialog):
     # ------------------------------------------------------------------ #
     def _load_existing_item(self) -> None:
         try:
-            dto = self._engine.get_item(self._item_id)
+          dto = self._engine.get_item(self._item_id)
         except RecordNotFoundError as exc:
-            self._show_validation_message(str(exc))
-            self.ui.btnSave.setEnabled(False)
-            return
+          self._show_validation_message(str(exc))
+          self.ui.btnSave.setEnabled(False)
+          return
 
         self.ui.txtItemCode.setText(dto.item_code or "")
         self.ui.txtItemCode.setReadOnly(True)
@@ -355,119 +478,117 @@ class ItemFormScreen(QDialog):
         self.ui.txtVatPercent.setText(f"{float(dto.item_vat_percent or 0):.2f}" if dto.item_vat_percent is not None else "")
         self.ui.chkCustom.setChecked(bool(dto.item_custom_checked))
         self.ui.txtCustomPercent.setText(f"{float(dto.item_custom_percent or 0):.2f}" if dto.item_custom_percent is not None else "")
+        self._photo_picker.load_existing(getattr(dto, "photo_path", None))
 
-        self.ui.btnAddBatch.setEnabled(True)
-        self.ui.btnAddBatch.setToolTip("Add a batch with quantity + expiry.")
+        self._existing_batch_id = None
+        try:
+          batches = self._engine.get_batches(dto.item_id)
+        except Exception:  # noqa: BLE001
+          batches = []
+        if batches:
+          batch = batches[0]
+          self._existing_batch_id = batch.item_batch_id
+          self.txtBatchNo.setText(batch.batch_no or "")
+          self.ui.txtOpeningQty.setText(format_qty(batch.batch_qty))
+          self._expiry_picker.set_expiry_month_year_ad(int(batch.expiry_month), int(batch.expiry_year))
 
     @staticmethod
     def _set_combo_by_data(combo, value) -> None:
         if value is None:
-            combo.setCurrentIndex(0)
-            return
+          combo.setCurrentIndex(0)
+          return
         index = combo.findData(value)
         combo.setCurrentIndex(index if index >= 0 else 0)
-
-    # ------------------------------------------------------------------ #
-    # Add Batch
-    # ------------------------------------------------------------------ #
-    def _on_add_batch_clicked(self) -> None:
-        if self._item_id is None:
-            return
-        dialog = ItemBatchDialog(self, self._engine, self._item_id, self.ui.txtItemName.text())
-        if dialog.exec():
-            total_stock = self._engine.get_total_stock(self._item_id)
-            self.ui.lblCurrentStockValue.setText(format_qty(total_stock))
 
     # ------------------------------------------------------------------ #
     # Save
     # ------------------------------------------------------------------ #
     def _collect_form_values(self) -> dict:
         return {
-            "item_code": self.ui.txtItemCode.text(),
-            "item_name": self.ui.txtItemName.text(),
-            "category_id": self.ui.cmbCategory.currentData(),
-            "sub_category_id": self.ui.cmbSubCategory.currentData(),
-            "item_group_id": self.ui.cmbItemGroup.currentData(),
-            "manufacturer_id": self.ui.cmbManufacturer.currentData(),
-            "generic_id": self.ui.cmbGeneric.currentData(),
-            "unit_id": self.ui.cmbUnit.currentData(),
-            "purchase_unit_id": self.ui.cmbPurchaseUnit.currentData(),
-            "purchase_rate_text": self.ui.txtPurchaseRate.text(),
-            "sale_rate_text": self.ui.txtSaleRate.text(),
-            "mrp_text": self.ui.txtMrp.text(),
-            "minimum_stock_text": self.ui.txtMinimumStock.text(),
-            "tax_mode": "individual" if self.ui.radioIndividual.isChecked() else "country_default",
-            "item_vat_checked": self.ui.chkVat.isChecked(),
-            "item_vat_percent_text": self.ui.txtVatPercent.text(),
-            "item_custom_checked": self.ui.chkCustom.isChecked(),
-            "item_custom_percent_text": self.ui.txtCustomPercent.text(),
-            "status": self.ui.cmbStatus.currentText(),
-            "remarks": self.ui.txtRemarks.toPlainText(),
+          "item_code": self.ui.txtItemCode.text(),
+          "item_name": self.ui.txtItemName.text(),
+          "category_id": self.ui.cmbCategory.currentData(),
+          "sub_category_id": self.ui.cmbSubCategory.currentData(),
+          "item_group_id": self.ui.cmbItemGroup.currentData(),
+          "manufacturer_id": self.ui.cmbManufacturer.currentData(),
+          "generic_id": self.ui.cmbGeneric.currentData(),
+          "unit_id": self.ui.cmbUnit.currentData(),
+          "purchase_unit_id": self.ui.cmbPurchaseUnit.currentData(),
+          "purchase_rate_text": self.ui.txtPurchaseRate.text(),
+          "sale_rate_text": self.ui.txtSaleRate.text(),
+          "mrp_text": self.ui.txtMrp.text(),
+          "minimum_stock_text": self.ui.txtMinimumStock.text(),
+          "tax_mode": "individual" if self.ui.radioIndividual.isChecked() else "country_default",
+          "item_vat_checked": self.ui.chkVat.isChecked(),
+          "item_vat_percent_text": self.ui.txtVatPercent.text(),
+          "item_custom_checked": self.ui.chkCustom.isChecked(),
+          "item_custom_percent_text": self.ui.txtCustomPercent.text(),
+          "status": self.ui.cmbStatus.currentText(),
+          "remarks": self.ui.txtRemarks.toPlainText(),
         }
 
     def _on_save_clicked(self) -> None:
         self._show_validation_message("")
 
         try:
-            payload = build_item_payload(self._collect_form_values())
+          payload = build_item_payload(self._collect_form_values())
         except ValueError as exc:
-            self._show_validation_message(str(exc))
-            return
+          self._show_validation_message(str(exc))
+          return
 
-        # Opening Stock (create mode only) -- validate BEFORE creating the
-        # item, so a bad expiry never leaves an item saved without its
-        # intended opening batch.
+        payload.update(self._photo_picker.get_photo_update())
+
         opening_batch_payload: Optional[dict] = None
-        if not self._is_edit_mode:
-            try:
-                opening_batch_payload = self._build_opening_batch_payload_if_needed()
-            except ValueError as exc:
-                self._show_validation_message(str(exc))
-                return
+        try:
+          opening_batch_payload = self._build_opening_batch_payload_if_needed()
+        except ValueError as exc:
+          self._show_validation_message(str(exc))
+          return
 
         try:
-            if self._is_edit_mode:
-                dto = self._engine.update_item(self._item_id, payload, self._current_user_id)
-            else:
-                dto = self._engine.create_item(payload, self._current_user_id)
+          if self._is_edit_mode:
+              dto = self._engine.update_item(self._item_id, payload, self._current_user_id)
+          else:
+              dto = self._engine.create_item(payload, self._current_user_id)
         except ValidationError as exc:
-            self._show_validation_message("\n".join(exc.errors))
-            return
+          self._show_validation_message("\n".join(exc.errors))
+          return
         except DuplicateRecordError as exc:
-            self._show_validation_message(str(exc))
-            return
+          self._show_validation_message(str(exc))
+          return
         except RecordNotFoundError as exc:
-            self._show_validation_message(str(exc))
-            return
+          self._show_validation_message(str(exc))
+          return
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Unexpected error saving item.")
-            self._show_validation_message(f"Unexpected error: {exc}")
-            return
+          logger.exception("Unexpected error saving item.")
+          self._show_validation_message(f"Unexpected error: {exc}")
+          return
 
         if opening_batch_payload is not None:
-            try:
-                self._engine.add_batch(dto.item_id, opening_batch_payload, self._current_user_id)
-            except (ValidationError, DuplicateRecordError, RecordNotFoundError) as exc:
-                # Item itself is already saved (0-qty item creation is valid
-                # by design) -- surface the batch problem separately rather
-                # than pretending the whole save failed.
-                message = "\n".join(exc.errors) if isinstance(exc, ValidationError) else str(exc)
-                show_error(
-                    self, "Item Master",
-                    f"Item '{dto.item_name}' was created, but Opening Stock could not be saved: {message}\n"
-                    f"Use 'Add Batch' after reopening this item to add it.",
-                )
-                self.accept()
-                return
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("Unexpected error saving opening batch for item %s.", dto.item_id)
-                show_error(
-                    self, "Item Master",
-                    f"Item '{dto.item_name}' was created, but Opening Stock could not be saved: {exc}\n"
-                    f"Use 'Add Batch' after reopening this item to add it.",
-                )
-                self.accept()
-                return
+          try:
+              self._engine.add_batch(
+                  dto.item_id, opening_batch_payload, self._current_user_id,
+                  item_batch_id=opening_batch_payload.pop("item_batch_id", None),
+              )
+          except (ValidationError, DuplicateRecordError, RecordNotFoundError) as exc:
+              # Item itself is already saved (0-qty item creation is valid
+              # by design) -- surface the batch problem separately rather
+              # than pretending the whole save failed.
+              message = "\n".join(exc.errors) if isinstance(exc, ValidationError) else str(exc)
+              show_error(
+                  self, "Item Master",
+                  f"Item '{dto.item_name}' was saved, but the batch could not be registered: {message}"
+              )
+              self.accept()
+              return
+          except Exception as exc:  # noqa: BLE001
+              logger.exception("Unexpected error saving opening batch for item %s.", dto.item_id)
+              show_error(
+                  self, "Item Master",
+                  f"Item '{dto.item_name}' was saved, but the batch could not be registered: {exc}"
+              )
+              self.accept()
+              return
 
         action = "updated" if self._is_edit_mode else "created"
         show_success(self, "Item Master", f"Item '{dto.item_name}' {action}.")
@@ -475,29 +596,29 @@ class ItemFormScreen(QDialog):
 
     def _build_opening_batch_payload_if_needed(self) -> Optional[dict]:
         """
-        Returns None if Opening Quantity is 0 (perfectly valid -- item
-        just has no batch yet). Returns a ready-to-use add_batch() payload
-        if Opening Quantity > 0, after validating Expiry was given.
-        Raises ValueError (shown to the user directly) on bad input.
+        Registers a batch on Save when Batch No. is filled (qty may be 0).
+        Empty batch no + qty 0 still allows an item with no batches.
         """
         from utils.item_form_helpers import build_batch_payload, parse_decimal
 
-        qty = parse_decimal(self.ui.txtOpeningQty.text(), "Opening Quantity")
-        if qty <= 0:
-            return None
+        qty = parse_decimal(self.ui.txtOpeningQty.text(), "Batch Quantity")
+        batch_no = self.txtBatchNo.text().strip()
+        if not batch_no and qty == 0:
+          return None
+        if not batch_no:
+          batch_no = "OPENING"
 
-        expiry_year_text = self.ui.txtOpeningExpiryYear.text().strip()
-        if not expiry_year_text:
-            raise ValueError("Expiry Year is required when Opening Quantity is more than 0.")
-
-        return build_batch_payload({
-            "batch_no": "OPENING",
-            "expiry_year_text": expiry_year_text,
-            "expiry_month_text": str(self.ui.cmbOpeningExpiryMonth.currentIndex() + 1),
-            "batch_qty_text": self.ui.txtOpeningQty.text(),
-            "batch_purchase_rate_text": self.ui.txtPurchaseRate.text(),
-            "remarks": "Opening Stock",
+        month, year = self._expiry_picker.expiry_month_year_ad()
+        payload = build_batch_payload({
+          "batch_no": batch_no,
+          "expiry_year_text": str(year),
+          "expiry_month_text": str(month),
+          "batch_qty_text": self.ui.txtOpeningQty.text(),
+          "batch_purchase_rate_text": self.ui.txtPurchaseRate.text(),
+          "remarks": "Opening Stock" if not self._is_edit_mode else "Batch entry",
         })
+        payload["item_batch_id"] = getattr(self, "_existing_batch_id", None)
+        return payload
 
     def _show_validation_message(self, message: str) -> None:
         self.ui.lblValidationMessage.setText(message)

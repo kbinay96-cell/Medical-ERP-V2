@@ -25,6 +25,7 @@ from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.password_manager import verify_password
 from models import user_model
 from models.user_model import UserModelError
+from utils import image_manager
 from validators.user_validator import validate_user_data, validate_password_change
 
 
@@ -43,6 +44,7 @@ class UserDTO:
     failed_attempts: int
     created_date: object
     created_by: Optional[str]
+    photo_path: Optional[str] = None
 
     @property
     def is_deleted(self) -> bool:
@@ -68,6 +70,7 @@ def _row_to_dto(row: dict) -> UserDTO:
         failed_attempts=row.get("failedattempts") or 0,
         created_date=row.get("createddate"),
         created_by=row.get("createdby"),
+        photo_path=row.get("photo_path"),
     )
 
 
@@ -80,6 +83,14 @@ class UserEngine:
         errors = validate_user_data(data, is_update=False)
         if errors:
             raise ValidationError(errors)
+
+        data = dict(data)
+        data["photo_path"] = image_manager.apply_entity_photo(
+            data,
+            existing_path=None,
+            subfolder="users",
+            filename_stem=(data.get("username") or "user").strip(),
+        )
 
         try:
             userid = user_model.insert_user(data, created_by=str(current_user_id))
@@ -103,6 +114,14 @@ class UserEngine:
         errors = validate_user_data(data, is_update=True, exclude_userid=user_id)
         if errors:
             raise ValidationError(errors)
+
+        data = dict(data)
+        data["photo_path"] = image_manager.apply_entity_photo(
+            data,
+            existing_path=existing.get("photo_path"),
+            subfolder="users",
+            filename_stem=(data.get("username") or existing.get("username") or str(user_id)).strip(),
+        )
 
         try:
             user_model.update_user(user_id, data, modified_by=str(current_user_id))

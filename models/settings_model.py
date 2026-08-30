@@ -212,3 +212,96 @@ def get_recent_history(limit: int = 10) -> list[dict]:
             )
             return cur.fetchall()
 
+def get_effective_settings_for_company(companyid: str) -> list[dict]:
+    """
+    Returns global settings, with any company-specific override
+    for the same setting_key replacing the global row. Existing
+    get_all_settings() is untouched -- this is purely additive,
+    used only by callers that explicitly need company-scoped
+    values (e.g. per-company SMTP)."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM settings
+                WHERE companyid IS NULL AND userid IS NULL
+                ORDER BY setting_group, display_order, setting_key
+                """
+            )
+            global_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT * FROM settings
+                WHERE companyid = %s AND userid IS NULL
+                """,
+                (companyid,)
+            )
+            override_rows = cur.fetchall()
+
+    merged = {row["setting_key"]: dict(row) for row in global_rows}
+    for row in override_rows:
+        merged[row["setting_key"]] = dict(row)
+
+    return list(merged.values())
+
+
+def save_company_setting(
+    key: str, value: str, companyid: str, updated_by: str, reason: str = ""
+) -> tuple[bool, str]:
+    """
+    Creates or updates a company-specific override row for
+    setting_key. Does not touch the global row for this key --
+    that stays as the default for companies with no override."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT setting_value FROM settings
+                WHERE setting_key = %s AND companyid = %s AND userid IS NULL
+                """,
+                (key, companyid)
+            )
+            existing = cur.fetchone()
+
+            if existing is None:
+                global_row = get_setting_by_key(key)
+                if global_row is None:
+                    return False, f"Setting '{key}' not found (no global row to base override on)."
+
+                cur.execute(
+                    """
+                    INSERT INTO settings (
+                        setting_key, setting_value, setting_group, data_type,
+                        default_value, description, display_order, companyid, updated_by
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        key, value, global_row["setting_group"], global_row["data_type"],
+                        global_row["default_value"], global_row["description"],
+                        global_row["display_order"], companyid, updated_by,
+                    )
+                )
+                old_value = None
+            else:
+                old_value = existing["setting_value"]
+                cur.execute(
+                    """
+                    UPDATE settings
+                    SET setting_value = %s, updated_at = %s, updated_by = %s
+                    WHERE setting_key = %s AND companyid = %s AND userid IS NULL
+                    """,
+                    (value, datetime.now(), updated_by, key, companyid)
+                )
+
+            cur.execute(
+                """
+                INSERT INTO settings_history (setting_key, old_value, new_value, changed_by, reason)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (key, old_value, value, updated_by, reason)
+            )
+        conn.commit()
+
+    return True, "Company setting saved successfully."

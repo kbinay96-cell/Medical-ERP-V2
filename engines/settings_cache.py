@@ -77,3 +77,49 @@ def clear_cache() -> None:
     global _cache, _is_loaded
     _cache = {}
     _is_loaded = False
+
+# ---------------------------------------------------------
+# Company-scoped cache (additive -- separate from the global
+# _cache above, which stays untouched for General/Print/etc).
+# Single active company at a time, matching this desktop app's
+# single in-memory session model.
+# ---------------------------------------------------------
+
+_company_cache: dict[str, dict] = {}
+_company_cache_id: str | None = None
+
+
+def is_company_cache_loaded(companyid: str) -> bool:
+    return _company_cache_id == companyid and bool(_company_cache)
+
+
+def load_company_cache(companyid: str, settings_rows: list[dict]) -> None:
+    """Populates the company-scoped cache with a company's EFFECTIVE
+    settings (global + that company's overrides already merged by
+    the caller, e.g. settings_model.get_effective_settings_for_company()).
+    Replaces any previously cached company (single active company)."""
+    global _company_cache, _company_cache_id
+
+    _company_cache = {row["setting_key"]: dict(row) for row in settings_rows}
+    _company_cache_id = companyid
+    logger.info(f"Company settings cache loaded for '{companyid}' with {len(_company_cache)} entries.")
+
+
+def get_company_cached_value(key: str, default=None):
+    row = _company_cache.get(key)
+
+    if row is None:
+        return default
+
+    return parse_setting_value(row["data_type"], row["setting_value"])
+
+
+def update_company_cached_value(key: str, new_value: str) -> None:
+    if key in _company_cache:
+        _company_cache[key]["setting_value"] = new_value
+
+
+def clear_company_cache() -> None:
+    global _company_cache, _company_cache_id
+    _company_cache = {}
+    _company_cache_id = None

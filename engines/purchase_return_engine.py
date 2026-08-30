@@ -1,83 +1,92 @@
 # engines/purchase_return_engine.py
 from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from engines.exceptions import RecordNotFoundError, ValidationError
 from models.purchase_return_model import PurchaseReturnModel
 
-logger = __import__("logging").getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class PurchaseReturnEngine:
+    """Phase-2 — build only after Purchase Invoice/Order are live and
+    tested. Reuses ItemEngine.post_stock_movement(), which is ALREADY
+    built for exactly this future case (see its docstring in
+    item_engine.py: 'negative = stock OUT ... a Purchase Return')."""
+
     def __init__(self, model: PurchaseReturnModel, date_engine, item_engine) -> None:
         self._model = model
         self._date_engine = date_engine
         self._item_engine = item_engine
 
-    def _now_ad(self):
-        from datetime import datetime
-        return datetime.now()
-
-    def _now_bs(self):
-        try:
-            return self._date_engine.ad_to_bs(self._now_ad().date())
-        except Exception:
-            return ""
-
     def create_return(self, payload: dict[str, Any], current_user_id: int) -> dict:
-        """
-        payload must include:
-          - purchase_invoice_id
-          - supplier_id
-          - lines: [{ item_batch_id, return_qty, return_rate, remarks }]
-        Validates return_qty <= current batch current balance (caller must ensure),
-        inserts return header and items, and calls ItemEngine.post_stock_movement()
-        to record the negative stock movement atomically with ledger.
-        """
-        if not payload or not payload.get("lines"):
-            raise ValidationError(["Return payload missing or no lines provided."])
+        """Validates basic payload shape, then calls
+        self._item_engine.post_stock_movement(item_batch_id,
+        transaction_type='PURCHASE_RETURN', quantity_change=-return_qty, ...)
+        -- reuses ItemEngine.post_stock_movement(), which is ALREADY built
+        for exactly this future case (see its docstring in item_engine.py:
+        'negative = stock OUT ... a Purchase Return'). post_stock_movement()
+        itself rejects any movement that would take the batch below zero,
+        so the remaining-quantity check does not need to be duplicated
+        here — ItemEngine has no single-batch getter exposed for that
+        anyway (only get_batches(item_id), a list, and post_stock_movement
+        internally)."""
+        from engines.date_engine import ad_to_bs, DateEngineError  # noqa: F401
 
-        # Phase-2: Minimal checks, then call ItemEngine.post_stock_movement for each line.
-        return_id = self._model.insert_return({
-            "purchase_invoice_id": payload.get("purchase_invoice_id"),
-            "supplier_id": payload.get("supplier_id"),
-            "return_date_ad": payload.get("return_date_ad") or self._now_ad().date(),
-            "return_date_bs": payload.get("return_date_bs") or self._now_bs(),
-            "total_amount": payload.get("total_amount") or 0,
-            "reason": payload.get("reason"),
-            "created_by": current_user_id,
-            "created_at_ad": self._now_ad(),
-            "created_at_bs": self._now_bs(),
-        })
+        item_batch_id = payload.get("item_batch_id")
+        if not item_batch_id:
+            raise ValidationError("item_batch_id is required.")
 
-        for line in payload.get("lines", []):
-            item_batch_id = line.get("item_batch_id")
-            return_qty = float(line.get("return_qty") or 0)
-            if return_qty <= 0:
-                raise ValidationError(["return_qty must be > 0"])
-            # Insert return item
-            item_line_data = {
-                "purchase_return_id": return_id,
+        return_qty = payload.get("return_qty")
+        try:
+            return_qty = float(return_qty)
+        except (TypeError, ValueError):
+            raise ValidationError("return_qty is required and must be numeric.")
+
+        if return_qty <= 0:
+            raise ValidationError("return_qty must be greater than zero.")
+
+        reason = payload.get("reason")
+        if not reason or not str(reason).strip():
+            raise ValidationError("A return reason is required.")
+
+        now_ad = datetime.now(timezone.utc)
+        try:
+            now_bs = ad_to_bs(now_ad.date())
+        except DateEngineError:
+            logger.exception("Could not resolve BS date for purchase return audit stamp")
+            now_bs = None
+
+        purchase_return_id = self._model.insert_return(
+            {
                 "item_batch_id": item_batch_id,
                 "return_qty": return_qty,
-                "return_rate": line.get("return_rate") or 0,
-                "remarks": line.get("remarks"),
+                "reason": reason,
+                "purchase_invoice_id": payload.get("purchase_invoice_id"),
+                "created_by": current_user_id,
+                "created_at_ad": now_ad,
+                "created_at_bs": now_bs,
             }
-            rid = self._model.insert_return_item(return_id, item_line_data)
-            # Now call ItemEngine.post_stock_movement() to effect the stock change
-            try:
-                self._item_engine.post_stock_movement(
-                    item_batch_id=item_batch_id,
-                    transaction_type="PURCHASE_RETURN",
-                    quantity_change=-abs(return_qty),
-                    current_user_id=current_user_id,
-                    reference_type="purchase_return",
-                    reference_id=return_id,
-                    remarks=line.get("remarks"),
-                )
-            except Exception:
-                logger.exception("Failed to post stock movement for return line (item_batch_id=%s)", item_batch_id)
-                # Do not attempt automatic compensation here; surface error to caller if desired.
-                raise
+        )
 
-        return {"purchase_return_id": return_id}
+        # post_stock_movement() raises ValidationError itself if this
+        # return would take the batch below zero — no pre-check needed.
+        self._item_engine.post_stock_movement(
+            item_batch_id=item_batch_id,
+            transaction_type="PURCHASE_RETURN",
+            quantity_change=-return_qty,
+            current_user_id=current_user_id,
+            reference_type="purchase_return",
+            reference_id=purchase_return_id,
+            remarks=reason,
+        )
+
+        return {
+            "purchase_return_id": purchase_return_id,
+            "item_batch_id": item_batch_id,
+            "return_qty": return_qty,
+            "reason": reason,
+        }

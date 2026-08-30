@@ -27,6 +27,8 @@ from screens.manufacturer_form_screen import ManufacturerFormScreen
 from ui.ui_manufacturer_list import Ui_ManufacturerListWidget
 from utils.integration_adapters import confirm, get_current_user_id, show_error, show_success
 from utils.manufacturer_form_helpers import dto_to_table_row, status_filter_value
+from utils.ui_standards import configure_table_columns, standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,8 @@ class ManufacturerListScreen(QWidget):
         super().__init__(parent)
         self.ui = Ui_ManufacturerListWidget()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=1200, height=720)
+        standardize_action_buttons(self)
 
         self._engine = engine or ManufacturerEngine()
         self._rows: list[ManufacturerDTO] = []
@@ -116,6 +120,7 @@ class ManufacturerListScreen(QWidget):
                     item.setForeground(Qt.gray)
                 table.setItem(row_index, col_index, item)
         table.setSortingEnabled(True)
+        configure_table_columns(table, stretch_columns=(1,))
         self._on_selection_changed()
 
     # ------------------------------------------------------------------ #
@@ -145,7 +150,8 @@ class ManufacturerListScreen(QWidget):
     # ------------------------------------------------------------------ #
     def _on_add_clicked(self) -> None:
         dialog = ManufacturerFormScreen(self, manufacturer_id=None, engine=self._engine)
-        if dialog.exec():
+        dialog.exec()
+        if dialog.data_changed:
             self.refresh()
 
     def _on_edit_clicked(self) -> None:
@@ -153,7 +159,8 @@ class ManufacturerListScreen(QWidget):
         if dto is None or dto.is_deleted:
             return
         dialog = ManufacturerFormScreen(self, manufacturer_id=dto.manufacturer_id, engine=self._engine)
-        if dialog.exec():
+        dialog.exec()
+        if dialog.data_changed:
             self.refresh()
 
     def _on_delete_clicked(self) -> None:

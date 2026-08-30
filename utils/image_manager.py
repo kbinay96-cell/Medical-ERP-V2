@@ -71,6 +71,33 @@ def save_image(source_path: str, subfolder: str, filename_stem: str) -> tuple[bo
     return True, str(target_path).replace("\\", "/")
 
 
+def apply_entity_photo(
+    payload: dict,
+    *,
+    existing_path: str | None,
+    subfolder: str,
+    filename_stem: str,
+) -> str | None:
+    """
+    Consumes Screen-staged keys `_photo_source_path` / `_remove_photo`
+    (from widgets.photo_picker.PhotoPicker.get_photo_update) and returns
+    the path the Model should persist. Engines call this; Screens do not.
+    """
+    photo_source = payload.pop("_photo_source_path", None)
+    remove_photo = payload.pop("_remove_photo", False)
+
+    if remove_photo:
+        delete_image(existing_path)
+        return None
+    if photo_source:
+        photo_ok, photo_result = save_image(photo_source, subfolder, filename_stem)
+        if photo_ok:
+            return photo_result
+        logger.warning("apply_entity_photo: photo not saved for '%s': %s", filename_stem, photo_result)
+        return existing_path
+    return existing_path
+
+
 def delete_image(relative_path: str | None) -> bool:
     """
     Removes an entity's photo file from disk. Safe to call with

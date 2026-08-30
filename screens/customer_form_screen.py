@@ -42,7 +42,7 @@ class CustomerFormScreen(QDialog):
         self.lookup_data = customer_engine.get_lookup_data()
 
         self.setWindowTitle("Edit Customer" if self.is_edit_mode else "Add Customer")
-        self.resize(760, 640)
+        apply_standard_window_chrome(self, width=860, height=680)
         self.setModal(True)
 
         self._build_ui()

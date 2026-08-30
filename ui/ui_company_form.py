@@ -8,7 +8,7 @@
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QPlainTextEdit, QPushButton, QSizePolicy, QSpacerItem, QVBoxLayout
+    QPlainTextEdit, QPushButton, QSizePolicy, QSpacerItem, QVBoxLayout, QWidget
 )
 
 
@@ -90,6 +90,28 @@ class Ui_CompanyFormDialog(object):
         self.txtRegistrationNo.setObjectName(u"txtRegistrationNo")
         self.formLayout.addRow(self.lblRegistrationNo, self.txtRegistrationNo)
 
+        self.lblDdaNo = QLabel(CompanyFormDialog)
+        self.lblDdaNo.setObjectName(u"lblDdaNo")
+        self.txtDdaNo = QLineEdit(CompanyFormDialog)
+        self.txtDdaNo.setObjectName(u"txtDdaNo")
+        self.formLayout.addRow(self.lblDdaNo, self.txtDdaNo)
+
+        self.lblLogo = QLabel(CompanyFormDialog)
+        self.lblLogo.setObjectName(u"lblLogo")
+        self.logoRowWidget = QWidget(CompanyFormDialog)
+        self.logoRowWidget.setObjectName(u"logoRowWidget")
+        self.logoRowLayout = QHBoxLayout(self.logoRowWidget)
+        self.logoRowLayout.setObjectName(u"logoRowLayout")
+        self.logoRowLayout.setContentsMargins(0, 0, 0, 0)
+        self.txtLogoPath = QLineEdit(self.logoRowWidget)
+        self.txtLogoPath.setObjectName(u"txtLogoPath")
+        self.txtLogoPath.setReadOnly(True)
+        self.logoRowLayout.addWidget(self.txtLogoPath)
+        self.btnBrowseLogo = QPushButton(self.logoRowWidget)
+        self.btnBrowseLogo.setObjectName(u"btnBrowseLogo")
+        self.logoRowLayout.addWidget(self.btnBrowseLogo)
+        self.formLayout.addRow(self.lblLogo, self.logoRowWidget)
+
         self.lblStatus = QLabel(CompanyFormDialog)
         self.lblStatus.setObjectName(u"lblStatus")
         self.cmbStatus = QComboBox(CompanyFormDialog)
@@ -104,6 +126,39 @@ class Ui_CompanyFormDialog(object):
         self.txtRemarks.setObjectName(u"txtRemarks")
         self.txtRemarks.setMaximumHeight(60)
         self.formLayout.addRow(self.lblRemarks, self.txtRemarks)
+
+        self.lblSmtpSectionTitle = QLabel(CompanyFormDialog)
+        self.lblSmtpSectionTitle.setObjectName(u"lblSmtpSectionTitle")
+        self.lblSmtpSectionTitle.setStyleSheet(u"font-weight: 600; margin-top: 8px;")
+        self.formLayout.addRow(self.lblSmtpSectionTitle)
+
+        self.lblSmtpHost = QLabel(CompanyFormDialog)
+        self.lblSmtpHost.setObjectName(u"lblSmtpHost")
+        self.txtSmtpHost = QLineEdit(CompanyFormDialog)
+        self.txtSmtpHost.setObjectName(u"txtSmtpHost")
+        self.txtSmtpHost.setPlaceholderText(u"e.g. smtp.gmail.com")
+        self.formLayout.addRow(self.lblSmtpHost, self.txtSmtpHost)
+
+        self.lblSmtpPort = QLabel(CompanyFormDialog)
+        self.lblSmtpPort.setObjectName(u"lblSmtpPort")
+        self.txtSmtpPort = QLineEdit(CompanyFormDialog)
+        self.txtSmtpPort.setObjectName(u"txtSmtpPort")
+        self.txtSmtpPort.setPlaceholderText(u"587")
+        self.formLayout.addRow(self.lblSmtpPort, self.txtSmtpPort)
+
+        self.lblSmtpEmail = QLabel(CompanyFormDialog)
+        self.lblSmtpEmail.setObjectName(u"lblSmtpEmail")
+        self.txtSmtpEmail = QLineEdit(CompanyFormDialog)
+        self.txtSmtpEmail.setObjectName(u"txtSmtpEmail")
+        self.txtSmtpEmail.setPlaceholderText(u"sender@example.com")
+        self.formLayout.addRow(self.lblSmtpEmail, self.txtSmtpEmail)
+
+        self.lblSmtpAppPassword = QLabel(CompanyFormDialog)
+        self.lblSmtpAppPassword.setObjectName(u"lblSmtpAppPassword")
+        self.txtSmtpAppPassword = QLineEdit(CompanyFormDialog)
+        self.txtSmtpAppPassword.setObjectName(u"txtSmtpAppPassword")
+        self.txtSmtpAppPassword.setEchoMode(QLineEdit.Password)
+        self.formLayout.addRow(self.lblSmtpAppPassword, self.txtSmtpAppPassword)
 
         self.verticalLayout_root.addLayout(self.formLayout)
 
@@ -150,9 +205,17 @@ class Ui_CompanyFormDialog(object):
         self.lblEmail.setText(QCoreApplication.translate("CompanyFormDialog", u"Email", None))
         self.lblPanVatNo.setText(QCoreApplication.translate("CompanyFormDialog", u"PAN/VAT No.", None))
         self.lblRegistrationNo.setText(QCoreApplication.translate("CompanyFormDialog", u"Registration No.", None))
+        self.lblDdaNo.setText(QCoreApplication.translate("CompanyFormDialog", u"DDA/Drug License No.", None))
+        self.lblLogo.setText(QCoreApplication.translate("CompanyFormDialog", u"Logo", None))
+        self.btnBrowseLogo.setText(QCoreApplication.translate("CompanyFormDialog", u"Browse...", None))
         self.lblStatus.setText(QCoreApplication.translate("CompanyFormDialog", u"Status", None))
         self.cmbStatus.setItemText(0, QCoreApplication.translate("CompanyFormDialog", u"Active", None))
         self.cmbStatus.setItemText(1, QCoreApplication.translate("CompanyFormDialog", u"Inactive", None))
         self.lblRemarks.setText(QCoreApplication.translate("CompanyFormDialog", u"Remarks", None))
+        self.lblSmtpSectionTitle.setText(QCoreApplication.translate("CompanyFormDialog", u"Email Settings (SMTP) \u2014 used to send invoices", None))
+        self.lblSmtpHost.setText(QCoreApplication.translate("CompanyFormDialog", u"SMTP Host", None))
+        self.lblSmtpPort.setText(QCoreApplication.translate("CompanyFormDialog", u"SMTP Port", None))
+        self.lblSmtpEmail.setText(QCoreApplication.translate("CompanyFormDialog", u"Sender Email", None))
+        self.lblSmtpAppPassword.setText(QCoreApplication.translate("CompanyFormDialog", u"App Password", None))
         self.btnCancel.setText(QCoreApplication.translate("CompanyFormDialog", u"Cancel", None))
         self.btnSave.setText(QCoreApplication.translate("CompanyFormDialog", u"Save", None))

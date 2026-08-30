@@ -1,17 +1,21 @@
 # engines/purchase_engine.py
 from __future__ import annotations
+
 import logging
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
-from typing import Any, Optional, List
+from datetime import date, datetime, timezone
+from typing import Any, Optional
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
-
 from models.purchase_invoice_model import PurchaseInvoiceModel, PurchaseInvoiceSearchFilters
 from engines.purchase_validator import PurchaseValidator
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# DTOs
+# ---------------------------------------------------------------------------
 
 @dataclass
 class PurchaseInvoiceLineDTO:
@@ -23,12 +27,15 @@ class PurchaseInvoiceLineDTO:
     free_qty: float
     purchase_rate: float
     discount_percent: float
-    cc_percent: float = 0.0
-    mrp: float = 0.0
-    sale_rate: float = 0.0
-    # computed/output fields
+    cc_percent: float
+    mrp: float
+    sale_rate: float
+    # computed/output fields (Engine fills these, never accepted as input):
     discount_amount: float = 0.0
     cc_amount: float = 0.0
+    # invoice-level freight/other charges allocated to this line, proportional
+    # to its (qty + free_qty) share of total units — filled by
+    # _allocate_invoice_level_charges() and consumed by _calculate_line_amounts().
     freight_allocated: float = 0.0
     other_charges_allocated: float = 0.0
     landing_cost_per_unit: float = 0.0
@@ -42,21 +49,32 @@ class PurchaseInvoiceDTO:
     invoice_number: str
     supplier_id: int
     invoice_date_bs: str
-    total_qty: float
-    total_gross_amount: float
-    total_discount_amount: float
-    total_cc_amount: float
-    total_freight_amount: float
-    total_other_charges: float
     grand_total: float
     status: str
-    lines: List[PurchaseInvoiceLineDTO] = field(default_factory=list)
+    lines: list[PurchaseInvoiceLineDTO] = field(default_factory=list)
+    bill_discount_amount: float = 0.0
+    round_off_amount: float = 0.0
+    invoice_date_ad: Optional[str] = None          
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
+
 class PurchaseEngine:
+    """Business-rule orchestration for Purchase Invoice (GRN + Bill combined).
+    Screens call ONLY this class — mirrors SupplierEngine/ItemEngine shape.
+
+    Golden rule reused from item_engine.py: this Engine does NOT write to
+    item_batch or stock_ledger directly. It calls the already-built
+    ItemEngine.add_batch(item_id, batch_payload, current_user_id,
+    transaction_type='PURCHASE', reference_type='purchase_invoice',
+    reference_id=purchase_invoice_id) — no duplicate stock-writing logic.
+    """
+
     def __init__(
         self,
         model: PurchaseInvoiceModel,
@@ -64,313 +82,451 @@ class PurchaseEngine:
         settings_engine,
         item_engine,
         purchase_order_engine,
-        country_tax_lookup_fn,
-        manufacturer_lookup_fn,
+        discount_engine=None,
     ) -> None:
+        """item_engine: an ItemEngine instance — Purchase Engine delegates
+        all stock/batch writes to it, never touches item_batch/stock_ledger
+        itself. CC% is resolved via item_engine.resolve_item_tax(item_id)
+        (confirmed to exist on the real ItemEngine — returns
+        (vat_percent, custom_percent)), so no separate country-tax/
+        manufacturer lookup functions need to be injected here anymore.
+        purchase_order_engine: injected so create_purchase_invoice() can
+        mark a linked PO 'Received' — Purchase Invoice Engine never
+        touches the purchase_order table directly."""
         self._model = model
         self._date_engine = date_engine
         self._settings_engine = settings_engine
         self._item_engine = item_engine
         self._purchase_order_engine = purchase_order_engine
-        self._country_tax_lookup = country_tax_lookup_fn
-        self._manufacturer_lookup = manufacturer_lookup_fn
+        self._discount_engine = discount_engine
 
-    def _now_ad(self) -> datetime:
-        return datetime.now()
-
-    def _now_bs(self) -> str:
-        try:
-            return self._date_engine.ad_to_bs(self._now_ad().date())
-        except Exception:
-            return ""
+    # -- numbering ----------------------------------------------------------
 
     def generate_internal_ref_number(self) -> str:
-        prefix = self._settings_engine.get_setting("purchase.invoice_prefix", "PINV-")
-        last = self._model.get_last_internal_ref_sequence(prefix)
-        next_seq = (last or 0) + 1
-        return f"{prefix}{next_seq:04d}"
+        """Next sequential PINV-0001, PINV-0002... Settings-driven prefix,
+        same pattern as ItemEngine.generate_item_code()."""
+        from engines.settings_engine import get_setting
+        prefix = get_setting("purchase.invoice_prefix", "PINV-")
+        last_seq = self._model.get_last_internal_ref_sequence(prefix)
+        return f"{prefix}{last_seq + 1:04d}"
+
+    # -- resolution / calculation --------------------------------------------
 
     def _resolve_cc_percent(self, item_id: int) -> float:
+        """Delegates to ItemEngine.resolve_item_tax(item_id), which is the
+        SAME resolution logic Item Master already uses (manufacturer ->
+        country -> country_tax, with the (0, 0) fallback for anything
+        unconfigured) — Purchase Engine never queries manufacturer/country
+        tables itself, just reuses the Engine that already owns this."""
         try:
-            # Find manufacturer via injected lookup: first get manufacturer_id for item via ItemModel
-            # We'll lazy-import ItemModel to avoid circular imports
-            from models.item_model import ItemModel
-
-            im = ItemModel()
-            item_row = im.get_by_id(item_id)
-            if not item_row:
-                return 0.0
-            manufacturer_id = item_row.get("manufacturer_id")
-            if not manufacturer_id:
-                return 0.0
-            # manufacturer_lookup_fn returns manufacturer data (including country) or None
-            manufacturer = self._manufacturer_lookup(manufacturer_id)
-            if not manufacturer:
-                return 0.0
-            country = manufacturer.get("country")
-            if not country:
-                return 0.0
-            cc, _ = self._country_tax_lookup(country)  # returns (vat_percent, custom_percent)
-            return float(cc or 0.0)
+            _vat_percent, custom_percent = self._item_engine.resolve_item_tax(item_id)
+            return float(custom_percent) if custom_percent else 0.0
         except Exception:
+            logger.exception(
+                "Failed to resolve CC%% for item_id=%s via ItemEngine.resolve_item_tax — falling back to 0.0",
+                item_id,
+            )
             return 0.0
 
-    def _allocate_invoice_level_charges(self, lines: List[PurchaseInvoiceLineDTO], total_freight: float, total_other: float) -> List[PurchaseInvoiceLineDTO]:
-        total_units = sum((line.qty + line.free_qty) for line in lines)
-        if total_units <= 0:
-            # nothing to allocate
-            return lines
-        for line in lines:
-            share = (line.qty + line.free_qty) / total_units
-            line.freight_allocated = round(total_freight * share, 4)
-            line.other_charges_allocated = round(total_other * share, 4)
-        return lines
+    def _resolve_discount_percent(self, item_id: int, supplier_id: int) -> float:
+        """Auto-resolves per-item discount% for this supplier, via the
+        item's manufacturer_id + SupplierManufacturerDiscountEngine.
+        get_discount() — same never-raise fallback contract as
+        _resolve_cc_percent(): a missing/unconfigured mapping never
+        blocks invoice entry, just returns 0.0."""
+        try:
+            item = self._item_engine.get_item(item_id)
+            manufacturer_id = item.manufacturer_id
+            if not manufacturer_id:
+                return 0.0
+            if self._discount_engine is None:
+                from engines.supplier_manufacturer_discount_engine import SupplierManufacturerDiscountEngine
+                self._discount_engine = SupplierManufacturerDiscountEngine()
+            return self._discount_engine.get_discount(supplier_id, manufacturer_id)
+        except Exception:
+            logger.exception(
+                "Failed to resolve discount%% for item_id=%s supplier_id=%s — falling back to 0.0",
+                item_id, supplier_id,
+            )
+            return 0.0
 
     def _calculate_line_amounts(self, line: PurchaseInvoiceLineDTO) -> PurchaseInvoiceLineDTO:
-        # discount on paid qty only
-        paid_value = line.qty * line.purchase_rate
-        line.discount_amount = round(paid_value * (line.discount_percent / 100.0), 4)
+        """Pure calculation, no DB writes:
+        1. discount_amount = qty * purchase_rate * (discount_percent / 100)
+        2. cc_amount = free_qty * declared_customs_value_per_unit * (cc_percent / 100)
+           -- declared_customs_value_per_unit is the item's purchase_rate
+              of the PAID units on this same line (free qty's own rate is
+              always 0 by definition, per glossary — so CC basis is the
+              paid-unit rate, applied only to the free-qty count).
+        3. landing_cost_per_unit = OUTPUT ONLY:
+           ((qty * purchase_rate) - discount_amount + cc_amount
+            + freight_allocated + other_charges_allocated) / (qty + free_qty)
+           -- never used as an input to any other calculation (glossary rule).
+        Returns the line with all computed fields filled in."""
+        discount_amount = line.qty * line.purchase_rate * (line.discount_percent / 100.0)
 
-        # cc basis: free_qty * declared_customs_value_per_unit (use purchase_rate of paid units)
-        declared_customs_value_per_unit = line.purchase_rate or 0.0
-        line.cc_amount = round((line.free_qty * declared_customs_value_per_unit) * (line.cc_percent / 100.0), 4)
+        declared_customs_value_per_unit = line.purchase_rate
+        cc_amount = line.free_qty * declared_customs_value_per_unit * (line.cc_percent / 100.0)
 
-        # landing cost per unit = (paid_value - discount + cc + freight_allocated + other_allocated) / total_units
-        total_units = (line.qty + line.free_qty) or 1.0
-        numerator = (paid_value - line.discount_amount + line.cc_amount + line.freight_allocated + line.other_charges_allocated)
-        line.landing_cost_per_unit = round(numerator / total_units, 4)
+        total_units = line.qty + line.free_qty
+        if total_units > 0:
+            landing_cost_per_unit = (
+                (line.qty * line.purchase_rate)
+                - discount_amount
+                + cc_amount
+                + line.freight_allocated
+                + line.other_charges_allocated
+            ) / total_units
+        else:
+            # Both qty and free_qty are zero — validator should already have
+            # rejected this line, but guard against a divide-by-zero anyway.
+            landing_cost_per_unit = 0.0
 
+        line.discount_amount = round(discount_amount, 4)
+        line.cc_amount = round(cc_amount, 4)
+        line.landing_cost_per_unit = round(landing_cost_per_unit, 4)
         return line
 
+    def _allocate_invoice_level_charges(
+        self,
+        lines: list[PurchaseInvoiceLineDTO],
+        total_freight: float,
+        total_other: float,
+    ) -> list[PurchaseInvoiceLineDTO]:
+        """Splits invoice-level freight/other-charges across lines,
+        proportional to each line's (qty + free_qty) share of total units.
+        Must run BEFORE _calculate_line_amounts's landing_cost step."""
+        grand_total_units = sum(l.qty + l.free_qty for l in lines)
+
+        if grand_total_units <= 0:
+            for l in lines:
+                l.freight_allocated = 0.0
+                l.other_charges_allocated = 0.0
+            return lines
+
+        for l in lines:
+            share = (l.qty + l.free_qty) / grand_total_units
+            l.freight_allocated = round(total_freight * share, 4)
+            l.other_charges_allocated = round(total_other * share, 4)
+
+        return lines
+
+    # -- create / read / search / cancel ------------------------------------
+
     def create_purchase_invoice(self, payload: dict[str, Any], current_user_id: int) -> PurchaseInvoiceDTO:
-        # 1. Validate header
-        ok, err = PurchaseValidator.validate_invoice_header(payload)
-        if not ok:
-            raise ValidationError([err])
+        """Full flow:
+        1. PurchaseValidator.validate_invoice_header() + validate_invoice_line() per line
+        2. Duplicate check: model.exists_by_supplier_and_billno()
+        3. Resolve CC% per line (_resolve_cc_percent)
+        4. Allocate freight/other charges (_allocate_invoice_level_charges)
+        5. Calculate amounts per line (_calculate_line_amounts)
+        6. Insert purchase_invoice header (model.insert_invoice)
+        7. For each line: insert purchase_invoice_item, THEN call
+           self._item_engine.add_batch(item_id, batch_payload, current_user_id,
+               transaction_type='PURCHASE', reference_type='purchase_invoice',
+               reference_id=new_invoice_id)
+           -- this is what actually creates the item_batch + stock_ledger row.
+        8. Stamp resulting item_batch_id back via model.update_invoice_item_batch_link()
+        9. If payload includes purchase_order_id: calls
+           self._purchase_order_engine.mark_received(purchase_order_id, current_user_id)
+           -- marks the WHOLE linked PO as 'Received' (no partial tracking,
+           per confirmed scope). purchase_order_id stays optional — an
+           invoice can be created without ever referencing a PO.
+        10. Stamps BS-first audit fields via self._date_engine, same pattern
+           as SupplierEngine._now_bs()/_now_ad()
+        Raises ValidationError, DuplicateRecordError."""
+        from engines.date_engine import ad_to_bs, DateEngineError  # noqa: F401
 
-        raw_lines = payload.get("lines", [])
-        if not isinstance(raw_lines, list) or len(raw_lines) == 0:
-            raise ValidationError(["Invoice must include at least one line."])
+        # 1. validate header + lines
+        is_valid, error = PurchaseValidator.validate_invoice_header(payload)
+        if not is_valid:
+            raise ValidationError(error)
 
-        # 1b: Validate each line
-        lines_dto: List[PurchaseInvoiceLineDTO] = []
-        for idx, l in enumerate(raw_lines):
-            ok, err = PurchaseValidator.validate_invoice_line(l)
-            if not ok:
-                raise ValidationError([f"Line {idx+1}: {err}"])
-            ok, err = PurchaseValidator.validate_free_qty_rate(l)
-            if not ok:
-                raise ValidationError([f"Line {idx+1}: {err}"])
+        raw_lines = payload.get("lines") or []
+        for raw_line in raw_lines:
+            is_valid, error = PurchaseValidator.validate_invoice_line(raw_line)
+            if not is_valid:
+                raise ValidationError(error)
+            is_valid, error = PurchaseValidator.validate_free_qty_rate(raw_line)
+            if not is_valid:
+                raise ValidationError(error)
 
-            line_dto = PurchaseInvoiceLineDTO(
-                item_id=int(l["item_id"]),
-                batch_no=str(l["batch_no"]),
-                expiry_month=int(l["expiry_month"]),
-                expiry_year=int(l["expiry_year"]),
-                qty=float(l.get("qty", 0) or 0),
-                free_qty=float(l.get("free_qty", 0) or 0),
-                purchase_rate=float(l.get("purchase_rate", 0) or 0),
-                discount_percent=float(l.get("discount_percent", 0) or 0),
-                cc_percent=float(l.get("cc_percent", 0) or 0),
-                mrp=float(l.get("mrp", 0) or 0),
-                sale_rate=float(l.get("sale_rate", 0) or 0),
+        # 2. duplicate check (supplier + bill number)
+        if self._model.exists_by_supplier_and_billno(
+            supplier_id=payload["supplier_id"], invoice_number=payload["invoice_number"]
+        ):
+            raise DuplicateRecordError(
+                f"Invoice number '{payload['invoice_number']}' already exists for this supplier."
             )
-            # Resolve CC percent if not provided
-            if not line_dto.cc_percent or line_dto.cc_percent == 0:
-                line_dto.cc_percent = self._resolve_cc_percent(line_dto.item_id)
-            lines_dto.append(line_dto)
 
-        # 4. Allocate invoice-level freight/other charges (if present in payload)
-        total_freight = float(payload.get("total_freight_amount", 0) or 0)
-        total_other = float(payload.get("total_other_charges", 0) or 0)
-        lines_dto = self._allocate_invoice_level_charges(lines_dto, total_freight, total_other)
+        # build DTOs from the raw payload lines
+        lines: list[PurchaseInvoiceLineDTO] = []
+        for raw_line in raw_lines:
+            dto_line = PurchaseInvoiceLineDTO(
+                item_id=raw_line["item_id"],
+                batch_no=raw_line["batch_no"],
+                expiry_month=int(raw_line["expiry_month"]),
+                expiry_year=int(raw_line["expiry_year"]),
+                qty=float(raw_line.get("qty") or 0.0),
+                free_qty=float(raw_line.get("free_qty") or 0.0),
+                purchase_rate=float(raw_line.get("purchase_rate") or 0.0),
+                discount_percent=float(raw_line.get("discount_percent") or 0.0),
+                cc_percent=0.0,  # resolved below
+                mrp=float(raw_line.get("mrp") or 0.0),
+                sale_rate=float(raw_line.get("sale_rate") or 0.0),
+            )
+            lines.append(dto_line)
 
-        # 5. Calculate amounts per line
-        total_qty = 0.0
-        total_gross = 0.0
-        total_discount = 0.0
-        total_cc = 0.0
-        for line in lines_dto:
-            line = self._calculate_line_amounts(line)
-            total_qty += line.qty + line.free_qty
-            total_gross += (line.qty * line.purchase_rate)
-            total_discount += line.discount_amount
-            total_cc += line.cc_amount
+        # 3. resolve CC% per line
+        for dto_line in lines:
+            dto_line.cc_percent = self._resolve_cc_percent(dto_line.item_id)
 
-        grand_total = round(total_gross - total_discount + total_cc + total_freight + total_other, 4)
+        # 4. allocate invoice-level charges
+        total_freight = float(payload.get("total_freight") or 0.0)
+        total_other = float(payload.get("total_other_charges") or 0.0)
+        lines = self._allocate_invoice_level_charges(lines, total_freight, total_other)
 
-        # 6. Duplicate check
-        supplier_id = payload.get("supplier_id")
-        invoice_number = payload.get("invoice_number")
-        if self._model.exists_by_supplier_and_billno(supplier_id, invoice_number, exclude_id=None):
-            raise DuplicateRecordError(f"Supplier {supplier_id} already has an invoice with number {invoice_number}.")
+        # 5. calculate per-line amounts (discount, cc, landing cost)
+        lines = [self._calculate_line_amounts(dto_line) for dto_line in lines]
 
-        # 7. Insert purchase_invoice header
-        header = {
-            "invoice_number": invoice_number,
-            "internal_ref_number": payload.get("internal_ref_number") or self.generate_internal_ref_number(),
-            "supplier_id": supplier_id,
-            "purchase_order_id": payload.get("purchase_order_id"),
-            "invoice_date_ad": payload.get("invoice_date_ad") or self._now_ad().date(),
-            "invoice_date_bs": payload.get("invoice_date_bs") or self._now_bs(),
-            "total_qty": total_qty,
-            "total_gross_amount": total_gross,
-            "total_discount_amount": total_discount,
-            "total_cc_amount": total_cc,
-            "total_freight_amount": total_freight,
-            "total_other_charges": total_other,
-            "grand_total": grand_total,
-            "status": payload.get("status", "Posted"),
-            "remarks": payload.get("remarks"),
-            "created_by": current_user_id,
-            "created_at_ad": self._now_ad(),
-            "created_at_bs": self._now_bs(),
-        }
+        # BS-first audit stamps (same pattern as SupplierEngine._now_bs()/_now_ad())
+        now_ad = datetime.now(timezone.utc)
+        try:
+            now_bs = ad_to_bs(now_ad.date())
+        except DateEngineError:
+            logger.exception("Could not resolve BS date for purchase invoice audit stamp")
+            now_bs = None
 
-        with self._model.insert_invoice.__self__ if hasattr(self._model.insert_invoice, "__self__") else self._model as _ignore:
-            # Insert header via model
-            new_invoice_id = self._model.insert_invoice(header)
+        raw_total = sum(
+            (l.qty * l.purchase_rate) - l.discount_amount + l.cc_amount
+            + l.freight_allocated + l.other_charges_allocated
+            for l in lines
+        )
 
-        # 8. For each line: insert line row and call ItemEngine.add_batch
-        inserted_line_ids = []
-        for line in lines_dto:
-            item_line_data = {
-                "purchase_invoice_id": new_invoice_id,
-                "item_id": line.item_id,
-                "batch_no": line.batch_no,
-                "expiry_month": line.expiry_month,
-                "expiry_year": line.expiry_year,
-                "qty": line.qty,
-                "free_qty": line.free_qty,
-                "purchase_rate": line.purchase_rate,
-                "discount_percent": line.discount_percent,
-                "discount_amount": line.discount_amount,
-                "cc_percent": line.cc_percent,
-                "cc_amount": line.cc_amount,
-                "freight_amount_allocated": line.freight_allocated,
-                "other_charges_allocated": line.other_charges_allocated,
-                "landing_cost_per_unit": line.landing_cost_per_unit,
-                "mrp": line.mrp,
-                "sale_rate": line.sale_rate,
-                "remarks": None,
+        bill_discount_amount = round(float(payload.get("bill_discount_amount") or 0.0), 4)
+        total_after_bill_discount = raw_total - bill_discount_amount
+
+        grand_total = round(total_after_bill_discount)  # nearest whole rupee
+        round_off_amount = round(grand_total - total_after_bill_discount, 2)
+
+        internal_ref_number = self.generate_internal_ref_number()
+
+        from engines.date_engine import bs_to_ad
+
+        invoice_date_ad = bs_to_ad(payload["invoice_date_bs"])
+
+        # NOTE: total_qty/total_gross_amount assume "paid" units (qty), not
+        # including free_qty, matching how raw_total/grand_total are already
+        # computed above (qty * purchase_rate, free units contribute 0 cost).
+        total_qty = sum(l.qty for l in lines)
+        total_gross_amount = sum(l.qty * l.purchase_rate for l in lines)
+        total_discount_amount = sum(l.discount_amount for l in lines)
+        total_cc_amount = sum(l.cc_amount for l in lines)
+
+        # 6. insert header
+        new_invoice_id = self._model.insert_invoice(
+            {
+                "internal_ref_number": internal_ref_number,
+                "invoice_number": payload["invoice_number"],
+                "supplier_id": payload["supplier_id"],
+                "invoice_date_ad": invoice_date_ad,
+                "invoice_date_bs": payload["invoice_date_bs"],
+                "total_qty": round(total_qty, 4),
+                "total_gross_amount": round(total_gross_amount, 4),
+                "total_discount_amount": round(total_discount_amount, 4),
+                "total_cc_amount": round(total_cc_amount, 4),
+                "total_freight_amount": total_freight,
+                "total_other_charges": total_other,
+                "grand_total": round(grand_total, 4),
+                "status": "Posted",
+                "bill_discount_amount": bill_discount_amount,
+                "round_off_amount": round_off_amount,
+                "purchase_order_id": payload.get("purchase_order_id"),
+                "created_by": current_user_id,
+                "created_at_ad": now_ad,
+                "created_at_bs": now_bs,
             }
-            invoice_item_id = self._model.insert_invoice_item(new_invoice_id, item_line_data)
-            # Build batch payload for ItemEngine.add_batch()
-            batch_payload = {
-                "batch_no": line.batch_no,
-                "expiry_month": line.expiry_month,
-                "expiry_year": line.expiry_year,
-                "batch_qty": (line.qty + line.free_qty),
-                "batch_purchase_rate": line.purchase_rate,
-                "remarks": None,
-            }
-            # Call ItemEngine to create batch + stock ledger
-            try:
-                item_batch_id = self._item_engine.add_batch(
-                    item_id=line.item_id,
-                    batch_payload=batch_payload,
+        )
+
+        # 7. insert each line, then delegate stock/batch creation to ItemEngine
+        for dto_line in lines:
+            invoice_item_id = self._model.insert_invoice_item(
+                purchase_invoice_id=new_invoice_id,
+                data={
+                    "item_id": dto_line.item_id,
+                    "batch_no": dto_line.batch_no,
+                    "expiry_month": dto_line.expiry_month,
+                    "expiry_year": dto_line.expiry_year,
+                    "qty": dto_line.qty,
+                    "free_qty": dto_line.free_qty,
+                    "purchase_rate": dto_line.purchase_rate,
+                    "discount_percent": dto_line.discount_percent,
+                    "discount_amount": dto_line.discount_amount,
+                    "cc_percent": dto_line.cc_percent,
+                    "cc_amount": dto_line.cc_amount,
+                    "freight_amount_allocated": dto_line.freight_allocated,
+                    "other_charges_allocated": dto_line.other_charges_allocated,
+                    "landing_cost_per_unit": dto_line.landing_cost_per_unit,
+                    "mrp": dto_line.mrp,
+                    "sale_rate": dto_line.sale_rate,
+                },
+            )
+
+            existing_batch = self._item_engine.get_batch_by_no(dto_line.item_id, dto_line.batch_no)
+
+            if existing_batch is not None:
+                # Same batch number re-supplied -- add stock to the SAME
+                # batch row (expiry/rate stay as originally recorded),
+                # instead of raising a duplicate-batch-no error.
+                item_batch = self._item_engine.post_stock_movement(
+                    item_batch_id=existing_batch.item_batch_id,
+                    transaction_type="PURCHASE",
+                    quantity_change=dto_line.qty + dto_line.free_qty,
+                    current_user_id=current_user_id,
+                    reference_type="purchase_invoice",
+                    reference_id=new_invoice_id,
+                )
+                item_batch_id = item_batch.item_batch_id
+            else:
+                item_batch = self._item_engine.add_batch(
+                    item_id=dto_line.item_id,
+                    batch_payload={
+                        "batch_no": dto_line.batch_no,
+                        "expiry_month": dto_line.expiry_month,
+                        "expiry_year": dto_line.expiry_year,
+                        "batch_qty": dto_line.qty + dto_line.free_qty,
+                        # ItemEngine.add_batch()/item_batch table only tracks
+                        # batch_purchase_rate -- MRP/Sale Rate/Landing Cost live
+                        # on the purchase_invoice_item row (already inserted
+                        # above), not on item_batch.
+                        "batch_purchase_rate": dto_line.landing_cost_per_unit,
+                    },
                     current_user_id=current_user_id,
                     transaction_type="PURCHASE",
                     reference_type="purchase_invoice",
                     reference_id=new_invoice_id,
                 )
-            except Exception as exc:
-                logger.exception("Failed to create item batch for invoice line; rolling up error.")
-                # We do not attempt DB rollback here; let caller handle failures / ensure transactions at a higher level if needed.
-                raise
+                item_batch_id = getattr(item_batch, "item_batch_id", None) or item_batch["item_batch_id"]
 
-            # Stamp back to invoice item
-            self._model.update_invoice_item_batch_link(invoice_item_id, item_batch_id)
-            line.item_batch_id = item_batch_id
-            inserted_line_ids.append(invoice_item_id)
+            dto_line.item_batch_id = item_batch_id
 
-        # 9. If linked to a PO, mark PO received via injected engine
-        po_id = payload.get("purchase_order_id")
-        if po_id:
-            try:
-                # The PurchaseOrderEngine is expected to offer mark_received()
-                self._purchase_order_engine.mark_received(po_id, current_user_id)
-            except Exception:
-                # Log but do not fail the invoice creation (safety: invoice must be created)
-                logger.exception("Failed to mark linked purchase order as Received: %s", po_id)
-
-        # Build DTO to return
-        created_invoice = PurchaseInvoiceDTO(
-            purchase_invoice_id=new_invoice_id,
-            internal_ref_number=header["internal_ref_number"],
-            invoice_number=invoice_number,
-            supplier_id=supplier_id,
-            invoice_date_bs=header["invoice_date_bs"],
-            total_qty=total_qty,
-            total_gross_amount=total_gross,
-            total_discount_amount=total_discount,
-            total_cc_amount=total_cc,
-            total_freight_amount=total_freight,
-            total_other_charges=total_other,
-            grand_total=grand_total,
-            status=header["status"],
-            lines=lines_dto,
-        )
-        return created_invoice
-
-    def get_purchase_invoice(self, purchase_invoice_id: int, include_deleted: bool = False) -> Optional[PurchaseInvoiceDTO]:
-        row = self._model.get_by_id(purchase_invoice_id, include_deleted=include_deleted)
-        if not row:
-            return None
-        items = self._model.get_items_by_invoice(purchase_invoice_id)
-        lines = []
-        for r in items:
-            l = PurchaseInvoiceLineDTO(
-                item_id=r.get("item_id"),
-                batch_no=r.get("batch_no"),
-                expiry_month=r.get("expiry_month"),
-                expiry_year=r.get("expiry_year"),
-                qty=float(r.get("qty") or 0),
-                free_qty=float(r.get("free_qty") or 0),
-                purchase_rate=float(r.get("purchase_rate") or 0),
-                discount_percent=float(r.get("discount_percent") or 0),
-                cc_percent=float(r.get("cc_percent") or 0),
-                mrp=float(r.get("mrp") or 0),
-                sale_rate=float(r.get("sale_rate") or 0),
+            # 8. stamp the resulting item_batch_id back onto the invoice line
+            self._model.update_invoice_item_batch_link(
+                purchase_invoice_item_id=invoice_item_id, item_batch_id=item_batch_id
             )
-            lines.append(l)
-        dto = PurchaseInvoiceDTO(
-            purchase_invoice_id=row.get("purchase_invoice_id"),
-            internal_ref_number=row.get("internal_ref_number"),
-            invoice_number=row.get("invoice_number"),
-            supplier_id=row.get("supplier_id"),
-            invoice_date_bs=row.get("invoice_date_bs"),
-            total_qty=float(row.get("total_qty") or 0),
-            total_gross_amount=float(row.get("total_gross_amount") or 0),
-            total_discount_amount=float(row.get("total_discount_amount") or 0),
-            total_cc_amount=float(row.get("total_cc_amount") or 0),
-            total_freight_amount=float(row.get("total_freight_amount") or 0),
-            total_other_charges=float(row.get("total_other_charges") or 0),
-            grand_total=float(row.get("grand_total") or 0),
-            status=row.get("status"),
-            lines=lines,
-        )
-        return dto
 
-    def search_purchase_invoices(self, **kwargs):
-        # Bridge to model.search() using provided filters
-        filters = PurchaseInvoiceSearchFilters(
-            search_text=kwargs.get("search_text"),
-            supplier_id=kwargs.get("supplier_id"),
-            status=kwargs.get("status"),
-            date_from_ad=kwargs.get("date_from_ad"),
-            date_to_ad=kwargs.get("date_to_ad"),
-            include_deleted=kwargs.get("include_deleted", False),
-            page=kwargs.get("page", 1),
-            page_size=kwargs.get("page_size", 50),
+        # 9. mark linked PO as received, if any
+        purchase_order_id = payload.get("purchase_order_id")
+        if purchase_order_id:
+            self._purchase_order_engine.mark_received(purchase_order_id, current_user_id)
+
+        return PurchaseInvoiceDTO(
+            purchase_invoice_id=new_invoice_id,
+            internal_ref_number=internal_ref_number,
+            invoice_number=payload["invoice_number"],
+            supplier_id=payload["supplier_id"],
+            invoice_date_bs=payload["invoice_date_bs"],
+            grand_total=round(grand_total, 4),
+            status="Posted",
+            lines=lines,
+            invoice_date_ad=str(invoice_date_ad),
         )
-        rows, total = self._model.search(filters)
-        # Convert rows (dicts) to DTOs minimally if desired, but for efficiency we can return raw rows + total
-        return rows, total
+
+    def get_purchase_invoice(self, purchase_invoice_id: int, include_deleted: bool = False) -> PurchaseInvoiceDTO:
+        row = self._model.get_by_id(purchase_invoice_id, include_deleted=include_deleted)
+        if row is None:
+            raise RecordNotFoundError(f"Purchase invoice {purchase_invoice_id} not found.")
+
+        line_rows = self._model.get_items_by_invoice(purchase_invoice_id)
+        lines = [
+            PurchaseInvoiceLineDTO(
+                item_id=r["item_id"],
+                batch_no=r["batch_no"],
+                expiry_month=r["expiry_month"],
+                expiry_year=r["expiry_year"],
+                qty=r["qty"],
+                free_qty=r["free_qty"],
+                purchase_rate=r["purchase_rate"],
+                discount_percent=r["discount_percent"],
+                cc_percent=r["cc_percent"],
+                mrp=r["mrp"],
+                sale_rate=r["sale_rate"],
+                discount_amount=r["discount_amount"],
+                cc_amount=r["cc_amount"],
+                freight_allocated=r.get("freight_allocated", 0.0),
+                other_charges_allocated=r.get("other_charges_allocated", 0.0),
+                landing_cost_per_unit=r["landing_cost_per_unit"],
+                item_batch_id=r.get("item_batch_id"),
+            )
+            for r in line_rows
+        ]
+
+        return PurchaseInvoiceDTO(
+            purchase_invoice_id=row["purchase_invoice_id"],
+            internal_ref_number=row["internal_ref_number"],
+            invoice_number=row["invoice_number"],
+            supplier_id=row["supplier_id"],
+            invoice_date_bs=row["invoice_date_bs"],
+            grand_total=row["grand_total"],
+            status=row["status"],
+            lines=lines,
+            bill_discount_amount=row.get("bill_discount_amount", 0.0) or 0.0,
+            round_off_amount=row.get("round_off_amount", 0.0) or 0.0,
+            invoice_date_ad=str(row.get("invoice_date_ad")) if row.get("invoice_date_ad") else None,
+        )
+
+    def search_purchase_invoices(
+        self,
+        search_text: Optional[str] = None,
+        supplier_id: Optional[int] = None,
+        status: Optional[str] = None,
+        include_deleted: bool = False,
+        page: int = 1,
+        page_size: int = 50,
+        order_by: Optional[str] = None,
+        order_dir: str = "ASC",
+    ) -> tuple[list[PurchaseInvoiceDTO], int]:
+        filters = PurchaseInvoiceSearchFilters(
+            search_text=search_text,
+            supplier_id=supplier_id,
+            status=status,
+            include_deleted=include_deleted,
+            page=page,
+            page_size=page_size,
+            order_by=order_by,
+            order_dir=order_dir,
+        )
+        rows, total_count = self._model.search(filters)
+
+        results = [
+            PurchaseInvoiceDTO(
+                purchase_invoice_id=r["purchase_invoice_id"],
+                internal_ref_number=r["internal_ref_number"],
+                invoice_number=r["invoice_number"],
+                supplier_id=r["supplier_id"],
+                invoice_date_bs=r["invoice_date_bs"],
+                grand_total=r["grand_total"],
+                status=r["status"],
+                lines=[],  # list views don't hydrate lines — use get_purchase_invoice() for detail
+            )
+            for r in rows
+        ]
+        return results, total_count
 
     def cancel_purchase_invoice(self, purchase_invoice_id: int, current_user_id: int, reason: str) -> None:
-        # Soft-delete via model
-        from datetime import datetime
-        deleted_at_ad = datetime.now()
-        deleted_at_bs = self._now_bs()
-        self._model.soft_delete(purchase_invoice_id, deleted_by=current_user_id, deleted_at_ad=deleted_at_ad, deleted_at_bs=deleted_at_bs)
+        """Soft-delete only (project rule: no physical DELETE). Does NOT
+        automatically reverse the stock_ledger entries — that reversal is a
+        separate, explicit Purchase Return flow (Part-2, section 3), never
+        an implicit side-effect of cancelling an invoice."""
+        if not reason or not reason.strip():
+            raise ValidationError("A cancellation reason is required.")
+
+        existing = self._model.get_invoice_by_id(purchase_invoice_id, include_deleted=False)
+        if existing is None:
+            raise RecordNotFoundError(f"Purchase invoice {purchase_invoice_id} not found.")
+
+        self._model.soft_delete_invoice(
+            purchase_invoice_id=purchase_invoice_id,
+            current_user_id=current_user_id,
+            reason=reason,
+        )

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS manufacturer (
     manufacturer_name        VARCHAR(150)    NOT NULL,
     manufacturer_short_name  VARCHAR(50)     NOT NULL,
     country                  VARCHAR(100),
+    default_margin_percent   NUMERIC(5,2),
 
     status                   VARCHAR(10)     NOT NULL DEFAULT 'Active',
 

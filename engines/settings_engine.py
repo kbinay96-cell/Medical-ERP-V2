@@ -255,3 +255,69 @@ def import_settings(file_path: str, updated_by: str) -> tuple[bool, str]:
             skipped += 1
 
     return True, f"Imported {imported} settings ({skipped} skipped)."
+
+# ---------------------------------------------------------
+# Company-scoped settings (additive -- e.g. per-company SMTP).
+# Global load_all_settings()/get_setting() above are untouched;
+# these are separate entry points for company-specific values.
+# ---------------------------------------------------------
+
+def load_company_settings(companyid: str) -> None:
+    """
+    Loads one company's EFFECTIVE settings (global defaults with
+    that company's own overrides applied) into the company-scoped
+    cache. Call this once per login (or company switch).
+    Never raises -- falls back to whatever default the caller
+    supplies via get_company_setting(), same pattern as
+    load_all_settings().
+    """
+    try:
+        rows = settings_model.get_effective_settings_for_company(companyid)
+        settings_cache.load_company_cache(companyid, rows)
+    except Exception as e:
+        logger.exception(f"load_company_settings: failed to load for '{companyid}': {e}")
+
+
+def get_company_setting(companyid: str, key: str, default=None):
+    """
+    Returns a company-scoped setting's value (company override if
+    one exists, else the global default), already converted to
+    its real type. Loads the company cache automatically if it
+    isn't loaded yet or belongs to a different company.
+    """
+    if not settings_cache.is_company_cache_loaded(companyid):
+        load_company_settings(companyid)
+
+    return settings_cache.get_company_cached_value(key, default=default)
+
+
+def save_company_setting_value(
+    companyid: str, key: str, new_value: str, updated_by: str, reason: str = ""
+) -> tuple[bool, str]:
+    """
+    Validates, persists a company-specific override, writes
+    history, and updates the company-scoped cache. Mirrors
+    save_setting() above but scoped to one company.
+    """
+    row = settings_cache.get_cached_row(key) or settings_model.get_setting_by_key(key)
+
+    if row is None:
+        return False, f"Setting '{key}' not found."
+
+    is_valid, error_message = validate_setting_value(row["data_type"], new_value)
+    if not is_valid:
+        return False, error_message
+
+    try:
+        success, message = settings_model.save_company_setting(
+            key, new_value, companyid, updated_by, reason
+        )
+    except Exception as e:
+        logger.exception(f"save_company_setting_value: database error saving '{key}' for '{companyid}': {e}")
+        return False, "Could not save setting - please try again."
+
+    if success:
+        settings_cache.update_company_cached_value(key, new_value)
+        logger.info(f"Company setting '{key}' updated for '{companyid}' by {updated_by}.")
+
+    return success, message

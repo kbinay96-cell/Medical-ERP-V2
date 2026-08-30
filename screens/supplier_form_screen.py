@@ -28,6 +28,9 @@ from engines.supplier_engine import SupplierEngine
 from ui.ui_supplier_form import Ui_SupplierFormDialog
 from utils.integration_adapters import get_current_user_id, show_success
 from utils.supplier_form_helpers import build_supplier_payload
+from utils.ui_standards import standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
+from widgets.photo_picker import host_photo_beside_scroll
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,9 @@ class SupplierFormScreen(QDialog):
         super().__init__(parent)
         self.ui = Ui_SupplierFormDialog()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=860, height=720)
+        self._photo_picker = host_photo_beside_scroll(self.ui.verticalLayoutRoot, self.ui.scrollArea)
+        standardize_action_buttons(self)
 
         self._engine = engine or SupplierEngine()
         self._supplier_id = supplier_id
@@ -101,6 +107,7 @@ class SupplierFormScreen(QDialog):
         self.ui.txtCreditDays.setText(str(dto.credit_days or 0))
         self.ui.cmbStatus.setCurrentText(dto.status or "Active")
         self.ui.txtRemarks.setPlainText(dto.remarks or "")
+        self._photo_picker.load_existing(getattr(dto, "photo_path", None))
 
     # ------------------------------------------------------------------ #
     # Save
@@ -132,6 +139,8 @@ class SupplierFormScreen(QDialog):
         except ValueError as exc:
             self._show_validation_message(str(exc))
             return
+
+        payload.update(self._photo_picker.get_photo_update())
 
         current_user_id = get_current_user_id()
 

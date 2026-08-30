@@ -30,6 +30,8 @@ from engines.manufacturer_engine import ManufacturerEngine
 from ui.ui_manufacturer_form import Ui_ManufacturerFormDialog
 from utils.integration_adapters import get_current_user_id, show_success
 from utils.manufacturer_form_helpers import build_manufacturer_payload
+from utils.ui_standards import standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +50,13 @@ class ManufacturerFormScreen(QDialog):
         super().__init__(parent)
         self.ui = Ui_ManufacturerFormDialog()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=780, height=640)
+        standardize_action_buttons(self)
 
         self._engine = engine or ManufacturerEngine()
         self._manufacturer_id = manufacturer_id
         self._is_edit_mode = manufacturer_id is not None
+        self.data_changed = False
 
         self._connect_signals()
         self._setup_shortcuts()
@@ -111,6 +116,9 @@ class ManufacturerFormScreen(QDialog):
         self.ui.txtManufacturerName.setText(dto.manufacturer_name or "")
         self.ui.txtManufacturerShortName.setText(dto.manufacturer_short_name or "")
         self.ui.txtCountry.setText(dto.country or "")
+        self.ui.txtDefaultMarginPercent.setText(
+            f"{float(dto.default_margin_percent):.2f}" if dto.default_margin_percent is not None else ""
+        )
         self.ui.cmbStatus.setCurrentText(dto.status or "Active")
 
     # ------------------------------------------------------------------ #
@@ -121,6 +129,7 @@ class ManufacturerFormScreen(QDialog):
             "manufacturer_code": self.ui.txtManufacturerCode.text(),
             "manufacturer_name": self.ui.txtManufacturerName.text(),
             "country": self.ui.txtCountry.text(),
+            "default_margin_percent_text": self.ui.txtDefaultMarginPercent.text(),
             "status": self.ui.cmbStatus.currentText(),
         }
 
@@ -151,7 +160,17 @@ class ManufacturerFormScreen(QDialog):
 
         action = "updated" if self._is_edit_mode else "created"
         show_success(self, "Manufacturer Master", f"Manufacturer '{dto.manufacturer_name}' {action}.")
-        self.accept()
+        self.data_changed = True
+
+        if self._is_edit_mode:
+            self.accept()
+            return
+
+        # Create mode: stay open, reset for the next entry instead of closing --
+        # lets the user add several manufacturers back-to-back without
+        # reopening the dialog each time.
+        self._on_clear_clicked()
+        self.ui.txtManufacturerName.setFocus()
 
     def _on_clear_clicked(self) -> None:
         self._show_validation_message("")

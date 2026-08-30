@@ -76,6 +76,7 @@ def build_item_payload(form_values: dict[str, Any]) -> dict[str, Any]:
             if form_values.get("item_custom_checked") else None
         ),
         "status": form_values.get("status") or "Active",
+         "super_discount_percent": parse_decimal(form_values.get("super_discount_percent_text"), "Super Discount %"),
         "remarks": (form_values.get("remarks") or "").strip(),
     }
 
@@ -107,21 +108,22 @@ def format_qty(value: Any) -> str:
         return "0"
 
 
-def dto_to_table_row(dto: Any) -> list[str]:
+def dto_to_table_row(
+    dto: Any,
+    *,
+    unit_name: str = "",
+) -> list[str]:
     """
-    Formats an ItemDTO into display strings for one QTableWidget row, in
-    the exact column order defined in ui/ui_item_list.py:
-    Code, Name, Category, Manufacturer, Unit, Purchase Rate, Sale Rate,
-    MRP, Total Stock, Minimum Stock, Status.
-
-    NOTE: category_name / manufacturer_name are NOT on ItemDTO itself
-    (ItemDTO only carries the foreign-key ids) -- the Screen resolves
-    those display names from its already-loaded lookup dict before
-    calling this, and passes them in via the `lookup_names` argument.
+    Formats an ItemDTO into display strings for one QTableWidget row:
+    Code, Item Name, Expiry, Batch, Unit, Purchase Rate, Sale Rate,
+    MRP, Total Stock, Min. Stock, Status.
     """
     return [
         dto.item_code or "",
         dto.item_name or "",
+        dto.nearest_expiry_display or "",
+        dto.nearest_batch_no or "",
+        unit_name or "",
         format_amount(dto.purchase_rate),
         format_amount(dto.sale_rate),
         format_amount(dto.mrp),

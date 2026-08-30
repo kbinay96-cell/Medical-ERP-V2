@@ -31,7 +31,10 @@ from engines.supplier_engine import SupplierDTO, SupplierEngine
 from screens.supplier_form_screen import SupplierFormScreen
 from ui.ui_supplier_list import Ui_SupplierListWidget
 from utils.integration_adapters import confirm, get_current_user_id, show_error, show_success
-from utils.supplier_form_helpers import dto_to_table_row, status_filter_value
+from utils.supplier_form_helpers import dto_to_table_row, format_amount, status_filter_value
+from utils.ui_standards import configure_table_columns, install_detail_splitter, standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
+from widgets.master_detail_panel import MasterDetailPanel
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +48,23 @@ class SupplierListScreen(QWidget):
         super().__init__(parent)
         self.ui = Ui_SupplierListWidget()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=1360, height=760)
+        standardize_action_buttons(self)
 
         self._engine = engine or SupplierEngine()
         self._rows: list[SupplierDTO] = []
+
+        self._detail = MasterDetailPanel(
+            placeholder_title="Select a supplier",
+            placeholder_icon="truck.svg",
+            field_captions=(
+                "Contact:", "Mobile:", "Phone:", "Email:", "Address:", "City:",
+                "PAN/VAT:", "Balance:", "Credit Limit:", "Credit Days:", "Status:",
+                "Created:", "Updated:", "Deleted:",
+            ),
+        )
+        install_detail_splitter(self.ui.verticalLayoutRoot, self.ui.tblSupplier, self._detail)
+        configure_table_columns(self.ui.tblSupplier, stretch_columns=(1, 2))
 
         self._search_debounce_timer = QTimer(self)
         self._search_debounce_timer.setSingleShot(True)
@@ -122,6 +139,7 @@ class SupplierListScreen(QWidget):
                     item.setForeground(Qt.gray)
                 table.setItem(row_index, col_index, item)
         table.setSortingEnabled(True)
+        configure_table_columns(table, stretch_columns=(1, 2))
         self._on_selection_changed()
 
     # ------------------------------------------------------------------ #
@@ -145,6 +163,42 @@ class SupplierListScreen(QWidget):
         self.ui.btnEdit.setEnabled(has_selection and not is_deleted)
         self.ui.btnDelete.setEnabled(has_selection and not is_deleted)
         self.ui.btnRestore.setEnabled(has_selection and is_deleted)
+
+        if dto is None:
+            self._detail.show_placeholder()
+            return
+        self._show_detail(dto)
+
+    def _show_detail(self, dto: SupplierDTO) -> None:
+        self._detail.set_photo(getattr(dto, "photo_path", None))
+        self._detail.set_heading(dto.supplier_name or "-", dto.supplier_code or "")
+        status_text = "Deleted" if dto.is_deleted else (dto.status or "-")
+        self._detail.set_field("Contact:", dto.contact_person or "-")
+        self._detail.set_field("Mobile:", dto.mobile_no or "-")
+        self._detail.set_field("Phone:", dto.phone_no or "-")
+        self._detail.set_field("Email:", dto.email or "-")
+        self._detail.set_field("Address:", dto.address or "-")
+        self._detail.set_field("City:", dto.city or "-")
+        self._detail.set_field("PAN/VAT:", dto.pan_vat_no or "-")
+        self._detail.set_field(
+            "Balance:", f"{format_amount(dto.opening_balance)} {dto.balance_type or ''}".strip()
+        )
+        self._detail.set_field("Credit Limit:", format_amount(dto.credit_limit))
+        self._detail.set_field("Credit Days:", str(dto.credit_days if dto.credit_days is not None else 0))
+        self._detail.set_field("Status:", status_text)
+        self._detail.set_field(
+            "Created:",
+            MasterDetailPanel.format_audit(dto.created_by, dto.created_at_bs, dto.created_at_ad),
+        )
+        self._detail.set_field(
+            "Updated:",
+            MasterDetailPanel.format_audit(dto.updated_by, dto.updated_at_bs, dto.updated_at_ad),
+        )
+        self._detail.set_field(
+            "Deleted:",
+            MasterDetailPanel.format_audit(dto.deleted_by, dto.deleted_at_bs, dto.deleted_at_ad)
+            if dto.is_deleted else "-",
+        )
 
     # ------------------------------------------------------------------ #
     # CRUD actions

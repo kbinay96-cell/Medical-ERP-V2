@@ -21,12 +21,15 @@ from screens.reset_password_screen import ResetPasswordScreen
 from models import company_model, role_model
 from ui.ui_user_list import Ui_UserListView
 from utils.integration_adapters import confirm, get_current_user_id, show_error, show_success
+from utils.ui_standards import configure_table_columns, install_detail_splitter, standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
+from widgets.master_detail_panel import MasterDetailPanel
 
 logger = logging.getLogger(__name__)
 
 SEARCH_DEBOUNCE_MS = 300
 
-TABLE_HEADERS = ["User ID", "Username", "Full Name", "Email", "Role", "Status"]
+TABLE_HEADERS = ["User ID", "Username", "Full Name", "Email", "Phone", "Role", "Company", "Status"]
 
 
 def _dto_to_table_row(dto: UserDTO) -> list[str]:
@@ -35,7 +38,9 @@ def _dto_to_table_row(dto: UserDTO) -> list[str]:
         dto.username,
         dto.fullname,
         dto.email or "",
+        dto.phone or "",
         str(dto.role_name or dto.role_id),
+        str(dto.company_id or ""),
         dto.status,
     ]
 
@@ -53,6 +58,8 @@ class UserListScreen(QWidget):
         super().__init__(parent)
         self.ui = Ui_UserListView()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=1360, height=760)
+        standardize_action_buttons(self)
 
         self._engine = engine or UserEngine()
         self._current_user_id = current_user_id
@@ -70,6 +77,15 @@ class UserListScreen(QWidget):
         self.ui.table_users.setEditTriggers(self.ui.table_users.EditTrigger.NoEditTriggers)
         self.ui.table_users.setAlternatingRowColors(True)
         self._configure_column_widths()
+        self._detail = MasterDetailPanel(
+            placeholder_title="Select a user",
+            placeholder_icon="user.svg",
+            field_captions=(
+                "Username:", "Email:", "Phone:", "Role:", "Company:", "Status:",
+                "Must change pwd:", "Failed attempts:", "Created:",
+            ),
+        )
+        install_detail_splitter(self.ui.verticalLayout_root, self.ui.table_users, self._detail)
         self._load_filter_options()
 
         self._connect_signals()
@@ -81,13 +97,15 @@ class UserListScreen(QWidget):
         take up the remaining space. Fixes the previous default where every
         column (including Status) stretched unevenly."""
         header = self.ui.table_users.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # User ID
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Username
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)          # Full Name
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)          # Email
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Role
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)             # Status
-        header.resizeSection(5, 110)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(7, 110)
         header.setStretchLastSection(False)
 
     def _load_filter_options(self) -> None:
@@ -138,11 +156,12 @@ class UserListScreen(QWidget):
         status = _status_filter_value(self.ui.filter_status.currentText())
         role_id = self.ui.filter_role.currentData()
         company_id = self.ui.filter_company.currentData()
+        include_deleted = status == "Deleted"
 
         try:
             rows, total = self._engine.search_users(
                 search_text=search_text, status=status,
-                role_id=role_id, company_id=company_id, include_deleted=False,
+                role_id=role_id, company_id=company_id, include_deleted=include_deleted,
                 page=1, page_size=500,
             )
         except Exception as exc:  # noqa: BLE001
@@ -161,7 +180,7 @@ class UserListScreen(QWidget):
             for col_index, value in enumerate(_dto_to_table_row(dto)):
                 item = QStandardItem(value)
                 item.setEditable(False)
-                if col_index in (0, 5):
+                if col_index in (0, 7):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if col_index == 0:
                     item.setData(dto.user_id, Qt.UserRole)
@@ -194,6 +213,26 @@ class UserListScreen(QWidget):
         self.ui.btn_restore.setEnabled(has_selection and is_deleted)
         self.ui.btn_toggle_active.setEnabled(has_selection and not is_deleted)
         self.ui.btn_reset_password.setEnabled(has_selection and not is_deleted)
+
+        if dto is None:
+            self._detail.show_placeholder()
+            return
+        self._show_detail(dto)
+
+    def _show_detail(self, dto: UserDTO) -> None:
+        self._detail.set_photo(getattr(dto, "photo_path", None))
+        self._detail.set_heading(dto.fullname or dto.username, f"ID {dto.user_id}")
+        self._detail.set_field("Username:", dto.username or "-")
+        self._detail.set_field("Email:", dto.email or "-")
+        self._detail.set_field("Phone:", dto.phone or "-")
+        self._detail.set_field("Role:", str(dto.role_name or dto.role_id or "-"))
+        self._detail.set_field("Company:", str(dto.company_id or "-"))
+        self._detail.set_field("Status:", dto.status or "-")
+        self._detail.set_field("Must change pwd:", "Yes" if dto.must_change_password else "No")
+        self._detail.set_field("Failed attempts:", str(dto.failed_attempts))
+        created = dto.created_date
+        created_text = created.strftime("%Y-%m-%d %H:%M") if hasattr(created, "strftime") else (str(created) if created else "-")
+        self._detail.set_field("Created:", f"{dto.created_by or '-'}\n{created_text}")
 
     # ------------------------------------------------------------------ #
     # CRUD actions

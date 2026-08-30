@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
 
 from utils.app_logger import get_logger
 from utils.message import show_success, show_error, confirm
+from utils.ui_standards import standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
 from engines import customer_engine
 from screens.customer_form_screen import CustomerFormScreen
 
@@ -53,7 +55,8 @@ class CustomerListScreen(QMainWindow):
         self._rows: list[dict] = []
 
         self.setWindowTitle("Customers - Medical ERP")
-        self.resize(1360, 760)
+        apply_standard_window_chrome(self, width=1360, height=760)
+        standardize_action_buttons(self)
 
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)

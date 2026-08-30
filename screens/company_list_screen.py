@@ -20,6 +20,8 @@ from screens.company_form_screen import CompanyFormScreen
 from ui.ui_company_list import Ui_CompanyListWidget
 from utils.integration_adapters import confirm, get_current_user_id, show_error, show_success
 from utils.company_form_helpers import dto_to_table_row, status_filter_value
+from utils.ui_standards import configure_table_columns, standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,8 @@ class CompanyListScreen(QWidget):
         super().__init__(parent)
         self.ui = Ui_CompanyListWidget()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=1200, height=720)
+        standardize_action_buttons(self)
 
         self._engine = engine or CompanyEngine()
         self._rows: list[CompanyDTO] = []
@@ -111,6 +115,8 @@ class CompanyListScreen(QWidget):
                     item.setForeground(Qt.gray)
                 table.setItem(row_index, col_index, item)
         table.setSortingEnabled(True)
+        configure_table_columns(table, stretch_columns=(1,))
+        self._on_selection_changed()
         self._on_selection_changed()
 
     # ------------------------------------------------------------------ #

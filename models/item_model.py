@@ -57,7 +57,8 @@ ITEM_COLUMNS = (
     "purchase_rate", "sale_rate", "mrp",
     "minimum_stock",
     "tax_mode", "item_vat_checked", "item_vat_percent", "item_custom_checked", "item_custom_percent",
-    "status", "remarks",
+    "status", "remarks", "photo_path",
+    "super_discount_percent",
 )
 
 
@@ -88,6 +89,23 @@ class ItemModel:
                 conn.commit()
                 logger.info("Item inserted: id=%s code=%s", new_id, data.get("item_code"))
                 return new_id
+
+    def update_mrp(self, item_id: int, mrp: float) -> bool:
+        """Lightweight, single-column MRP update -- used by Purchase Invoice
+        to remember the last-entered MRP per item without touching any
+        other Item Master field or running full update() validation."""
+        sql = """
+            UPDATE item
+            SET mrp = %(mrp)s
+            WHERE item_id = %(item_id)s
+              AND is_deleted = FALSE;
+        """
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, {"mrp": mrp, "item_id": item_id})
+                updated = cur.rowcount > 0
+                conn.commit()
+                return updated
 
     # ------------------------------------------------------------------ #
     # UPDATE
@@ -248,7 +266,7 @@ class ItemModel:
         Each returned row is a dict with keys:
         - item_id
         - item_name
-        - total_stock
+        - current_stock
         - minimum_stock
 
         Live query — no caching. Caller should snapshot stock_at_order_time/minimum_stock_at_order_time
@@ -260,7 +278,7 @@ class ItemModel:
                 sql = """
                     SELECT i.item_id,
                         i.item_name,
-                        COALESCE(SUM(b.batch_qty), 0) AS total_stock,
+                        COALESCE(SUM(b.batch_qty), 0) AS current_stock,
                         i.minimum_stock
                     FROM item i
                     LEFT JOIN item_batch b ON i.item_id = b.item_id
@@ -485,15 +503,86 @@ class ItemBatchModel:
                 row = cur.fetchone()
                 return dict(row) if row else None
 
-    def exists_batch_no(self, item_id: int, batch_no: str) -> bool:
+    def get_by_item_and_batch_no(self, item_id: int, batch_no: str) -> Optional[dict]:
+        """Finds an existing batch for this item by exact batch_no (case-
+        insensitive) -- used by Purchase Invoice to decide whether a
+        re-supplied batch should add stock to the existing row instead of
+        creating a duplicate. Returns None if no such batch exists."""
+        sql = """
+            SELECT * FROM item_batch
+            WHERE item_id = %(item_id)s AND LOWER(batch_no) = LOWER(%(batch_no)s)
+        """
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"item_id": item_id, "batch_no": batch_no})
+                row = cur.fetchone()
+                return dict(row) if row else None
+
+    def exists_batch_no(self, item_id: int, batch_no: str, exclude_batch_id: Optional[int] = None) -> bool:
         sql = """
             SELECT 1 FROM item_batch
-            WHERE item_id = %(item_id)s AND LOWER(batch_no) = LOWER(%(batch_no)s);
+            WHERE item_id = %(item_id)s AND LOWER(batch_no) = LOWER(%(batch_no)s)
+        """
+        params: dict[str, Any] = {"item_id": item_id, "batch_no": batch_no}
+        if exclude_batch_id is not None:
+            sql += " AND item_batch_id != %(exclude_id)s"
+            params["exclude_id"] = exclude_batch_id
+        sql += ";"
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone() is not None
+
+    def exists_expiry(
+        self, item_id: int, expiry_year: int, expiry_month: int, exclude_batch_id: Optional[int] = None
+    ) -> bool:
+        """True if another batch of this item already has this exact expiry
+        (month+year). Used to enforce: one expiry date can't be split across
+        two different batch numbers."""
+        sql = """
+            SELECT 1 FROM item_batch
+            WHERE item_id = %(item_id)s
+              AND expiry_year = %(expiry_year)s
+              AND expiry_month = %(expiry_month)s
+        """
+        params: dict[str, Any] = {
+            "item_id": item_id, "expiry_year": expiry_year, "expiry_month": expiry_month,
+        }
+        if exclude_batch_id is not None:
+            sql += " AND item_batch_id != %(exclude_id)s"
+            params["exclude_id"] = exclude_batch_id
+        sql += ";"
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone() is not None
+
+    def update(self, item_batch_id: int, data: dict[str, Any]) -> bool:
+        """
+        Updates an existing batch's own fields (batch_no, expiry, purchase
+        rate, remarks, batch_qty). Deliberately does NOT touch stock_ledger --
+        this is for correcting batch details via Item Master, not for real
+        stock movements. Any actual stock transaction (Purchase/Sale/Return)
+        must keep going through insert_with_ledger()/update_qty_with_ledger()
+        so batch_qty and the ledger never drift apart.
+        """
+        columns = ["batch_no", "expiry_year", "expiry_month", "batch_qty", "batch_purchase_rate", "remarks"]
+        set_sql = ", ".join(f"{c} = %({c})s" for c in columns)
+        params = {c: data.get(c) for c in columns}
+        params["item_batch_id"] = item_batch_id
+        sql = f"""
+            UPDATE item_batch
+            SET {set_sql}
+            WHERE item_batch_id = %(item_batch_id)s;
         """
         with _get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, {"item_id": item_id, "batch_no": batch_no})
-                return cur.fetchone() is not None
+                cur.execute(sql, params)
+                updated = cur.rowcount > 0
+                conn.commit()
+                if updated:
+                    logger.info("Item batch updated: id=%s", item_batch_id)
+                return updated
 
 
 class StockLedgerModel:

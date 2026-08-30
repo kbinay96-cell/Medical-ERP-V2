@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from models.item_model import ITEM_COLUMNS, ItemBatchModel, ItemModel, ItemSearchFilters
 from models.stock_transaction_model import StockTransactionModel
+from utils import image_manager
 from utils.item_validator import ItemValidator, validate_batch_entry
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,9 @@ class ItemDTO:
     item_custom_percent: Optional[float]
     status: str
     remarks: Optional[str]
+    photo_path: Optional[str]
     is_deleted: bool
+    super_discount_percent: Optional[float]
     created_by: int
     created_at_ad: Any
     created_at_bs: Optional[str]
@@ -226,6 +229,7 @@ class ItemEngine:
         data["sale_rate"] = data.get("sale_rate") or 0
         data["mrp"] = data.get("mrp") or 0
         data["minimum_stock"] = data.get("minimum_stock") or 0
+        data["super_discount_percent"] = data.get("super_discount_percent") or 0
         data["status"] = data.get("status") or "Active"
         data["tax_mode"] = data.get("tax_mode") or "country_default"
         data["item_vat_checked"] = bool(data.get("item_vat_checked"))
@@ -251,6 +255,7 @@ class ItemEngine:
     # CREATE
     # ------------------------------------------------------------------ #
     def create_item(self, payload: dict, current_user_id: int) -> ItemDTO:
+        payload = dict(payload)
         data = self._clean_payload(payload)
 
         validation = self._validator.validate_for_create(data)
@@ -265,6 +270,10 @@ class ItemEngine:
         else:
             item_code = self.generate_item_code()
             data["item_code"] = item_code
+
+        data["photo_path"] = image_manager.apply_entity_photo(
+            payload, existing_path=None, subfolder="items", filename_stem=item_code,
+        )
 
         insert_data = dict(data)
         insert_data["created_by"] = current_user_id
@@ -291,10 +300,18 @@ class ItemEngine:
         if existing is None:
             raise RecordNotFoundError(f"Item {item_id} not found or has been deleted.")
 
+        payload = dict(payload)
         data = self._clean_payload(payload)
         validation = self._validator.validate_for_update(item_id, data)
         if not validation.is_valid:
             raise ValidationError(validation.errors)
+
+        data["photo_path"] = image_manager.apply_entity_photo(
+            payload,
+            existing_path=existing.get("photo_path"),
+            subfolder="items",
+            filename_stem=existing.get("item_code") or data.get("item_code") or str(item_id),
+        )
 
         update_data = dict(data)
         update_data["updated_by"] = current_user_id
@@ -315,6 +332,16 @@ class ItemEngine:
         row = self._model.get_by_id(item_id)
         row["total_stock"] = self._model.get_total_stock(item_id)
         return ItemDTO.from_row(row)
+        
+    def update_item_mrp(self, item_id: int, mrp: float) -> None:
+        """Remembers the last-used MRP for an item -- called by Purchase
+        Invoice on save so the next purchase of the same item pre-fills
+        with this value. Never raises; a failed remember-MRP write should
+        never block a Purchase Invoice save that already succeeded."""
+        try:
+          self._model.update_mrp(item_id, mrp)
+        except Exception:
+          logger.exception("Failed to remember MRP for item_id=%s.", item_id)
 
     # ------------------------------------------------------------------ #
     # READ
@@ -427,6 +454,7 @@ class ItemEngine:
         transaction_type: str = "OPENING",
         reference_type: Optional[str] = None,
         reference_id: Optional[int] = None,
+        item_batch_id: Optional[int] = None,
     ) -> ItemBatchDTO:
         """
         Creates a brand-new batch for an item AND logs its starting
@@ -453,8 +481,15 @@ class ItemEngine:
         if not validation.is_valid:
             raise ValidationError(validation.errors)
 
-        if self._batch_model.exists_batch_no(item_id, batch_no):
+        if self._batch_model.exists_batch_no(item_id, batch_no, exclude_batch_id=item_batch_id):
             raise DuplicateRecordError(f"Batch No. '{batch_no}' already exists for this item.")
+
+        if self._batch_model.exists_expiry(item_id, int(expiry_year), int(expiry_month), exclude_batch_id=item_batch_id):
+            raise DuplicateRecordError(
+                "Another batch of this item already has this exact expiry (month/year). "
+                "Two batches can't share the same expiry date -- use a different Batch No. "
+                "with a different expiry, or edit the existing batch instead."
+            )
 
         now_ad = self._now_ad()
         now_bs = self._now_bs()
@@ -486,6 +521,24 @@ class ItemEngine:
             "created_at_ad": now_ad,
             "created_at_bs": now_bs,
         }
+
+        if item_batch_id is not None:
+            # EDIT: correcting an existing batch's own details (batch_no,
+            # expiry, purchase rate, qty, remarks) -- never inserts a new
+            # row, never touches stock_ledger/stock_transaction (those stay
+            # as originally recorded; this is a Item-Master-level correction,
+            # not a new stock movement).
+            try:
+                updated = self._batch_model.update(item_batch_id, insert_data)
+            except Exception as exc:  # noqa: BLE001
+                if _is_unique_violation(exc):
+                    raise DuplicateRecordError(f"Batch No. '{batch_no}' already exists for this item (concurrent save detected).") from exc
+                logger.exception("Unexpected error updating batch %s for item %s.", item_batch_id, item_id)
+                raise
+            if not updated:
+                raise RecordNotFoundError(f"Batch {item_batch_id} not found.")
+            row = self._batch_model.get_by_id(item_batch_id)
+            return ItemBatchDTO.from_row(row)
 
         try:
             new_id = self._batch_model.insert(insert_data)
@@ -581,9 +634,25 @@ class ItemEngine:
         from models.item_model import StockLedgerModel
         return StockLedgerModel().get_by_item(item_id)
 
+    def get_batch_by_no(self, item_id: int, batch_no: str) -> Optional[ItemBatchDTO]:
+        """Finds an existing batch for this item by exact batch_no --
+        used by Purchase Invoice to decide add-stock vs new-batch."""
+        row = self._batch_model.get_by_item_and_batch_no(item_id, batch_no)
+        return ItemBatchDTO.from_row(row) if row else None
+
     def get_batches(self, item_id: int) -> list[ItemBatchDTO]:
         rows = self._batch_model.get_by_item(item_id)
         return [ItemBatchDTO.from_row(r) for r in rows]
+
+    def get_batch(self, item_batch_id: int) -> ItemBatchDTO:
+        row = self._batch_model.get_by_id(item_batch_id)
+        if row is None:
+            raise RecordNotFoundError(f"Batch {item_batch_id} not found.")
+        return ItemBatchDTO.from_row(row)
+
+    def get_available_batches(self, item_id: int) -> list[ItemBatchDTO]:
+        """FEFO-ordered batches with remaining qty — Sales picks from this list."""
+        return [b for b in self.get_batches(item_id) if float(b.batch_qty) > 0]
 
     def get_total_stock(self, item_id: int) -> float:
         return self._model.get_total_stock(item_id)

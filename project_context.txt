@@ -1,8 +1,8 @@
 PROJECT EXPORT
 ================================================================================
-Generated At : 2026-08-19T15:04:17.882894
+Generated At : 2026-08-21T13:06:27.301670
 Project Root : C:\Users\Medical\Desktop\Medical-ERP-V2
-Total Files  : 183
+Total Files  : 197
 List Only    : False
 ================================================================================
 
@@ -21,6 +21,7 @@ terminal_test_result.txt
 config/__init__.py
 config/settings.py
 database/0001_create_user_master.sql
+database/0001_purchase_schema.sql
 database/0002_create_supplier.sql
 database/0003_create_manufacturer.sql
 database/0003_user_master_alignment.sql
@@ -41,6 +42,7 @@ database/schema_simple_masters.sql
 database/schema_stock_ledger.sql
 database/schema_supplier.sql
 database/user_master_schema.sql
+docs/README_purchase_module.md
 engines/__init__.py
 engines/audit_logger.py
 engines/authentication_engine.py
@@ -57,6 +59,10 @@ engines/item_lookup_registry.py
 engines/license_manager.py
 engines/manufacturer_engine.py
 engines/password_manager.py
+engines/purchase_engine.py
+engines/purchase_order_engine.py
+engines/purchase_return_engine.py
+engines/purchase_validator.py
 engines/session_manager.py
 engines/settings_cache.py
 engines/settings_engine.py
@@ -76,6 +82,9 @@ models/dashboard_model.py
 models/financialyear_model.py
 models/item_model.py
 models/manufacturer_model.py
+models/purchase_invoice_model.py
+models/purchase_order_model.py
+models/purchase_return_model.py
 models/role_model.py
 models/settings_model.py
 models/settings_screen.py
@@ -104,6 +113,10 @@ screens/login_screen.py
 screens/manufacturer_form_screen.py
 screens/manufacturer_list_screen.py
 screens/master_manage_screen.py
+screens/purchase_invoice_form_screen.py
+screens/purchase_invoice_list_screen.py
+screens/purchase_order_form_screen.py
+screens/purchase_order_list_screen.py
 screens/reset_password_screen.py
 screens/settings_screen.py
 screens/supplier_form_screen.py
@@ -112,6 +125,7 @@ screens/supplier_manufacturer_discount_form_screen.py
 screens/supplier_manufacturer_discount_list_screen.py
 screens/user_form_screen.py
 screens/user_list_screen.py
+scripts/purchase_wireup.py
 security/password_security.py
 tests/__init__.py
 tests/manual_run_company_screen.py
@@ -6862,6 +6876,170 @@ COMMIT;
 
 
 ================================================================================
+FILE: database/0001_purchase_schema.sql
+================================================================================
+
+-- database/migrations/0001_purchase_schema.sql
+-- Purchase Module: Phase-1 schema (purchase_order, purchase_invoice, invoice items, return tables)
+-- Run this inside Medical-ERP-V2 project's migration process (or psql) after review.
+
+BEGIN;
+
+-- Purchase Order header
+CREATE TABLE IF NOT EXISTS purchase_order (
+    purchase_order_id   SERIAL PRIMARY KEY,
+    po_number           VARCHAR(30) NOT NULL UNIQUE,
+    supplier_id         INTEGER NOT NULL REFERENCES supplier(supplier_id),
+    order_date_ad       DATE NOT NULL,
+    order_date_bs       VARCHAR(10) NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'Draft',  -- Draft, Sent, Received, Cancelled
+    sent_via            VARCHAR(20),
+    sent_at_ad          TIMESTAMP,
+    remarks             TEXT,
+    is_deleted          BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by          INTEGER NOT NULL,
+    created_at_ad       TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at_bs       VARCHAR(10) NOT NULL,
+    updated_by          INTEGER,
+    updated_at_ad       TIMESTAMP,
+    updated_at_bs       VARCHAR(10),
+    deleted_by          INTEGER,
+    deleted_at_ad       TIMESTAMP,
+    deleted_at_bs       VARCHAR(10)
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_order_supplier_id ON purchase_order (supplier_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_order_status ON purchase_order (status);
+
+-- Purchase Order items (one row per item in PO)
+CREATE TABLE IF NOT EXISTS purchase_order_item (
+    po_item_id                    SERIAL PRIMARY KEY,
+    purchase_order_id             INTEGER NOT NULL REFERENCES purchase_order(purchase_order_id) ON DELETE CASCADE,
+    item_id                       INTEGER NOT NULL REFERENCES item(item_id),
+    ordered_qty                   NUMERIC(12,2) NOT NULL,
+    rate                          NUMERIC(12,2) NOT NULL DEFAULT 0,
+    is_auto_suggested             BOOLEAN NOT NULL DEFAULT FALSE,
+    stock_at_order_time           NUMERIC(18,2),
+    minimum_stock_at_order_time   NUMERIC(18,2),
+    remarks                       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_po_item_item_id ON purchase_order_item (item_id);
+CREATE INDEX IF NOT EXISTS idx_po_item_po_id ON purchase_order_item (purchase_order_id);
+
+-- Purchase Invoice (GRN + Bill combined for Phase-1)
+CREATE TABLE IF NOT EXISTS purchase_invoice (
+    purchase_invoice_id   SERIAL PRIMARY KEY,
+    invoice_number        VARCHAR(30) NOT NULL,
+    internal_ref_number   VARCHAR(30) NOT NULL UNIQUE,
+    supplier_id           INTEGER NOT NULL REFERENCES supplier(supplier_id),
+    purchase_order_id     INTEGER REFERENCES purchase_order(purchase_order_id),
+    invoice_date_ad       DATE NOT NULL,
+    invoice_date_bs       VARCHAR(10) NOT NULL,
+    total_qty             NUMERIC(12,2) NOT NULL DEFAULT 0,
+    total_gross_amount    NUMERIC(14,2) NOT NULL DEFAULT 0,
+    total_discount_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+    total_cc_amount       NUMERIC(14,2) NOT NULL DEFAULT 0,
+    total_freight_amount  NUMERIC(14,2) NOT NULL DEFAULT 0,
+    total_other_charges   NUMERIC(14,2) NOT NULL DEFAULT 0,
+    grand_total           NUMERIC(14,2) NOT NULL DEFAULT 0,
+    status                VARCHAR(20) NOT NULL DEFAULT 'Posted', -- Draft, Posted, Cancelled
+    remarks               TEXT,
+    is_deleted            BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by            INTEGER NOT NULL,
+    created_at_ad         TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at_bs         VARCHAR(10) NOT NULL,
+    updated_by            INTEGER,
+    updated_at_ad         TIMESTAMP,
+    updated_at_bs         VARCHAR(10),
+    deleted_by            INTEGER,
+    deleted_at_ad         TIMESTAMP,
+    deleted_at_bs         VARCHAR(10)
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_invoice_supplier_id ON purchase_invoice (supplier_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_invoice_po_id ON purchase_invoice (purchase_order_id);
+
+-- Prevent duplicate supplier invoice numbers (for active rows)
+CREATE UNIQUE INDEX IF NOT EXISTS ux_purchase_invoice_supplier_billno
+    ON purchase_invoice (supplier_id, invoice_number)
+    WHERE is_deleted = FALSE;
+
+-- Purchase Invoice line items (line-level batch info)
+CREATE TABLE IF NOT EXISTS purchase_invoice_item (
+    purchase_invoice_item_id   SERIAL PRIMARY KEY,
+    purchase_invoice_id        INTEGER NOT NULL REFERENCES purchase_invoice(purchase_invoice_id) ON DELETE CASCADE,
+    item_id                    INTEGER NOT NULL REFERENCES item(item_id),
+    batch_no                   VARCHAR(50) NOT NULL,
+    expiry_month               SMALLINT NOT NULL,
+    expiry_year                SMALLINT NOT NULL,
+    qty                        NUMERIC(12,2) NOT NULL,
+    free_qty                   NUMERIC(12,2) NOT NULL DEFAULT 0,
+    purchase_rate              NUMERIC(12,2) NOT NULL,
+    discount_percent           NUMERIC(5,2) NOT NULL DEFAULT 0,
+    discount_amount            NUMERIC(12,2) NOT NULL DEFAULT 0,
+    cc_percent                 NUMERIC(5,2) NOT NULL DEFAULT 0,
+    cc_amount                  NUMERIC(12,2) NOT NULL DEFAULT 0,
+    freight_amount_allocated   NUMERIC(12,2) NOT NULL DEFAULT 0,
+    other_charges_allocated    NUMERIC(12,2) NOT NULL DEFAULT 0,
+    landing_cost_per_unit      NUMERIC(12,4) NOT NULL DEFAULT 0,
+    mrp                        NUMERIC(12,2) NOT NULL,
+    sale_rate                  NUMERIC(12,2) NOT NULL DEFAULT 0,
+    item_batch_id              INTEGER REFERENCES item_batch(item_batch_id),
+    remarks                    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_invoice_item_invoice_id ON purchase_invoice_item (purchase_invoice_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_invoice_item_item_id ON purchase_invoice_item (item_id);
+
+-- Purchase Return (Phase-2)
+CREATE TABLE IF NOT EXISTS purchase_return (
+    purchase_return_id    SERIAL PRIMARY KEY,
+    return_number         VARCHAR(30) NOT NULL UNIQUE,
+    purchase_invoice_id   INTEGER NOT NULL REFERENCES purchase_invoice(purchase_invoice_id),
+    supplier_id           INTEGER NOT NULL REFERENCES supplier(supplier_id),
+    return_date_ad        DATE NOT NULL,
+    return_date_bs        VARCHAR(10) NOT NULL,
+    total_amount          NUMERIC(14,2) NOT NULL DEFAULT 0,
+    reason                TEXT,
+    status                VARCHAR(20) NOT NULL DEFAULT 'Posted',
+    is_deleted            BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by            INTEGER NOT NULL,
+    created_at_ad         TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at_bs         VARCHAR(10) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS purchase_return_item (
+    purchase_return_item_id SERIAL PRIMARY KEY,
+    purchase_return_id      INTEGER NOT NULL REFERENCES purchase_return(purchase_return_id) ON DELETE CASCADE,
+    item_batch_id           INTEGER NOT NULL REFERENCES item_batch(item_batch_id),
+    return_qty              NUMERIC(12,2) NOT NULL,
+    return_rate             NUMERIC(12,2) NOT NULL,
+    remarks                 TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_return_invoice_id ON purchase_return (purchase_invoice_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_return_item_batch_id ON purchase_return_item (item_batch_id);
+
+-- Helpful views/indexes can be added later as usage patterns emerge.
+
+-- Settings seed (safe to run multiple times: ON CONFLICT DO NOTHING)
+INSERT INTO settings (setting_key, setting_value, setting_group, data_type, default_value, description, display_order)
+VALUES
+    ('purchase.po_prefix', 'PO-', 'Purchase', 'string', 'PO-', 'Prefix for auto-generated Purchase Order numbers', 10),
+    ('purchase.invoice_prefix', 'PINV-', 'Purchase', 'string', 'PINV-', 'Prefix for auto-generated Purchase Invoice internal reference numbers', 20),
+    ('purchase.return_prefix', 'PRET-', 'Purchase', 'string', 'PRET-', 'Prefix for auto-generated Purchase Return numbers (Phase-2)', 30),
+    ('purchase.reorder_target_multiplier', '2', 'Purchase', 'decimal', '2', 'Suggested reorder qty = (minimum_stock x multiplier) - current_stock', 40),
+    ('purchase.whatsapp_message_template', 'Hello {supplier_name}, please arrange the following items:\n{item_list}\n\nRegards, {company_name}', 'Purchase', 'string', 'Hello {supplier_name}, please arrange the following items:\n{item_list}\n\nRegards, {company_name}', 'WhatsApp order message template. Placeholders: {supplier_name} {po_number} {item_list} {company_name}', 50),
+    ('purchase.email_subject_template', 'Purchase Order - {po_number}', 'Purchase', 'string', 'Purchase Order - {po_number}', 'Email subject template for Purchase Orders', 60),
+    ('purchase.email_body_template', 'Dear {supplier_name},\n\nPlease find our purchase order below:\n{item_list}\n\nRegards,\n{company_name}', 'Purchase', 'string', 'Dear {supplier_name},\n\nPlease find our purchase order below:\n{item_list}\n\nRegards,\n{company_name}', 'Email body template for Purchase Orders', 70),
+    ('purchase.email_send_mode', 'mailto', 'Purchase', 'string', 'mailto', 'mailto = opens default email client (manual send, zero setup) | smtp = auto-send (future, needs SMTP credentials)', 80)
+ON CONFLICT (setting_key) WHERE companyid IS NULL AND userid IS NULL DO NOTHING;
+
+COMMIT;
+
+
+================================================================================
 FILE: database/0002_create_supplier.sql
 ================================================================================
 
@@ -8722,6 +8900,66 @@ CREATE TABLE user_audit_log (
 CREATE INDEX idx_audit_user   ON user_audit_log(user_id);
 CREATE INDEX idx_audit_action ON user_audit_log(action);
 CREATE INDEX idx_audit_date   ON user_audit_log(action_on_ad);
+
+
+================================================================================
+FILE: docs/README_purchase_module.md
+================================================================================
+
+# Purchase Module — Part 1 (Database schema & Models)
+
+What this adds
+- DB migration: database/migrations/0001_purchase_schema.sql
+- Models:
+  - models/purchase_invoice_model.py
+  - models/purchase_order_model.py
+  - models/purchase_return_model.py (Phase-2)
+- ItemModel extension (snippet): models/__patch__/item_model_addition.txt
+- Settings seeds that create purchase.* settings in the settings table.
+
+Where to place files
+- SQL migration -> database/migrations/0001_purchase_schema.sql
+- Models -> models/<filename>.py
+- Patch snippet -> models/__patch__/item_model_addition.txt
+
+How to apply (recommended)
+1) Create and switch to a feature branch:
+   git checkout -b feature/purchase-module-part1
+
+2) Add files (example in Linux/macOS):
+   mkdir -p database/migrations models/__patch__
+   # create files with the content provided in this PR
+
+3) Run DB migration
+   - If you have a migration framework: add this SQL as migration 0001 and run.
+   - Or run directly (careful, backup your DB first):
+     psql -h <host> -U <user> -d <db> -f database/migrations/0001_purchase_schema.sql
+
+4) Add ItemModel method
+   - Paste the snippet from models/__patch__/item_model_addition.txt into models/item_model.py inside the ItemModel class.
+
+5) Commit & push
+   git add database/migrations/0001_purchase_schema.sql models/purchase_*.py models/__patch__/item_model_addition.txt README_purchase_module.md
+   git commit -m "Add Purchase module Part-1: migrations + models (PO, Invoice, Return) and ItemModel low-stock helper"
+   git push origin feature/purchase-module-part1
+
+6) Open a Pull Request on GitHub from feature/purchase-module-part1 -> main (or default branch). Add reviewers and test DB run.
+
+Testing tips
+- Run unit-level checks by importing the models and calling basic methods (requires configured DB).
+- For initial smoke test, create the tables in a dev DB and run simple INSERT via psql to ensure schema is valid.
+- Ensure models database.db.get_connection() resolves to your configured database connection.
+
+Notes & assumptions
+- Models are SQL-only; no business rules or validation here; all business logic belongs to Engines (Part-2).
+- The insert_* methods accept dictionaries and perform dynamic INSERT. The Engine layer must populate audit stamps (created_by, created_at_bs etc.) according to project conventions.
+- The SQL uses PostgreSQL features (REGEXP_REPLACE) for sequence extraction. If you run on a different DB adapt those functions.
+
+If you want, I can:
+- Convert these into a single unified git patch (.patch) you can apply with git am.
+- Create a PR for you if you add me as a collaborator (I attempted push earlier but lacked permissions).
+
+Good luck — paste these files into your repo and tell me when you're ready for Part‑2 (Engines, Validators, DTOs, and business rules). I can also generate example unit tests for these models if you want.
 
 
 ================================================================================
@@ -11792,6 +12030,868 @@ def generate_remember_token() -> str:
     stored in the database (never the plain password).
     """
     return secrets.token_urlsafe(32)
+
+
+================================================================================
+FILE: engines/purchase_engine.py
+================================================================================
+
+# engines/purchase_engine.py
+from __future__ import annotations
+import logging
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from typing import Any, Optional, List
+
+from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
+
+from models.purchase_invoice_model import PurchaseInvoiceModel, PurchaseInvoiceSearchFilters
+from engines.purchase_validator import PurchaseValidator
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PurchaseInvoiceLineDTO:
+    item_id: int
+    batch_no: str
+    expiry_month: int
+    expiry_year: int
+    qty: float
+    free_qty: float
+    purchase_rate: float
+    discount_percent: float
+    cc_percent: float = 0.0
+    mrp: float = 0.0
+    sale_rate: float = 0.0
+    # computed/output fields
+    discount_amount: float = 0.0
+    cc_amount: float = 0.0
+    freight_allocated: float = 0.0
+    other_charges_allocated: float = 0.0
+    landing_cost_per_unit: float = 0.0
+    item_batch_id: Optional[int] = None
+
+
+@dataclass
+class PurchaseInvoiceDTO:
+    purchase_invoice_id: Optional[int]
+    internal_ref_number: str
+    invoice_number: str
+    supplier_id: int
+    invoice_date_bs: str
+    total_qty: float
+    total_gross_amount: float
+    total_discount_amount: float
+    total_cc_amount: float
+    total_freight_amount: float
+    total_other_charges: float
+    grand_total: float
+    status: str
+    lines: List[PurchaseInvoiceLineDTO] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class PurchaseEngine:
+    def __init__(
+        self,
+        model: PurchaseInvoiceModel,
+        date_engine,
+        settings_engine,
+        item_engine,
+        purchase_order_engine,
+        country_tax_lookup_fn,
+        manufacturer_lookup_fn,
+    ) -> None:
+        self._model = model
+        self._date_engine = date_engine
+        self._settings_engine = settings_engine
+        self._item_engine = item_engine
+        self._purchase_order_engine = purchase_order_engine
+        self._country_tax_lookup = country_tax_lookup_fn
+        self._manufacturer_lookup = manufacturer_lookup_fn
+
+    def _now_ad(self) -> datetime:
+        return datetime.now()
+
+    def _now_bs(self) -> str:
+        try:
+            return self._date_engine.ad_to_bs(self._now_ad().date())
+        except Exception:
+            return ""
+
+    def generate_internal_ref_number(self) -> str:
+        prefix = self._settings_engine.get_setting("purchase.invoice_prefix", "PINV-")
+        last = self._model.get_last_internal_ref_sequence(prefix)
+        next_seq = (last or 0) + 1
+        return f"{prefix}{next_seq:04d}"
+
+    def _resolve_cc_percent(self, item_id: int) -> float:
+        try:
+            # Find manufacturer via injected lookup: first get manufacturer_id for item via ItemModel
+            # We'll lazy-import ItemModel to avoid circular imports
+            from models.item_model import ItemModel
+
+            im = ItemModel()
+            item_row = im.get_by_id(item_id)
+            if not item_row:
+                return 0.0
+            manufacturer_id = item_row.get("manufacturer_id")
+            if not manufacturer_id:
+                return 0.0
+            # manufacturer_lookup_fn returns manufacturer data (including country) or None
+            manufacturer = self._manufacturer_lookup(manufacturer_id)
+            if not manufacturer:
+                return 0.0
+            country = manufacturer.get("country")
+            if not country:
+                return 0.0
+            cc, _ = self._country_tax_lookup(country)  # returns (vat_percent, custom_percent)
+            return float(cc or 0.0)
+        except Exception:
+            return 0.0
+
+    def _allocate_invoice_level_charges(self, lines: List[PurchaseInvoiceLineDTO], total_freight: float, total_other: float) -> List[PurchaseInvoiceLineDTO]:
+        total_units = sum((line.qty + line.free_qty) for line in lines)
+        if total_units <= 0:
+            # nothing to allocate
+            return lines
+        for line in lines:
+            share = (line.qty + line.free_qty) / total_units
+            line.freight_allocated = round(total_freight * share, 4)
+            line.other_charges_allocated = round(total_other * share, 4)
+        return lines
+
+    def _calculate_line_amounts(self, line: PurchaseInvoiceLineDTO) -> PurchaseInvoiceLineDTO:
+        # discount on paid qty only
+        paid_value = line.qty * line.purchase_rate
+        line.discount_amount = round(paid_value * (line.discount_percent / 100.0), 4)
+
+        # cc basis: free_qty * declared_customs_value_per_unit (use purchase_rate of paid units)
+        declared_customs_value_per_unit = line.purchase_rate or 0.0
+        line.cc_amount = round((line.free_qty * declared_customs_value_per_unit) * (line.cc_percent / 100.0), 4)
+
+        # landing cost per unit = (paid_value - discount + cc + freight_allocated + other_allocated) / total_units
+        total_units = (line.qty + line.free_qty) or 1.0
+        numerator = (paid_value - line.discount_amount + line.cc_amount + line.freight_allocated + line.other_charges_allocated)
+        line.landing_cost_per_unit = round(numerator / total_units, 4)
+
+        return line
+
+    def create_purchase_invoice(self, payload: dict[str, Any], current_user_id: int) -> PurchaseInvoiceDTO:
+        # 1. Validate header
+        ok, err = PurchaseValidator.validate_invoice_header(payload)
+        if not ok:
+            raise ValidationError([err])
+
+        raw_lines = payload.get("lines", [])
+        if not isinstance(raw_lines, list) or len(raw_lines) == 0:
+            raise ValidationError(["Invoice must include at least one line."])
+
+        # 1b: Validate each line
+        lines_dto: List[PurchaseInvoiceLineDTO] = []
+        for idx, l in enumerate(raw_lines):
+            ok, err = PurchaseValidator.validate_invoice_line(l)
+            if not ok:
+                raise ValidationError([f"Line {idx+1}: {err}"])
+            ok, err = PurchaseValidator.validate_free_qty_rate(l)
+            if not ok:
+                raise ValidationError([f"Line {idx+1}: {err}"])
+
+            line_dto = PurchaseInvoiceLineDTO(
+                item_id=int(l["item_id"]),
+                batch_no=str(l["batch_no"]),
+                expiry_month=int(l["expiry_month"]),
+                expiry_year=int(l["expiry_year"]),
+                qty=float(l.get("qty", 0) or 0),
+                free_qty=float(l.get("free_qty", 0) or 0),
+                purchase_rate=float(l.get("purchase_rate", 0) or 0),
+                discount_percent=float(l.get("discount_percent", 0) or 0),
+                cc_percent=float(l.get("cc_percent", 0) or 0),
+                mrp=float(l.get("mrp", 0) or 0),
+                sale_rate=float(l.get("sale_rate", 0) or 0),
+            )
+            # Resolve CC percent if not provided
+            if not line_dto.cc_percent or line_dto.cc_percent == 0:
+                line_dto.cc_percent = self._resolve_cc_percent(line_dto.item_id)
+            lines_dto.append(line_dto)
+
+        # 4. Allocate invoice-level freight/other charges (if present in payload)
+        total_freight = float(payload.get("total_freight_amount", 0) or 0)
+        total_other = float(payload.get("total_other_charges", 0) or 0)
+        lines_dto = self._allocate_invoice_level_charges(lines_dto, total_freight, total_other)
+
+        # 5. Calculate amounts per line
+        total_qty = 0.0
+        total_gross = 0.0
+        total_discount = 0.0
+        total_cc = 0.0
+        for line in lines_dto:
+            line = self._calculate_line_amounts(line)
+            total_qty += line.qty + line.free_qty
+            total_gross += (line.qty * line.purchase_rate)
+            total_discount += line.discount_amount
+            total_cc += line.cc_amount
+
+        grand_total = round(total_gross - total_discount + total_cc + total_freight + total_other, 4)
+
+        # 6. Duplicate check
+        supplier_id = payload.get("supplier_id")
+        invoice_number = payload.get("invoice_number")
+        if self._model.exists_by_supplier_and_billno(supplier_id, invoice_number, exclude_id=None):
+            raise DuplicateRecordError(f"Supplier {supplier_id} already has an invoice with number {invoice_number}.")
+
+        # 7. Insert purchase_invoice header
+        header = {
+            "invoice_number": invoice_number,
+            "internal_ref_number": payload.get("internal_ref_number") or self.generate_internal_ref_number(),
+            "supplier_id": supplier_id,
+            "purchase_order_id": payload.get("purchase_order_id"),
+            "invoice_date_ad": payload.get("invoice_date_ad") or self._now_ad().date(),
+            "invoice_date_bs": payload.get("invoice_date_bs") or self._now_bs(),
+            "total_qty": total_qty,
+            "total_gross_amount": total_gross,
+            "total_discount_amount": total_discount,
+            "total_cc_amount": total_cc,
+            "total_freight_amount": total_freight,
+            "total_other_charges": total_other,
+            "grand_total": grand_total,
+            "status": payload.get("status", "Posted"),
+            "remarks": payload.get("remarks"),
+            "created_by": current_user_id,
+            "created_at_ad": self._now_ad(),
+            "created_at_bs": self._now_bs(),
+        }
+
+        with self._model.insert_invoice.__self__ if hasattr(self._model.insert_invoice, "__self__") else self._model as _ignore:
+            # Insert header via model
+            new_invoice_id = self._model.insert_invoice(header)
+
+        # 8. For each line: insert line row and call ItemEngine.add_batch
+        inserted_line_ids = []
+        for line in lines_dto:
+            item_line_data = {
+                "purchase_invoice_id": new_invoice_id,
+                "item_id": line.item_id,
+                "batch_no": line.batch_no,
+                "expiry_month": line.expiry_month,
+                "expiry_year": line.expiry_year,
+                "qty": line.qty,
+                "free_qty": line.free_qty,
+                "purchase_rate": line.purchase_rate,
+                "discount_percent": line.discount_percent,
+                "discount_amount": line.discount_amount,
+                "cc_percent": line.cc_percent,
+                "cc_amount": line.cc_amount,
+                "freight_amount_allocated": line.freight_allocated,
+                "other_charges_allocated": line.other_charges_allocated,
+                "landing_cost_per_unit": line.landing_cost_per_unit,
+                "mrp": line.mrp,
+                "sale_rate": line.sale_rate,
+                "remarks": None,
+            }
+            invoice_item_id = self._model.insert_invoice_item(new_invoice_id, item_line_data)
+            # Build batch payload for ItemEngine.add_batch()
+            batch_payload = {
+                "batch_no": line.batch_no,
+                "expiry_month": line.expiry_month,
+                "expiry_year": line.expiry_year,
+                "batch_qty": (line.qty + line.free_qty),
+                "batch_purchase_rate": line.purchase_rate,
+                "remarks": None,
+            }
+            # Call ItemEngine to create batch + stock ledger
+            try:
+                item_batch_id = self._item_engine.add_batch(
+                    item_id=line.item_id,
+                    batch_payload=batch_payload,
+                    current_user_id=current_user_id,
+                    transaction_type="PURCHASE",
+                    reference_type="purchase_invoice",
+                    reference_id=new_invoice_id,
+                )
+            except Exception as exc:
+                logger.exception("Failed to create item batch for invoice line; rolling up error.")
+                # We do not attempt DB rollback here; let caller handle failures / ensure transactions at a higher level if needed.
+                raise
+
+            # Stamp back to invoice item
+            self._model.update_invoice_item_batch_link(invoice_item_id, item_batch_id)
+            line.item_batch_id = item_batch_id
+            inserted_line_ids.append(invoice_item_id)
+
+        # 9. If linked to a PO, mark PO received via injected engine
+        po_id = payload.get("purchase_order_id")
+        if po_id:
+            try:
+                # The PurchaseOrderEngine is expected to offer mark_received()
+                self._purchase_order_engine.mark_received(po_id, current_user_id)
+            except Exception:
+                # Log but do not fail the invoice creation (safety: invoice must be created)
+                logger.exception("Failed to mark linked purchase order as Received: %s", po_id)
+
+        # Build DTO to return
+        created_invoice = PurchaseInvoiceDTO(
+            purchase_invoice_id=new_invoice_id,
+            internal_ref_number=header["internal_ref_number"],
+            invoice_number=invoice_number,
+            supplier_id=supplier_id,
+            invoice_date_bs=header["invoice_date_bs"],
+            total_qty=total_qty,
+            total_gross_amount=total_gross,
+            total_discount_amount=total_discount,
+            total_cc_amount=total_cc,
+            total_freight_amount=total_freight,
+            total_other_charges=total_other,
+            grand_total=grand_total,
+            status=header["status"],
+            lines=lines_dto,
+        )
+        return created_invoice
+
+    def get_purchase_invoice(self, purchase_invoice_id: int, include_deleted: bool = False) -> Optional[PurchaseInvoiceDTO]:
+        row = self._model.get_by_id(purchase_invoice_id, include_deleted=include_deleted)
+        if not row:
+            return None
+        items = self._model.get_items_by_invoice(purchase_invoice_id)
+        lines = []
+        for r in items:
+            l = PurchaseInvoiceLineDTO(
+                item_id=r.get("item_id"),
+                batch_no=r.get("batch_no"),
+                expiry_month=r.get("expiry_month"),
+                expiry_year=r.get("expiry_year"),
+                qty=float(r.get("qty") or 0),
+                free_qty=float(r.get("free_qty") or 0),
+                purchase_rate=float(r.get("purchase_rate") or 0),
+                discount_percent=float(r.get("discount_percent") or 0),
+                cc_percent=float(r.get("cc_percent") or 0),
+                mrp=float(r.get("mrp") or 0),
+                sale_rate=float(r.get("sale_rate") or 0),
+            )
+            lines.append(l)
+        dto = PurchaseInvoiceDTO(
+            purchase_invoice_id=row.get("purchase_invoice_id"),
+            internal_ref_number=row.get("internal_ref_number"),
+            invoice_number=row.get("invoice_number"),
+            supplier_id=row.get("supplier_id"),
+            invoice_date_bs=row.get("invoice_date_bs"),
+            total_qty=float(row.get("total_qty") or 0),
+            total_gross_amount=float(row.get("total_gross_amount") or 0),
+            total_discount_amount=float(row.get("total_discount_amount") or 0),
+            total_cc_amount=float(row.get("total_cc_amount") or 0),
+            total_freight_amount=float(row.get("total_freight_amount") or 0),
+            total_other_charges=float(row.get("total_other_charges") or 0),
+            grand_total=float(row.get("grand_total") or 0),
+            status=row.get("status"),
+            lines=lines,
+        )
+        return dto
+
+    def search_purchase_invoices(self, **kwargs):
+        # Bridge to model.search() using provided filters
+        filters = PurchaseInvoiceSearchFilters(
+            search_text=kwargs.get("search_text"),
+            supplier_id=kwargs.get("supplier_id"),
+            status=kwargs.get("status"),
+            date_from_ad=kwargs.get("date_from_ad"),
+            date_to_ad=kwargs.get("date_to_ad"),
+            include_deleted=kwargs.get("include_deleted", False),
+            page=kwargs.get("page", 1),
+            page_size=kwargs.get("page_size", 50),
+        )
+        rows, total = self._model.search(filters)
+        # Convert rows (dicts) to DTOs minimally if desired, but for efficiency we can return raw rows + total
+        return rows, total
+
+    def cancel_purchase_invoice(self, purchase_invoice_id: int, current_user_id: int, reason: str) -> None:
+        # Soft-delete via model
+        from datetime import datetime
+        deleted_at_ad = datetime.now()
+        deleted_at_bs = self._now_bs()
+        self._model.soft_delete(purchase_invoice_id, deleted_by=current_user_id, deleted_at_ad=deleted_at_ad, deleted_at_bs=deleted_at_bs)
+
+
+================================================================================
+FILE: engines/purchase_order_engine.py
+================================================================================
+
+# engines/purchase_order_engine.py
+from __future__ import annotations
+import logging
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from typing import Any, Optional, List
+
+from engines.exceptions import RecordNotFoundError, ValidationError
+from models.purchase_order_model import PurchaseOrderModel, PurchaseOrderSearchFilters
+from models.item_model import ItemModel
+from engines.purchase_validator import PurchaseOrderValidator
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LowStockSuggestionDTO:
+    item_id: int
+    item_name: str
+    current_stock: float
+    minimum_stock: float
+    suggested_qty: float
+    already_ordered_elsewhere: List[dict] = field(default_factory=list)
+
+
+@dataclass
+class PurchaseOrderLineDTO:
+    item_id: int
+    ordered_qty: float
+    rate: float = 0.0
+    is_auto_suggested: bool = False
+    stock_at_order_time: Optional[float] = None
+    minimum_stock_at_order_time: Optional[float] = None
+
+
+@dataclass
+class PurchaseOrderDTO:
+    purchase_order_id: Optional[int]
+    po_number: str
+    supplier_id: int
+    order_date_bs: str
+    status: str
+    sent_via: Optional[str]
+    lines: List[PurchaseOrderLineDTO] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class PurchaseOrderEngine:
+    def __init__(self, model: PurchaseOrderModel, item_model: ItemModel, date_engine, settings_engine) -> None:
+        self._model = model
+        self._item_model = item_model
+        self._date_engine = date_engine
+        self._settings_engine = settings_engine
+
+    def _now_ad(self):
+        return datetime.now()
+
+    def _now_bs(self):
+        try:
+            return self._date_engine.ad_to_bs(self._now_ad().date())
+        except Exception:
+            return ""
+
+    def generate_po_number(self) -> str:
+        prefix = self._settings_engine.get_setting("purchase.po_prefix", "PO-")
+        last = self._model.get_last_po_number_sequence(prefix)
+        next_seq = (last or 0) + 1
+        return f"{prefix}{next_seq:04d}"
+
+    def get_low_stock_suggestions(self) -> List[LowStockSuggestionDTO]:
+        raw = self._item_model.get_low_stock_items()
+        if not raw:
+            return []
+        item_ids = [r["item_id"] for r in raw]
+        open_order_rows = self._model.get_open_order_items_for_item_ids(item_ids) if item_ids else []
+        # group open orders by item_id
+        open_map = {}
+        for r in open_order_rows:
+            iid = r.get("item_id")
+            open_map.setdefault(iid, []).append(r)
+
+        multiplier = float(self._settings_engine.get_setting("purchase.reorder_target_multiplier", "2") or 2)
+        suggestions = []
+        for r in raw:
+            item_id = r.get("item_id")
+            current_stock = float(r.get("total_stock") or 0)
+            minimum_stock = float(r.get("minimum_stock") or 0)
+            target = (minimum_stock * multiplier) - current_stock
+            suggested_qty = int(max(0, round(target)))
+            suggestions.append(
+                LowStockSuggestionDTO(
+                    item_id=item_id,
+                    item_name=r.get("item_name"),
+                    current_stock=current_stock,
+                    minimum_stock=minimum_stock,
+                    suggested_qty=suggested_qty,
+                    already_ordered_elsewhere=open_map.get(item_id, []),
+                )
+            )
+        return suggestions
+
+    def create_purchase_order(self, payload: dict[str, Any], current_user_id: int) -> PurchaseOrderDTO:
+        ok, err = PurchaseOrderValidator.validate_order_header(payload)
+        if not ok:
+            raise ValidationError([err])
+        lines = payload.get("lines", [])
+        if not isinstance(lines, list) or len(lines) == 0:
+            raise ValidationError(["At least one order line is required."])
+        # Validate each line
+        for idx, ln in enumerate(lines):
+            ok, err = PurchaseOrderValidator.validate_order_line(ln)
+            if not ok:
+                raise ValidationError([f"Line {idx+1}: {err}"])
+
+        po_number = payload.get("po_number") or self.generate_po_number()
+        header = {
+            "po_number": po_number,
+            "supplier_id": payload["supplier_id"],
+            "order_date_ad": payload.get("order_date_ad") or self._now_ad().date(),
+            "order_date_bs": payload.get("order_date_bs") or self._now_bs(),
+            "status": payload.get("status", "Draft"),
+            "sent_via": payload.get("sent_via"),
+            "remarks": payload.get("remarks"),
+            "created_by": current_user_id,
+            "created_at_ad": self._now_ad(),
+            "created_at_bs": self._now_bs(),
+        }
+        po_id = self._model.insert_order(header)
+        # Insert items
+        for ln in lines:
+            # Snapshot current_stock + minimum_stock if not provided
+            stock_snapshot = ln.get("stock_at_order_time")
+            min_snapshot = ln.get("minimum_stock_at_order_time")
+            if stock_snapshot is None or min_snapshot is None:
+                item_row = self._item_model.get_by_id(ln["item_id"])
+                stock_snapshot = float(item_row.get("total_stock") if item_row and item_row.get("total_stock") is not None else 0)
+                min_snapshot = float(item_row.get("minimum_stock") if item_row and item_row.get("minimum_stock") is not None else 0)
+            item_data = {
+                "item_id": ln["item_id"],
+                "ordered_qty": ln["ordered_qty"],
+                "rate": ln.get("rate", 0.0),
+                "is_auto_suggested": ln.get("is_auto_suggested", False),
+                "stock_at_order_time": stock_snapshot,
+                "minimum_stock_at_order_time": min_snapshot,
+                "remarks": ln.get("remarks"),
+            }
+            self._model.insert_order_item(po_id, item_data)
+        dto = PurchaseOrderDTO(
+            purchase_order_id=po_id,
+            po_number=po_number,
+            supplier_id=payload["supplier_id"],
+            order_date_bs=header["order_date_bs"],
+            status=header["status"],
+            sent_via=header.get("sent_via"),
+            lines=[],  # callers can retrieve lines via get_purchase_order if needed
+        )
+        return dto
+
+    def build_supplier_message(self, purchase_order_id: int) -> dict[str, str]:
+        po = self._model.get_by_id(purchase_order_id, include_deleted=False)
+        if not po:
+            raise RecordNotFoundError("Purchase order not found.")
+        items = self._model.get_items_by_order(purchase_order_id)
+        # Build item list
+        from models.item_model import ItemModel
+        im = ItemModel()
+        item_lines = []
+        for it in items:
+            item_info = im.get_by_id(it["item_id"])
+            item_name = item_info.get("item_name") if item_info else f"Item-{it['item_id']}"
+            item_lines.append(f"- {item_name} : {it.get('ordered_qty')}")
+        item_list_text = "\n".join(item_lines)
+        supplier_name = ""  # try to fetch supplier name
+        try:
+            from models.supplier_model import SupplierModel
+            supplier_row = SupplierModel().get_by_id(po.get("supplier_id"))
+            supplier_name = supplier_row.get("supplier_name") if supplier_row else ""
+        except Exception:
+            supplier_name = ""
+
+        company_name = self._settings_engine.get_setting("company.name", "Your Company")
+        whatsapp_tpl = self._settings_engine.get_setting("purchase.whatsapp_message_template", "Hello {supplier_name}, please arrange the following items:\n{item_list}\n\nRegards, {company_name}")
+        email_sub_tpl = self._settings_engine.get_setting("purchase.email_subject_template", "Purchase Order - {po_number}")
+        email_body_tpl = self._settings_engine.get_setting("purchase.email_body_template", "Dear {supplier_name},\n\nPlease find our purchase order below:\n{item_list}\n\nRegards,\n{company_name}")
+
+        whatsapp_text = whatsapp_tpl.format(supplier_name=supplier_name, po_number=po.get("po_number"), item_list=item_list_text, company_name=company_name)
+        email_subject = email_sub_tpl.format(supplier_name=supplier_name, po_number=po.get("po_number"), item_list=item_list_text, company_name=company_name)
+        email_body = email_body_tpl.format(supplier_name=supplier_name, po_number=po.get("po_number"), item_list=item_list_text, company_name=company_name)
+
+        return {"whatsapp_text": whatsapp_text, "email_subject": email_subject, "email_body": email_body}
+
+    def mark_sent(self, purchase_order_id: int, sent_via: str, current_user_id: int) -> None:
+        updated_at_ad = self._now_ad()
+        updated_at_bs = self._now_bs()
+        # Use model.mark_status (exists) to set status to Sent if current is Draft
+        self._model.mark_status(purchase_order_id, "Sent", updated_by=current_user_id, updated_at_ad=updated_at_ad, updated_at_bs=updated_at_bs)
+
+    def mark_received(self, purchase_order_id: int, current_user_id: int) -> None:
+        updated_at_ad = self._now_ad()
+        updated_at_bs = self._now_bs()
+        self._model.mark_status(purchase_order_id, "Received", updated_by=current_user_id, updated_at_ad=updated_at_ad, updated_at_bs=updated_at_bs)
+
+    def get_purchase_order(self, purchase_order_id: int, include_deleted: bool = False) -> Optional[PurchaseOrderDTO]:
+        row = self._model.get_by_id(purchase_order_id, include_deleted=include_deleted)
+        if not row:
+            return None
+        # load lines
+        lines = []
+        raw_lines = self._model.get_items_by_order(purchase_order_id)
+        for r in raw_lines:
+            lines.append(PurchaseOrderLineDTO(
+                item_id=r.get("item_id"),
+                ordered_qty=float(r.get("ordered_qty") or 0),
+                rate=float(r.get("rate") or 0),
+                is_auto_suggested=bool(r.get("is_auto_suggested")),
+                stock_at_order_time=r.get("stock_at_order_time"),
+                minimum_stock_at_order_time=r.get("minimum_stock_at_order_time"),
+            ))
+        dto = PurchaseOrderDTO(
+            purchase_order_id=row.get("purchase_order_id"),
+            po_number=row.get("po_number"),
+            supplier_id=row.get("supplier_id"),
+            order_date_bs=row.get("order_date_bs"),
+            status=row.get("status"),
+            sent_via=row.get("sent_via"),
+            lines=lines,
+        )
+        return dto
+
+    def search_purchase_orders(self, **kwargs):
+        filters = PurchaseOrderSearchFilters(
+            search_text=kwargs.get("search_text"),
+            supplier_id=kwargs.get("supplier_id"),
+            status=kwargs.get("status"),
+            include_deleted=kwargs.get("include_deleted", False),
+            page=kwargs.get("page", 1),
+            page_size=kwargs.get("page_size", 50),
+        )
+        rows, total = self._model.search(filters)
+        return rows, total
+
+    def cancel_purchase_order(self, purchase_order_id: int, current_user_id: int) -> None:
+        deleted_at_ad = self._now_ad()
+        deleted_at_bs = self._now_bs()
+        self._model.soft_delete(purchase_order_id, deleted_by=current_user_id, deleted_at_ad=deleted_at_ad, deleted_at_bs=deleted_at_bs)
+
+
+================================================================================
+FILE: engines/purchase_return_engine.py
+================================================================================
+
+# engines/purchase_return_engine.py
+from __future__ import annotations
+from typing import Any
+
+from engines.exceptions import RecordNotFoundError, ValidationError
+from models.purchase_return_model import PurchaseReturnModel
+
+logger = __import__("logging").getLogger(__name__)
+
+
+class PurchaseReturnEngine:
+    def __init__(self, model: PurchaseReturnModel, date_engine, item_engine) -> None:
+        self._model = model
+        self._date_engine = date_engine
+        self._item_engine = item_engine
+
+    def _now_ad(self):
+        from datetime import datetime
+        return datetime.now()
+
+    def _now_bs(self):
+        try:
+            return self._date_engine.ad_to_bs(self._now_ad().date())
+        except Exception:
+            return ""
+
+    def create_return(self, payload: dict[str, Any], current_user_id: int) -> dict:
+        """
+        payload must include:
+          - purchase_invoice_id
+          - supplier_id
+          - lines: [{ item_batch_id, return_qty, return_rate, remarks }]
+        Validates return_qty <= current batch current balance (caller must ensure),
+        inserts return header and items, and calls ItemEngine.post_stock_movement()
+        to record the negative stock movement atomically with ledger.
+        """
+        if not payload or not payload.get("lines"):
+            raise ValidationError(["Return payload missing or no lines provided."])
+
+        # Phase-2: Minimal checks, then call ItemEngine.post_stock_movement for each line.
+        return_id = self._model.insert_return({
+            "purchase_invoice_id": payload.get("purchase_invoice_id"),
+            "supplier_id": payload.get("supplier_id"),
+            "return_date_ad": payload.get("return_date_ad") or self._now_ad().date(),
+            "return_date_bs": payload.get("return_date_bs") or self._now_bs(),
+            "total_amount": payload.get("total_amount") or 0,
+            "reason": payload.get("reason"),
+            "created_by": current_user_id,
+            "created_at_ad": self._now_ad(),
+            "created_at_bs": self._now_bs(),
+        })
+
+        for line in payload.get("lines", []):
+            item_batch_id = line.get("item_batch_id")
+            return_qty = float(line.get("return_qty") or 0)
+            if return_qty <= 0:
+                raise ValidationError(["return_qty must be > 0"])
+            # Insert return item
+            item_line_data = {
+                "purchase_return_id": return_id,
+                "item_batch_id": item_batch_id,
+                "return_qty": return_qty,
+                "return_rate": line.get("return_rate") or 0,
+                "remarks": line.get("remarks"),
+            }
+            rid = self._model.insert_return_item(return_id, item_line_data)
+            # Now call ItemEngine.post_stock_movement() to effect the stock change
+            try:
+                self._item_engine.post_stock_movement(
+                    item_batch_id=item_batch_id,
+                    transaction_type="PURCHASE_RETURN",
+                    quantity_change=-abs(return_qty),
+                    current_user_id=current_user_id,
+                    reference_type="purchase_return",
+                    reference_id=return_id,
+                    remarks=line.get("remarks"),
+                )
+            except Exception:
+                logger.exception("Failed to post stock movement for return line (item_batch_id=%s)", item_batch_id)
+                # Do not attempt automatic compensation here; surface error to caller if desired.
+                raise
+
+        return {"purchase_return_id": return_id}
+
+
+================================================================================
+FILE: engines/purchase_validator.py
+================================================================================
+
+# engines/purchase_validator.py
+from __future__ import annotations
+from typing import Any, Tuple
+from datetime import datetime
+
+
+class PurchaseValidator:
+    """Validates Purchase Invoice payloads (pure logic - no DB)."""
+
+    @staticmethod
+    def _is_non_empty_str(value: Any) -> bool:
+        return isinstance(value, str) and value.strip() != ""
+
+    @staticmethod
+    def validate_invoice_header(data: dict[str, Any]) -> Tuple[bool, str]:
+        if not data:
+            return False, "Invoice payload is empty."
+        if not data.get("supplier_id"):
+            return False, "supplier_id is required."
+        if not PurchaseValidator._is_non_empty_str(data.get("invoice_number")):
+            return False, "invoice_number must be a non-empty string."
+        if not PurchaseValidator._is_non_empty_str(data.get("invoice_date_bs")):
+            return False, "invoice_date_bs must be provided (BS format)."
+        lines = data.get("lines") or []
+        if not isinstance(lines, list) or len(lines) == 0:
+            return False, "At least one invoice line is required."
+        return True, ""
+
+    @staticmethod
+    def validate_invoice_line(line: dict[str, Any]) -> Tuple[bool, str]:
+        if not line:
+            return False, "Invoice line is empty."
+        if not line.get("item_id"):
+            return False, "line.item_id is required."
+        qty = line.get("qty", 0) or 0
+        free_qty = line.get("free_qty", 0) or 0
+        try:
+            qty = float(qty)
+            free_qty = float(free_qty)
+        except Exception:
+            return False, "line.qty and line.free_qty must be numeric."
+        if qty <= 0 and free_qty <= 0:
+            return False, "Either qty or free_qty must be greater than zero."
+        purchase_rate = line.get("purchase_rate", 0)
+        try:
+            purchase_rate = float(purchase_rate)
+        except Exception:
+            return False, "line.purchase_rate must be numeric."
+        if purchase_rate < 0:
+            return False, "line.purchase_rate cannot be negative."
+        discount_percent = line.get("discount_percent", 0) or 0
+        try:
+            discount_percent = float(discount_percent)
+        except Exception:
+            return False, "line.discount_percent must be numeric."
+        if discount_percent < 0 or discount_percent > 100:
+            return False, "line.discount_percent must be between 0 and 100."
+
+        expiry_month = line.get("expiry_month")
+        expiry_year = line.get("expiry_year")
+        if expiry_month is None or expiry_year is None:
+            return False, "expiry_month and expiry_year are required for invoice lines."
+        try:
+            em = int(expiry_month)
+            ey = int(expiry_year)
+        except Exception:
+            return False, "expiry_month and expiry_year must be integers."
+        if em < 1 or em > 12:
+            return False, "expiry_month must be between 1 and 12."
+        # Basic plausibility check: expiry_year not in the distant past (BS). Use current AD -> BS mapping is avoided here
+        if ey < 2000:
+            return False, "expiry_year looks invalid (too small)."
+
+        if not PurchaseValidator._is_non_empty_str(line.get("batch_no")):
+            return False, "line.batch_no is required."
+
+        mrp = line.get("mrp", 0)
+        try:
+            mrp = float(mrp)
+        except Exception:
+            return False, "line.mrp must be numeric."
+        if mrp < 0:
+            return False, "line.mrp cannot be negative."
+
+        return True, ""
+
+    @staticmethod
+    def validate_free_qty_rate(line: dict[str, Any]) -> Tuple[bool, str]:
+        """Ensure that free_qty portion isn't being charged."""
+        free_qty = float(line.get("free_qty", 0) or 0)
+        if free_qty <= 0:
+            return True, ""
+        # If free_qty present, the business rule says free portion must not have a price contribution.
+        # The payload shouldn't attempt to set per-free-unit price; we enforce purchase_rate applies to paid qty only.
+        # We ensure purchase_rate is >= 0, and later calculations treat free_qty as zero-price.
+        purchase_rate = float(line.get("purchase_rate", 0) or 0)
+        if purchase_rate < 0:
+            return False, "purchase_rate cannot be negative."
+        # Nothing else to assert here — caller must ensure cc_amount basis uses paid-unit price, not free-unit price.
+        return True, ""
+
+
+class PurchaseOrderValidator:
+    """Validates Purchase Order payloads (pure logic)."""
+
+    @staticmethod
+    def validate_order_header(data: dict[str, Any]) -> Tuple[bool, str]:
+        if not data:
+            return False, "Order payload is empty."
+        if not data.get("supplier_id"):
+            return False, "supplier_id is required for a Purchase Order."
+        if not data.get("order_date_bs"):
+            return False, "order_date_bs must be provided."
+        lines = data.get("lines") or []
+        if not isinstance(lines, list) or len(lines) == 0:
+            return False, "At least one order line is required."
+        return True, ""
+
+    @staticmethod
+    def validate_order_line(line: dict[str, Any]) -> Tuple[bool, str]:
+        if not line:
+            return False, "Order line is empty."
+        if not line.get("item_id"):
+            return False, "order line.item_id is required."
+        try:
+            ordered_qty = float(line.get("ordered_qty", 0) or 0)
+        except Exception:
+            return False, "ordered_qty must be numeric."
+        if ordered_qty <= 0:
+            return False, "ordered_qty must be greater than zero."
+        # rate is optional
+        return True, ""
 
 
 ================================================================================
@@ -15423,6 +16523,39 @@ class ItemModel:
                 cur.execute(sql, {"item_id": item_id})
                 return float(cur.fetchone()["total"])
 
+    def get_low_stock_items(self) -> list[dict]:
+        """
+        Returns active, non-deleted items where total_stock <= minimum_stock.
+        Each returned row is a dict with keys:
+        - item_id
+        - item_name
+        - total_stock
+        - minimum_stock
+
+        Live query — no caching. Caller should snapshot stock_at_order_time/minimum_stock_at_order_time
+        from the returned rows if they want to persist why an item was suggested.
+        """
+        # Use the file's _get_connection() which returns a psycopg2 connection (context manager)
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                sql = """
+                    SELECT i.item_id,
+                        i.item_name,
+                        COALESCE(SUM(b.batch_qty), 0) AS total_stock,
+                        i.minimum_stock
+                    FROM item i
+                    LEFT JOIN item_batch b ON i.item_id = b.item_id
+                    WHERE i.is_deleted = FALSE
+                    AND i.status = 'Active'
+                    GROUP BY i.item_id, i.item_name, i.minimum_stock
+                    HAVING COALESCE(SUM(b.batch_qty), 0) <= i.minimum_stock
+                    ORDER BY (i.minimum_stock - COALESCE(SUM(b.batch_qty),0)) DESC
+                """
+                cur.execute(sql)
+                rows = cur.fetchall()
+                # RealDictCursor => each row is already a dict
+                return rows
+
     # ------------------------------------------------------------------ #
     # SOFT DELETE / RESTORE
     # ------------------------------------------------------------------ #
@@ -16044,6 +17177,460 @@ class ManufacturerModel:
                 if ok:
                     logger.info("Manufacturer restored: id=%s by=%s", manufacturer_id, updated_by)
                 return ok
+
+
+================================================================================
+FILE: models/purchase_invoice_model.py
+================================================================================
+
+# models/purchase_invoice_model.py
+from __future__ import annotations
+import logging
+from dataclasses import dataclass
+from typing import Any, Optional, List, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+def _get_connection():
+    from database.db import get_connection
+    return get_connection
+
+
+def _dict_cursor_factory():
+    import psycopg2.extras
+    return psycopg2.extras.RealDictCursor
+
+
+@dataclass
+class PurchaseInvoiceSearchFilters:
+    search_text: Optional[str] = None
+    supplier_id: Optional[int] = None
+    status: Optional[str] = None
+    date_from_ad: Optional[str] = None
+    date_to_ad: Optional[str] = None
+    include_deleted: bool = False
+    page: int = 1
+    page_size: int = 50
+
+
+class PurchaseInvoiceModel:
+    """Data-access layer for `purchase_invoice` + `purchase_invoice_item`.
+    SQL only, no business logic — mirrors repo model conventions."""
+
+    def insert_invoice(self, data: dict[str, Any]) -> int:
+        """Inserts one purchase_invoice header row. Expects a dict of column->value.
+        Returns new purchase_invoice_id."""
+        get_connection = _get_connection()
+        keys = list(data.keys())
+        cols = ", ".join(keys)
+        vals_placeholder = ", ".join(["%s"] * len(keys))
+        values = [data[k] for k in keys]
+
+        sql = f"INSERT INTO purchase_invoice ({cols}) VALUES ({vals_placeholder}) RETURNING purchase_invoice_id"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, values)
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                return new_id
+
+    def insert_invoice_item(self, purchase_invoice_id: int, data: dict[str, Any]) -> int:
+        """Insert a line into purchase_invoice_item and return the new id."""
+        get_connection = _get_connection()
+        data = dict(data)  # copy
+        data["purchase_invoice_id"] = purchase_invoice_id
+        keys = list(data.keys())
+        cols = ", ".join(keys)
+        vals_placeholder = ", ".join(["%s"] * len(keys))
+        values = [data[k] for k in keys]
+
+        sql = f"INSERT INTO purchase_invoice_item ({cols}) VALUES ({vals_placeholder}) RETURNING purchase_invoice_item_id"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, values)
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                return new_id
+
+    def update_invoice_item_batch_link(self, purchase_invoice_item_id: int, item_batch_id: int) -> None:
+        """After ItemEngine.add_batch() succeeds, stamp item_batch_id onto the invoice line."""
+        get_connection = _get_connection()
+        sql = "UPDATE purchase_invoice_item SET item_batch_id = %s WHERE purchase_invoice_item_id = %s"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (item_batch_id, purchase_invoice_item_id))
+                conn.commit()
+
+    def get_by_id(self, purchase_invoice_id: int, include_deleted: bool = False) -> Optional[dict]:
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = "SELECT * FROM purchase_invoice WHERE purchase_invoice_id = %s"
+        if not include_deleted:
+            sql += " AND is_deleted = FALSE"
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, (purchase_invoice_id,))
+                row = cur.fetchone()
+                return row
+
+    def get_items_by_invoice(self, purchase_invoice_id: int) -> List[dict]:
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = "SELECT * FROM purchase_invoice_item WHERE purchase_invoice_id = %s ORDER BY purchase_invoice_item_id"
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, (purchase_invoice_id,))
+                rows = cur.fetchall()
+                return rows
+
+    def exists_by_supplier_and_billno(self, supplier_id: int, invoice_number: str, exclude_id: Optional[int] = None) -> bool:
+        """Duplicate-bill safety check."""
+        get_connection = _get_connection()
+        sql = "SELECT 1 FROM purchase_invoice WHERE supplier_id = %s AND invoice_number = %s AND is_deleted = FALSE"
+        params: List[Any] = [supplier_id, invoice_number]
+        if exclude_id is not None:
+            sql += " AND purchase_invoice_id <> %s"
+            params.append(exclude_id)
+        sql += " LIMIT 1"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone() is not None
+
+    def get_last_internal_ref_sequence(self, prefix: str) -> int:
+        """Return highest numeric suffix currently present for internal_ref_number starting with prefix.
+        Returns 0 if none exist."""
+        get_connection = _get_connection()
+        # PostgreSQL: strip non-digits at start and cast remainder
+        sql = """
+            SELECT MAX(
+                NULLIF(REGEXP_REPLACE(internal_ref_number, '^\\D+', ''), '')::integer
+            ) AS max_seq
+            FROM purchase_invoice
+            WHERE internal_ref_number LIKE %s
+        """
+        like_pattern = f"{prefix}%"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (like_pattern,))
+                res = cur.fetchone()
+                if res and res[0]:
+                    return int(res[0])
+                return 0
+
+    def search(self, filters: PurchaseInvoiceSearchFilters) -> Tuple[List[dict], int]:
+        """Return (rows, total_count). Joins supplier for display convenience."""
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+
+        where_clauses = []
+        params: List[Any] = []
+
+        if filters.search_text:
+            where_clauses.append("(pi.internal_ref_number ILIKE %s OR pi.invoice_number ILIKE %s)")
+            like_val = f"%{filters.search_text}%"
+            params.extend([like_val, like_val])
+
+        if filters.supplier_id:
+            where_clauses.append("pi.supplier_id = %s")
+            params.append(filters.supplier_id)
+
+        if filters.status:
+            where_clauses.append("pi.status = %s")
+            params.append(filters.status)
+
+        if filters.date_from_ad:
+            where_clauses.append("pi.invoice_date_ad >= %s")
+            params.append(filters.date_from_ad)
+
+        if filters.date_to_ad:
+            where_clauses.append("pi.invoice_date_ad <= %s")
+            params.append(filters.date_to_ad)
+
+        if not filters.include_deleted:
+            where_clauses.append("pi.is_deleted = FALSE")
+
+        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        count_sql = "SELECT COUNT(1) FROM purchase_invoice pi" + where_sql
+        query_sql = (
+            "SELECT pi.*, s.supplier_name "
+            "FROM purchase_invoice pi "
+            "LEFT JOIN supplier s ON pi.supplier_id = s.supplier_id "
+            + where_sql +
+            " ORDER BY pi.created_at_ad DESC "
+            " LIMIT %s OFFSET %s"
+        )
+
+        limit = filters.page_size or 50
+        offset = (max(1, filters.page) - 1) * limit
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(count_sql, params)
+                total = cur.fetchone()["count"] if isinstance(cur.fetchone(), dict) else None
+            # run again (we reused cursor; re-run properly)
+            with conn.cursor(cursor_factory=factory) as cur2:
+                cur2.execute(count_sql, params)
+                count_row = cur2.fetchone()
+                total = int(count_row["count"]) if count_row and "count" in count_row else int(count_row[0]) if count_row else 0
+
+                cur2.execute(query_sql, params + [limit, offset])
+                rows = cur2.fetchall()
+                return rows, total
+
+    def soft_delete(self, purchase_invoice_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> None:
+        get_connection = _get_connection()
+        sql = "UPDATE purchase_invoice SET is_deleted = TRUE, deleted_by = %s, deleted_at_ad = %s, deleted_at_bs = %s WHERE purchase_invoice_id = %s"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (deleted_by, deleted_at_ad, deleted_at_bs, purchase_invoice_id))
+                conn.commit()
+
+
+================================================================================
+FILE: models/purchase_order_model.py
+================================================================================
+
+# models/purchase_order_model.py
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any, Optional, List, Tuple
+
+def _get_connection():
+    from database.db import get_connection
+    return get_connection
+
+
+def _dict_cursor_factory():
+    import psycopg2.extras
+    return psycopg2.extras.RealDictCursor
+
+
+@dataclass
+class PurchaseOrderSearchFilters:
+    search_text: Optional[str] = None
+    supplier_id: Optional[int] = None
+    status: Optional[str] = None
+    include_deleted: bool = False
+    page: int = 1
+    page_size: int = 50
+
+
+class PurchaseOrderModel:
+    """Data-access layer for `purchase_order` + `purchase_order_item`."""
+
+    def insert_order(self, data: dict[str, Any]) -> int:
+        get_connection = _get_connection()
+        keys = list(data.keys())
+        cols = ", ".join(keys)
+        vals = ", ".join(["%s"] * len(keys))
+        values = [data[k] for k in keys]
+        sql = f"INSERT INTO purchase_order ({cols}) VALUES ({vals}) RETURNING purchase_order_id"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, values)
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                return new_id
+
+    def insert_order_item(self, purchase_order_id: int, data: dict[str, Any]) -> int:
+        get_connection = _get_connection()
+        data = dict(data)
+        data["purchase_order_id"] = purchase_order_id
+        keys = list(data.keys())
+        cols = ", ".join(keys)
+        vals = ", ".join(["%s"] * len(keys))
+        values = [data[k] for k in keys]
+        sql = f"INSERT INTO purchase_order_item ({cols}) VALUES ({vals}) RETURNING po_item_id"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, values)
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                return new_id
+
+    def get_by_id(self, purchase_order_id: int, include_deleted: bool = False) -> Optional[dict]:
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = "SELECT * FROM purchase_order WHERE purchase_order_id = %s"
+        if not include_deleted:
+            sql += " AND is_deleted = FALSE"
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, (purchase_order_id,))
+                return cur.fetchone()
+
+    def get_items_by_order(self, purchase_order_id: int) -> List[dict]:
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = "SELECT * FROM purchase_order_item WHERE purchase_order_id = %s ORDER BY po_item_id"
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, (purchase_order_id,))
+                return cur.fetchall()
+
+    def get_open_order_items_for_item_ids(self, item_ids: List[int]) -> List[dict]:
+        """Return open (Draft/Sent) PO rows for the provided item_ids across suppliers."""
+        if not item_ids:
+            return []
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = """
+            SELECT poi.item_id,
+                   po.purchase_order_id AS po_id,
+                   po.po_number,
+                   s.supplier_name,
+                   poi.ordered_qty,
+                   po.status
+            FROM purchase_order_item poi
+            JOIN purchase_order po ON poi.purchase_order_id = po.purchase_order_id
+            LEFT JOIN supplier s ON po.supplier_id = s.supplier_id
+            WHERE poi.item_id = ANY(%s)
+              AND po.status IN ('Draft', 'Sent')
+              AND po.is_deleted = FALSE
+        """
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, (item_ids,))
+                return cur.fetchall()
+
+    def get_last_po_number_sequence(self, prefix: str) -> int:
+        get_connection = _get_connection()
+        sql = """
+            SELECT MAX(NULLIF(REGEXP_REPLACE(po_number, '^\\D+', ''), '')::integer) AS max_seq
+            FROM purchase_order
+            WHERE po_number LIKE %s
+        """
+        like_pattern = f"{prefix}%"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (like_pattern,))
+                res = cur.fetchone()
+                return int(res[0]) if res and res[0] else 0
+
+    def search(self, filters: PurchaseOrderSearchFilters) -> Tuple[List[dict], int]:
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        where_clauses = []
+        params = []
+        if filters.search_text:
+            where_clauses.append("(po.po_number ILIKE %s OR s.supplier_name ILIKE %s)")
+            like_val = f"%{filters.search_text}%"
+            params.extend([like_val, like_val])
+        if filters.supplier_id:
+            where_clauses.append("po.supplier_id = %s")
+            params.append(filters.supplier_id)
+        if filters.status:
+            where_clauses.append("po.status = %s")
+            params.append(filters.status)
+        if not filters.include_deleted:
+            where_clauses.append("po.is_deleted = FALSE")
+        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        count_sql = "SELECT COUNT(1) FROM purchase_order po LEFT JOIN supplier s ON po.supplier_id = s.supplier_id" + where_sql
+        query_sql = (
+            "SELECT po.*, s.supplier_name "
+            "FROM purchase_order po LEFT JOIN supplier s ON po.supplier_id = s.supplier_id "
+            + where_sql +
+            " ORDER BY po.created_at_ad DESC LIMIT %s OFFSET %s"
+        )
+        limit = filters.page_size or 50
+        offset = (max(1, filters.page) - 1) * limit
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(count_sql, params)
+                count_row = cur.fetchone()
+                total = int(count_row["count"]) if count_row and "count" in count_row else int(count_row[0]) if count_row else 0
+                cur.execute(query_sql, params + [limit, offset])
+                rows = cur.fetchall()
+                return rows, total
+
+    def mark_status(self, purchase_order_id: int, status: str, updated_by: int, updated_at_ad, updated_at_bs: str) -> None:
+        get_connection = _get_connection()
+        sql = "UPDATE purchase_order SET status = %s, updated_by = %s, updated_at_ad = %s, updated_at_bs = %s WHERE purchase_order_id = %s"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (status, updated_by, updated_at_ad, updated_at_bs, purchase_order_id))
+                conn.commit()
+
+    def soft_delete(self, purchase_order_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> None:
+        get_connection = _get_connection()
+        sql = "UPDATE purchase_order SET is_deleted = TRUE, deleted_by = %s, deleted_at_ad = %s, deleted_at_bs = %s WHERE purchase_order_id = %s"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (deleted_by, deleted_at_ad, deleted_at_bs, purchase_order_id))
+                conn.commit()
+
+
+================================================================================
+FILE: models/purchase_return_model.py
+================================================================================
+
+# models/purchase_return_model.py
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any, Optional, List
+
+def _get_connection():
+    from database.db import get_connection
+    return get_connection
+
+
+def _dict_cursor_factory():
+    import psycopg2.extras
+    return psycopg2.extras.RealDictCursor
+
+
+class PurchaseReturnModel:
+    """Data-access layer for purchase_return + purchase_return_item (Phase-2)."""
+
+    def insert_return(self, data: dict[str, Any]) -> int:
+        get_connection = _get_connection()
+        keys = list(data.keys())
+        cols = ", ".join(keys)
+        vals = ", ".join(["%s"] * len(keys))
+        values = [data[k] for k in keys]
+        sql = f"INSERT INTO purchase_return ({cols}) VALUES ({vals}) RETURNING purchase_return_id"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, values)
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                return new_id
+
+    def insert_return_item(self, purchase_return_id: int, data: dict[str, Any]) -> int:
+        get_connection = _get_connection()
+        data = dict(data)
+        data["purchase_return_id"] = purchase_return_id
+        keys = list(data.keys())
+        cols = ", ".join(keys)
+        vals = ", ".join(["%s"] * len(keys))
+        values = [data[k] for k in keys]
+        sql = f"INSERT INTO purchase_return_item ({cols}) VALUES ({vals}) RETURNING purchase_return_item_id"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, values)
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                return new_id
+
+    def get_by_id(self, purchase_return_id: int) -> Optional[dict]:
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = "SELECT * FROM purchase_return WHERE purchase_return_id = %s AND is_deleted = FALSE"
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, (purchase_return_id,))
+                return cur.fetchone()
+
+    def get_items_by_return(self, purchase_return_id: int) -> List[dict]:
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = "SELECT * FROM purchase_return_item WHERE purchase_return_id = %s ORDER BY purchase_return_item_id"
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, (purchase_return_id,))
+                return cur.fetchall()
 
 
 ================================================================================
@@ -20331,6 +21918,11 @@ from screens.user_list_screen import UserListScreen
 from screens.customer_list_screen import CustomerListScreen
 from screens.customer_form_screen import CustomerFormScreen
 
+from screens.purchase_order_list_screen import PurchaseOrderListScreen
+from screens.purchase_order_form_screen import PurchaseOrderFormScreen
+from screens.purchase_invoice_list_screen import PurchaseInvoiceListScreen
+from screens.purchase_invoice_form_screen import PurchaseInvoiceFormScreen
+
 logger = get_logger()
 
 REFRESH_INTERVAL_MS = 60_000  # KPI auto-refresh, configurable later via Settings
@@ -20593,6 +22185,20 @@ class DashboardScreen(QMainWindow):
             )
             self.settings_screen.setWindowFlag(Qt.Window)
             self.settings_screen.show()
+
+        # ---- PURCHASE MODULE (NAYA) ----
+        elif module_name == "purchase list":
+            self.purchase_order_list = PurchaseOrderListScreen(self)
+            self.purchase_order_list.setWindowFlag(Qt.Window)
+            self.purchase_order_list.show()
+        elif module_name == "new purchase":
+            self.purchase_order_form = PurchaseOrderFormScreen(self)
+            self.purchase_order_form.setWindowFlag(Qt.Window)
+            self.purchase_order_form.show()
+        elif module_name == "purchase invoice list":
+            self.purchase_invoice_list = PurchaseInvoiceListScreen(self)
+            self.purchase_invoice_list.setWindowFlag(Qt.Window)
+            self.purchase_invoice_list.show()
     # -----------------------------------------------------
     # LOGOUT
     # -----------------------------------------------------
@@ -22623,6 +24229,854 @@ class MasterManageDialog(QDialog):
 
 
 __all__ = ["MasterManageDialog"]
+
+
+================================================================================
+FILE: screens/purchase_invoice_form_screen.py
+================================================================================
+
+# screens/purchase_invoice_form_screen.py
+from __future__ import annotations
+import logging
+from typing import Optional, List
+
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
+    QTableWidget, QTableWidgetItem, QDoubleSpinBox, QMessageBox, QHeaderView
+)
+from PySide6.QtCore import Qt
+
+logger = logging.getLogger(__name__)
+
+
+class PurchaseInvoiceFormScreen(QDialog):
+    """
+    Minimal Purchase Invoice form (Phase-1).
+    Notes:
+    - This screen is purposely minimal: the engine performs validation and persistence.
+    - When user links a PO, we pre-fill lines from that PO (if available) via purchase_order_engine.get_purchase_order().
+    """
+
+    def __init__(self, parent, engine, purchase_order_engine, supplier_engine, item_model):
+        super().__init__(parent)
+        self._engine = engine
+        self._po_engine = purchase_order_engine
+        self._supplier_engine = supplier_engine
+        self._item_model = item_model
+
+        self.setWindowTitle("Create Purchase Invoice")
+        self.resize(1000, 600)
+
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Supplier:"))
+        self.cmb_supplier = QComboBox()
+        header_layout.addWidget(self.cmb_supplier)
+
+        header_layout.addWidget(QLabel("Link PO:"))
+        self.cmb_po = QComboBox()
+        header_layout.addWidget(self.cmb_po)
+
+        self.btn_load_po = QPushButton("Load PO")
+        header_layout.addWidget(self.btn_load_po)
+
+        # Lines table (simplified)
+        self.tbl = QTableWidget(0, 9)
+        self.tbl.setHorizontalHeaderLabels(["Item ID", "Item", "Batch No", "Expiry M", "Expiry Y", "Qty", "Free Qty", "Purchase Rate", "Discount %"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl.setColumnHidden(0, True)
+
+        footer = QHBoxLayout()
+        self.btn_save = QPushButton("Save Invoice")
+        self.btn_close = QPushButton("Close")
+        footer.addWidget(self.btn_save)
+        footer.addWidget(self.btn_close)
+
+        main = QVBoxLayout()
+        main.addLayout(header_layout)
+        main.addWidget(self.tbl)
+        main.addLayout(footer)
+        self.setLayout(main)
+
+        # signals
+        self.btn_load_po.clicked.connect(self._on_load_po_clicked)
+        self.btn_save.clicked.connect(self._on_save_clicked)
+        self.btn_close.clicked.connect(self.close)
+
+        self._populate_suppliers()
+        self._populate_po_dropdown()
+
+    def _populate_suppliers(self):
+        self.cmb_supplier.clear()
+        try:
+            suppliers = []
+            if hasattr(self._supplier_engine, "list_active"):
+                suppliers = self._supplier_engine.list_active()
+            elif hasattr(self._supplier_engine, "get_active_companies"):
+                suppliers = self._supplier_engine.get_active_companies()
+            else:
+                suppliers = []
+        except Exception:
+            suppliers = []
+        self.cmb_supplier.addItem("Select Supplier", None)
+        for s in suppliers or []:
+            if isinstance(s, dict):
+                self.cmb_supplier.addItem(s.get("supplier_name") or s.get("supplier_code") or str(s.get("supplier_id")), s.get("supplier_id"))
+            else:
+                self.cmb_supplier.addItem(str(s), None)
+
+    def _populate_po_dropdown(self):
+        self.cmb_po.clear()
+        self.cmb_po.addItem("None", None)
+        try:
+            # fetch recent Draft/Sent POs for convenience; adapt API if needed
+            rows, total = self._po_engine.search_purchase_orders(page=1, page_size=200)
+            for r in rows:
+                label = f"{r.get('po_number')} - {r.get('supplier_name')}"
+                self.cmb_po.addItem(label, r.get('purchase_order_id'))
+        except Exception:
+            pass
+
+    def _on_load_po_clicked(self):
+        po_id = self.cmb_po.currentData()
+        if not po_id:
+            QMessageBox.information(self, "No PO", "Please select a PO to load.")
+            return
+        try:
+            dto = self._po_engine.get_purchase_order(po_id)
+            if not dto:
+                QMessageBox.warning(self, "Not found", "Selected PO not found.")
+                return
+            # Clear table and add PO lines
+            self.tbl.setRowCount(0)
+            for ln in dto.lines:
+                row = self.tbl.rowCount()
+                self.tbl.insertRow(row)
+                self.tbl.setItem(row, 0, QTableWidgetItem(str(ln.item_id)))
+                item_name = ""
+                try:
+                    item_row = self._item_model.get_by_id(ln.item_id)
+                    item_name = item_row.get("item_name") if item_row else ""
+                except Exception:
+                    item_name = ""
+                self.tbl.setItem(row, 1, QTableWidgetItem(item_name))
+                self.tbl.setItem(row, 2, QTableWidgetItem("AUTO-BATCH"))  # user may override
+                self.tbl.setItem(row, 3, QTableWidgetItem("1"))
+                self.tbl.setItem(row, 4, QTableWidgetItem("2083"))
+                self.tbl.setItem(row, 5, QTableWidgetItem(str(ln.ordered_qty)))
+                self.tbl.setItem(row, 6, QTableWidgetItem("0"))
+                rate_widget = QDoubleSpinBox()
+                rate_widget.setRange(0, 99999999)
+                rate_widget.setDecimals(2)
+                rate_widget.setValue(float(ln.rate or 0))
+                self.tbl.setCellWidget(row, 7, rate_widget)
+                disc_widget = QDoubleSpinBox()
+                disc_widget.setRange(0, 100)
+                disc_widget.setDecimals(2)
+                disc_widget.setValue(0.0)
+                self.tbl.setCellWidget(row, 8, disc_widget)
+        except Exception as exc:
+            logger.exception("Load PO failed")
+            QMessageBox.critical(self, "Error", f"Could not load PO: {exc}")
+
+    def _collect_form(self):
+        supplier_id = self.cmb_supplier.currentData()
+        if not supplier_id:
+            QMessageBox.warning(self, "Validation", "Please choose a supplier.")
+            return None
+        lines = []
+        for r in range(self.tbl.rowCount()):
+            try:
+                item_id = int(self.tbl.item(r, 0).text())
+            except Exception:
+                continue
+            batch_no = self.tbl.item(r, 2).text() if self.tbl.item(r, 2) else ""
+            expiry_m = int(self.tbl.item(r, 3).text()) if self.tbl.item(r, 3) else 0
+            expiry_y = int(self.tbl.item(r, 4).text()) if self.tbl.item(r, 4) else 0
+            qty = float(self.tbl.item(r, 5).text()) if self.tbl.item(r, 5) else 0
+            free_qty = float(self.tbl.item(r, 6).text()) if self.tbl.item(r, 6) else 0
+            rate_widget = self.tbl.cellWidget(r, 7)
+            purchase_rate = float(rate_widget.value()) if rate_widget else 0.0
+            disc_widget = self.tbl.cellWidget(r, 8)
+            discount_percent = float(disc_widget.value()) if disc_widget else 0.0
+            if qty <= 0 and free_qty <= 0:
+                continue
+            lines.append({
+                "item_id": item_id,
+                "batch_no": batch_no,
+                "expiry_month": expiry_m,
+                "expiry_year": expiry_y,
+                "qty": qty,
+                "free_qty": free_qty,
+                "purchase_rate": purchase_rate,
+                "discount_percent": discount_percent,
+                "mrp": 0,
+                "sale_rate": 0
+            })
+        if not lines:
+            QMessageBox.warning(self, "Validation", "No invoice lines provided.")
+            return None
+
+        payload = {
+            "supplier_id": supplier_id,
+            "invoice_number": "",  # user should set; UI simplified for example
+            "invoice_date_bs": None,
+            "lines": lines,
+            "total_freight_amount": 0,
+            "total_other_charges": 0,
+            "remarks": None,
+        }
+        return payload
+
+    def _on_save_clicked(self):
+        payload = self._collect_form()
+        if not payload:
+            return
+        try:
+            dto = self._engine.create_purchase_invoice(payload, current_user_id=1)
+            QMessageBox.information(self, "Saved", f"Purchase Invoice created: {dto.internal_ref_number}")
+            self.close()
+        except Exception as exc:
+            logger.exception("Invoice save failed")
+            QMessageBox.critical(self, "Error", f"Failed to save invoice: {exc}")
+
+
+================================================================================
+FILE: screens/purchase_invoice_list_screen.py
+================================================================================
+
+# screens/purchase_invoice_list_screen.py
+from __future__ import annotations
+import logging
+from typing import Optional
+
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QMessageBox, QHeaderView, QHBoxLayout, QLabel, QComboBox
+from PySide6.QtCore import Qt
+
+logger = logging.getLogger(__name__)
+
+
+class PurchaseInvoiceListScreen(QWidget):
+    def __init__(self, parent, engine, supplier_engine):
+        super().__init__(parent)
+        self._engine = engine
+        self._supplier_engine = supplier_engine
+        self.setWindowTitle("Purchase Invoices")
+        self.resize(1000, 600)
+
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(QLabel("Supplier:"))
+        self.cmb_supplier = QComboBox()
+        top_layout.addWidget(self.cmb_supplier)
+        self.btn_refresh = QPushButton("Refresh")
+        top_layout.addWidget(self.btn_refresh)
+
+        self.tbl = QTableWidget(0, 6)
+        self.tbl.setHorizontalHeaderLabels(["Invoice ID", "Ref No", "Supplier", "Grand Total", "Status", "Actions"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl.setColumnHidden(0, True)
+
+        layout = QVBoxLayout()
+        layout.addLayout(top_layout)
+        layout.addWidget(self.tbl)
+        self.setLayout(layout)
+
+        self.btn_refresh.clicked.connect(self.refresh)
+        self._populate_suppliers()
+        self.refresh()
+
+    def _populate_suppliers(self):
+        self.cmb_supplier.clear()
+        self.cmb_supplier.addItem("All", None)
+        try:
+            suppliers = []
+            if hasattr(self._supplier_engine, "list_active"):
+                suppliers = self._supplier_engine.list_active()
+            for s in suppliers:
+                if isinstance(s, dict):
+                    self.cmb_supplier.addItem(s.get("supplier_name") or s.get("supplier_code"), s.get("supplier_id"))
+        except Exception:
+            pass
+
+    def refresh(self):
+        try:
+            supplier_id = self.cmb_supplier.currentData()
+            rows, total = self._engine.search_purchase_invoices(search_text=None, supplier_id=supplier_id, status=None, include_deleted=False, page=1, page_size=200)
+        except Exception as exc:
+            logger.exception("Invoice search failed")
+            QMessageBox.critical(self, "Error", f"Failed to load invoices: {exc}")
+            return
+
+        self.tbl.setRowCount(0)
+        for r in rows:
+            row = self.tbl.rowCount()
+            self.tbl.insertRow(row)
+            self.tbl.setItem(row, 0, QTableWidgetItem(str(r.get("purchase_invoice_id"))))
+            self.tbl.setItem(row, 1, QTableWidgetItem(str(r.get("internal_ref_number") or r.get("invoice_number"))))
+            self.tbl.setItem(row, 2, QTableWidgetItem(str(r.get("supplier_name") or r.get("supplier_id"))))
+            self.tbl.setItem(row, 3, QTableWidgetItem(str(r.get("grand_total"))))
+            self.tbl.setItem(row, 4, QTableWidgetItem(str(r.get("status"))))
+
+            btn_view = QPushButton("View")
+            btn_cancel = QPushButton("Cancel")
+            widget = QWidget()
+            h = QHBoxLayout()
+            h.setContentsMargins(0, 0, 0, 0)
+            h.addWidget(btn_view)
+            h.addWidget(btn_cancel)
+            widget.setLayout(h)
+            self.tbl.setCellWidget(row, 5, widget)
+
+            inv_id = r.get("purchase_invoice_id")
+            btn_view.clicked.connect(lambda _, pid=inv_id: self._on_view(pid))
+            btn_cancel.clicked.connect(lambda _, pid=inv_id: self._on_cancel(pid))
+
+    def _on_view(self, invoice_id: int):
+        try:
+            dto = self._engine.get_purchase_invoice(invoice_id)
+            if not dto:
+                QMessageBox.warning(self, "Not found", "Invoice not found.")
+                return
+            lines = "\n".join([f"{l.item_id} qty:{l.qty} free:{l.free_qty} rate:{l.purchase_rate}" for l in dto.lines])
+            QMessageBox.information(self, f"Invoice {dto.internal_ref_number}", f"Supplier: {dto.supplier_id}\nTotal: {dto.grand_total}\n\nLines:\n{lines}")
+        except Exception as exc:
+            logger.exception("View invoice failed")
+            QMessageBox.critical(self, "Error", f"Could not view invoice: {exc}")
+
+    def _on_cancel(self, invoice_id: int):
+        resp = QMessageBox.question(self, "Confirm", "Cancel this invoice? (soft-delete)")
+        if resp != QMessageBox.Yes:
+            return
+        try:
+            self._engine.cancel_purchase_invoice(invoice_id, current_user_id=1, reason="Cancelled via UI")
+            QMessageBox.information(self, "Cancelled", "Invoice cancelled (soft-delete).")
+            self.refresh()
+        except Exception as exc:
+            logger.exception("Cancel invoice failed")
+            QMessageBox.critical(self, "Error", f"Could not cancel invoice: {exc}")
+
+
+================================================================================
+FILE: screens/purchase_order_form_screen.py
+================================================================================
+
+# screens/purchase_order_form_screen.py
+from __future__ import annotations
+import webbrowser
+import urllib.parse
+import logging
+from typing import Optional, List
+
+from PySide6.QtWidgets import (
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QPushButton, QTableWidget, QTableWidgetItem, QSpinBox, QDoubleSpinBox,
+    QMessageBox, QHeaderView
+)
+from PySide6.QtCore import Qt
+
+logger = logging.getLogger(__name__)
+
+
+class PurchaseOrderFormScreen(QDialog):
+    """
+    Purchase Order form dialog (Phase-1).
+    - Loads low-stock suggestions via PurchaseOrderEngine.get_low_stock_suggestions()
+    - Allows editing suggested qty, adding manual items (simple add UI)
+    - Save -> PurchaseOrderEngine.create_purchase_order()
+    - After save shows "Send via WhatsApp / Email" buttons (which only build URLs and open webbrowser)
+    Note: This is UI glue only. Validation and persistence live in the engines.
+    """
+
+    def __init__(self, parent: Optional[QWidget], engine, supplier_engine, item_lookup_registry) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Create Purchase Order")
+        self.resize(900, 600)
+        self._engine = engine
+        self._supplier_engine = supplier_engine
+        self._item_lookup = item_lookup_registry
+
+        # Header UI
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Supplier:"))
+        self.cmb_supplier = QComboBox()
+        header_layout.addWidget(self.cmb_supplier)
+        header_layout.addStretch()
+        self.btn_add_item = QPushButton("+ Add Item")
+        header_layout.addWidget(self.btn_add_item)
+
+        # Table for lines
+        self.tbl = QTableWidget(0, 7)
+        self.tbl.setHorizontalHeaderLabels(["Item ID", "Item", "Current", "Minimum", "Suggested", "Qty to Order", "Rate"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl.setColumnHidden(0, True)  # hide item_id column visually if desired
+
+        # Bottom actions
+        actions_layout = QHBoxLayout()
+        self.btn_save = QPushButton("Save Purchase Order")
+        self.btn_whatsapp = QPushButton("Send via WhatsApp")
+        self.btn_email = QPushButton("Send via Email")
+        self.btn_close = QPushButton("Close")
+        actions_layout.addWidget(self.btn_save)
+        actions_layout.addWidget(self.btn_whatsapp)
+        actions_layout.addWidget(self.btn_email)
+        actions_layout.addStretch()
+        actions_layout.addWidget(self.btn_close)
+
+        # Assemble
+        main = QVBoxLayout()
+        main.addLayout(header_layout)
+        main.addWidget(self.tbl)
+        main.addLayout(actions_layout)
+        self.setLayout(main)
+
+        # Signals
+        self.btn_add_item.clicked.connect(self._on_add_item_manually_clicked)
+        self.btn_save.clicked.connect(self._on_save_clicked)
+        self.btn_whatsapp.clicked.connect(self._on_send_whatsapp_clicked)
+        self.btn_email.clicked.connect(self._on_send_email_clicked)
+        self.btn_close.clicked.connect(self.close)
+
+        # Load supplier list and suggestions
+        self._populate_supplier_combo()
+        self._load_low_stock_suggestions()
+
+        # Hold last created PO id for send actions
+        self._last_po_id: Optional[int] = None
+
+    def _populate_supplier_combo(self):
+        # Try a few likely APIs on supplier_engine; adjust to your supplier_engine API.
+        self.cmb_supplier.clear()
+        try:
+            if hasattr(self._supplier_engine, "get_active_companies"):
+                rows = self._supplier_engine.get_active_companies()
+            elif hasattr(self._supplier_engine, "list_active"):
+                rows = self._supplier_engine.list_active()
+            elif hasattr(self._supplier_engine, "search_suppliers"):
+                rows, _ = self._supplier_engine.search_suppliers(None, None, None, False, 1, 100)
+            else:
+                rows = []
+        except Exception:
+            rows = []
+
+        # rows may be list of dicts or list of tuples; map safely
+        for r in rows or []:
+            if isinstance(r, dict):
+                display = r.get("supplier_name") or r.get("supplier_code") or str(r.get("supplier_id"))
+                supplier_id = r.get("supplier_id")
+            else:
+                # fallback to tuple-like
+                display = str(r)
+                supplier_id = None
+            self.cmb_supplier.addItem(display, supplier_id)
+
+    def _load_low_stock_suggestions(self):
+        try:
+            suggestions = self._engine.get_low_stock_suggestions()
+        except Exception as exc:
+            logger.exception("Failed to load low stock suggestions")
+            QMessageBox.warning(self, "Error", f"Could not load suggestions: {exc}")
+            suggestions = []
+
+        self.tbl.setRowCount(0)
+        for s in suggestions:
+            self._add_suggestion_row(s)
+
+    def _add_suggestion_row(self, s):
+        row = self.tbl.rowCount()
+        self.tbl.insertRow(row)
+
+        # item_id (hidden)
+        item_id_item = QTableWidgetItem(str(s.item_id))
+        item_id_item.setFlags(Qt.ItemIsEnabled)
+        self.tbl.setItem(row, 0, item_id_item)
+
+        # item name
+        itm = QTableWidgetItem(s.item_name)
+        itm.setFlags(Qt.ItemIsEnabled)
+        self.tbl.setItem(row, 1, itm)
+
+        # current stock
+        cur = QTableWidgetItem(str(s.current_stock))
+        cur.setFlags(Qt.ItemIsEnabled)
+        self.tbl.setItem(row, 2, cur)
+
+        # minimum
+        mn = QTableWidgetItem(str(s.minimum_stock))
+        mn.setFlags(Qt.ItemIsEnabled)
+        self.tbl.setItem(row, 3, mn)
+
+        # suggested (read-only)
+        sug = QTableWidgetItem(str(s.suggested_qty))
+        sug.setFlags(Qt.ItemIsEnabled)
+        self.tbl.setItem(row, 4, sug)
+
+        # qty to order (editable spin)
+        spin = QSpinBox()
+        spin.setRange(0, 1000000)
+        spin.setValue(max(0, int(s.suggested_qty)))
+        self.tbl.setCellWidget(row, 5, spin)
+
+        # rate (editable)
+        rate = QDoubleSpinBox()
+        rate.setRange(0, 99999999)
+        rate.setDecimals(2)
+        rate.setValue(0.0)
+        self.tbl.setCellWidget(row, 6, rate)
+
+    def _on_add_item_manually_clicked(self):
+        # Very simple manual add: let item_lookup_registry provide a (id, name)
+        try:
+            picker = self._item_lookup  # expected to expose search UI or a helper
+            # If it provides a simple search(list) function, you can open a custom dialog.
+            # For now we'll prompt for item id via a blocking input (quick path).
+            from PySide6.QtWidgets import QInputDialog
+            item_id, ok = QInputDialog.getInt(self, "Add Item", "Enter Item ID:")
+            if not ok:
+                return
+            # fetch item_name from item_model
+            try:
+                im = self._item_lookup  # if registry exposes lookup, else fallback to ItemModel
+                if hasattr(self._item_lookup, "get_item_by_id"):
+                    item_row = self._item_lookup.get_item_by_id(item_id)
+                else:
+                    from models.item_model import ItemModel
+                    item_row = ItemModel().get_by_id(item_id)
+                item_name = item_row.get("item_name") if item_row else f"Item {item_id}"
+                current_stock = float(item_row.get("total_stock") or 0) if item_row else 0
+                minimum_stock = float(item_row.get("minimum_stock") or 0) if item_row else 0
+            except Exception:
+                item_name = f"Item {item_id}"
+                current_stock = 0
+                minimum_stock = 0
+            suggestion = type("S", (), {
+                "item_id": item_id,
+                "item_name": item_name,
+                "current_stock": current_stock,
+                "minimum_stock": minimum_stock,
+                "suggested_qty": max(0, int(minimum_stock - current_stock))
+            })
+            self._add_suggestion_row(suggestion)
+        except Exception as exc:
+            logger.exception("Add item failed")
+            QMessageBox.warning(self, "Error", f"Could not add item: {exc}")
+
+    def _collect_form_values(self):
+        # Build payload expected by engine.create_purchase_order()
+        supplier_id = self.cmb_supplier.currentData()
+        if supplier_id is None:
+            # attempt to parse text if data missing
+            supplier_text = self.cmb_supplier.currentText()
+            QMessageBox.warning(self, "Validation", "Please select a supplier.")
+            return None
+
+        lines = []
+        for r in range(self.tbl.rowCount()):
+            item_id = int(self.tbl.item(r, 0).text())
+            qty_widget = self.tbl.cellWidget(r, 5)
+            rate_widget = self.tbl.cellWidget(r, 6)
+            ordered_qty = int(qty_widget.value()) if qty_widget else 0
+            rate = float(rate_widget.value()) if rate_widget else 0.0
+            if ordered_qty <= 0:
+                continue  # skip unchecked rows
+            lines.append({
+                "item_id": item_id,
+                "ordered_qty": ordered_qty,
+                "rate": rate,
+                "is_auto_suggested": True,
+            })
+        if not lines:
+            QMessageBox.warning(self, "Validation", "No items selected to order.")
+            return None
+
+        payload = {
+            "po_number": None,
+            "supplier_id": supplier_id,
+            "order_date_bs": None,  # engine will stamp if missing
+            "lines": lines,
+            "remarks": None,
+        }
+        return payload
+
+    def _on_save_clicked(self):
+        payload = self._collect_form_values()
+        if not payload:
+            return
+        try:
+            current_user_id = 1  # TODO: replace with actual current user id from integration adapter
+            dto = self._engine.create_purchase_order(payload, current_user_id)
+            QMessageBox.information(self, "Saved", f"Purchase Order created: {dto.po_number}")
+            # Save last PO id
+            self._last_po_id = dto.purchase_order_id
+            # allow immediate sending
+        except Exception as exc:
+            logger.exception("Failed to save PO")
+            QMessageBox.critical(self, "Error", f"Failed to save purchase order: {exc}")
+
+    def _on_send_whatsapp_clicked(self):
+        if not self._last_po_id:
+            QMessageBox.warning(self, "Not Sent", "Save the Purchase Order first before sending.")
+            return
+        try:
+            text_map = self._engine.build_supplier_message(self._last_po_id)
+            # Get supplier mobile (best-effort)
+            supplier_id = self.cmb_supplier.currentData()
+            mobile = ""
+            try:
+                supplier = self._supplier_engine.get_supplier(supplier_id)
+                mobile = supplier.get("mobile_no") if supplier else ""
+            except Exception:
+                mobile = ""
+            if not mobile:
+                QMessageBox.warning(self, "No Mobile", "Supplier mobile number is not available.")
+                return
+            url = f"https://wa.me/{mobile}?text={urllib.parse.quote(text_map['whatsapp_text'])}"
+            webbrowser.open(url)
+            # mark sent
+            current_user_id = 1
+            self._engine._model  # touch for debugging
+            try:
+                # Mark via engine if exists
+                self._engine._model  # no-op
+                self._engine._model  # keep consistent
+            except Exception:
+                pass
+            # call purchase_order_engine.mark_sent via engine reference
+            try:
+                # We don't have the PO id on engine return in this simplified flow; use stored id
+                self._engine._purchase_order_engine.mark_sent(self._last_po_id, "whatsapp", current_user_id)
+            except Exception:
+                # fallback: try to mark via purchase_order engine itself (if accessible)
+                pass
+            QMessageBox.information(self, "Sent", "WhatsApp link opened.")
+        except Exception as exc:
+            logger.exception("WhatsApp send failed")
+            QMessageBox.critical(self, "Error", f"Could not build/send WhatsApp message: {exc}")
+
+    def _on_send_email_clicked(self):
+        if not self._last_po_id:
+            QMessageBox.warning(self, "Not Sent", "Save the Purchase Order first before sending.")
+            return
+        try:
+            text_map = self._engine.build_supplier_message(self._last_po_id)
+            supplier_id = self.cmb_supplier.currentData()
+            email = ""
+            try:
+                supplier = self._supplier_engine.get_supplier(supplier_id)
+                email = supplier.get("email") if supplier else ""
+            except Exception:
+                email = ""
+            if not email:
+                QMessageBox.warning(self, "No Email", "Supplier email is not available.")
+                return
+            subject = urllib.parse.quote(text_map["email_subject"])
+            body = urllib.parse.quote(text_map["email_body"])
+            url = f"mailto:{email}?subject={subject}&body={body}"
+            webbrowser.open(url)
+            # mark sent
+            try:
+                self._engine._purchase_order_engine.mark_sent(self._last_po_id, "email", 1)
+            except Exception:
+                pass
+            QMessageBox.information(self, "Sent", "Email client opened.")
+        except Exception as exc:
+            logger.exception("Email send failed")
+            QMessageBox.critical(self, "Error", f"Could not build/send Email message: {exc}")
+
+
+================================================================================
+FILE: screens/purchase_order_list_screen.py
+================================================================================
+
+# screens/purchase_order_list_screen.py
+from __future__ import annotations
+import webbrowser
+import urllib.parse
+import logging
+from typing import Optional
+
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
+    QTableWidget, QTableWidgetItem, QMessageBox, QHeaderView
+)
+from PySide6.QtCore import Qt
+
+logger = logging.getLogger(__name__)
+
+
+class PurchaseOrderListScreen(QWidget):
+    """
+    Simple list screen to browse purchase orders and send whatsapp/email links.
+    """
+    def __init__(self, parent, engine, supplier_engine):
+        super().__init__(parent)
+        self._engine = engine
+        self._supplier_engine = supplier_engine
+
+        self.setWindowTitle("Purchase Orders")
+        self.resize(1000, 600)
+
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(QLabel("Supplier:"))
+        self.cmb_supplier = QComboBox()
+        top_layout.addWidget(self.cmb_supplier)
+        top_layout.addStretch()
+        self.btn_refresh = QPushButton("Refresh")
+        top_layout.addWidget(self.btn_refresh)
+
+        self.tbl = QTableWidget(0, 6)
+        self.tbl.setHorizontalHeaderLabels(["PO ID", "PO Number", "Supplier", "Status", "Created At", "Actions"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl.setColumnHidden(0, True)
+
+        main = QVBoxLayout()
+        main.addLayout(top_layout)
+        main.addWidget(self.tbl)
+        self.setLayout(main)
+
+        self.btn_refresh.clicked.connect(self.refresh)
+        self._populate_supplier_combo()
+        self.refresh()
+
+    def _populate_supplier_combo(self):
+        self.cmb_supplier.clear()
+        try:
+            if hasattr(self._supplier_engine, "list_active"):
+                suppliers = self._supplier_engine.list_active()
+            elif hasattr(self._supplier_engine, "get_active_companies"):
+                suppliers = self._supplier_engine.get_active_companies()
+            else:
+                suppliers = []
+        except Exception:
+            suppliers = []
+        self.cmb_supplier.addItem("All", None)
+        for s in suppliers or []:
+            if isinstance(s, dict):
+                self.cmb_supplier.addItem(s.get("supplier_name") or s.get("supplier_code") or str(s.get("supplier_id")), s.get("supplier_id"))
+            else:
+                self.cmb_supplier.addItem(str(s), None)
+
+    def refresh(self):
+        try:
+            supplier_id = self.cmb_supplier.currentData()
+            rows, total = self._engine.search_purchase_orders(search_text=None, supplier_id=supplier_id, status=None, include_deleted=False, page=1, page_size=200)
+        except Exception as exc:
+            logger.exception("Failed to search purchase orders")
+            QMessageBox.critical(self, "Error", f"Failed to load purchase orders: {exc}")
+            return
+
+        self.tbl.setRowCount(0)
+        for r in rows:
+            row = self.tbl.rowCount()
+            self.tbl.insertRow(row)
+            self.tbl.setItem(row, 0, QTableWidgetItem(str(r.get("purchase_order_id"))))
+            self.tbl.setItem(row, 1, QTableWidgetItem(str(r.get("po_number"))))
+            self.tbl.setItem(row, 2, QTableWidgetItem(str(r.get("supplier_name") or r.get("supplier_id"))))
+            self.tbl.setItem(row, 3, QTableWidgetItem(str(r.get("status"))))
+            self.tbl.setItem(row, 4, QTableWidgetItem(str(r.get("created_at_ad"))))
+
+            # Actions cell: WhatsApp, Email, View, Cancel
+            actions_widget = QWidget()
+            layout = QHBoxLayout()
+            btn_wa = QPushButton("📱")
+            btn_email = QPushButton("✉")
+            btn_view = QPushButton("View")
+            btn_cancel = QPushButton("Cancel")
+            layout.addWidget(btn_wa)
+            layout.addWidget(btn_email)
+            layout.addWidget(btn_view)
+            layout.addWidget(btn_cancel)
+            layout.setContentsMargins(0, 0, 0, 0)
+            actions_widget.setLayout(layout)
+            self.tbl.setCellWidget(row, 5, actions_widget)
+
+            purchase_order_id = r.get("purchase_order_id")
+            btn_wa.clicked.connect(lambda _, pid=purchase_order_id: self._on_whatsapp_clicked(pid))
+            btn_email.clicked.connect(lambda _, pid=purchase_order_id: self._on_email_clicked(pid))
+            btn_view.clicked.connect(lambda _, pid=purchase_order_id: self._on_view_clicked(pid))
+            btn_cancel.clicked.connect(lambda _, pid=purchase_order_id: self._on_cancel_clicked(pid))
+
+    def _on_whatsapp_clicked(self, purchase_order_id: int):
+        try:
+            text_map = self._engine.build_supplier_message(purchase_order_id)
+            # Lookup supplier mobile
+            # We assume engine or supplier_engine can return supplier row
+            po = self._engine.get_purchase_order(purchase_order_id)
+            supplier_id = po.supplier_id if po else None
+            mobile = ""
+            if supplier_id:
+                try:
+                    s = self._supplier_engine.get_supplier(supplier_id)
+                    mobile = s.get("mobile_no") if s else ""
+                except Exception:
+                    mobile = ""
+            if not mobile:
+                QMessageBox.warning(self, "No Mobile", "Supplier mobile not available.")
+                return
+            url = f"https://wa.me/{mobile}?text={urllib.parse.quote(text_map['whatsapp_text'])}"
+            webbrowser.open(url)
+            # mark sent
+            try:
+                self._engine._purchase_order_engine.mark_sent(purchase_order_id, "whatsapp", 1)
+            except Exception:
+                pass
+            QMessageBox.information(self, "Opened", "WhatsApp link opened.")
+            self.refresh()
+        except Exception as exc:
+            logger.exception("Failed to open WhatsApp link")
+            QMessageBox.critical(self, "Error", f"Could not open WhatsApp link: {exc}")
+
+    def _on_email_clicked(self, purchase_order_id: int):
+        try:
+            text_map = self._engine.build_supplier_message(purchase_order_id)
+            po = self._engine.get_purchase_order(purchase_order_id)
+            supplier_id = po.supplier_id if po else None
+            email = ""
+            if supplier_id:
+                try:
+                    s = self._supplier_engine.get_supplier(supplier_id)
+                    email = s.get("email") if s else ""
+                except Exception:
+                    email = ""
+            if not email:
+                QMessageBox.warning(self, "No Email", "Supplier email not available.")
+                return
+            subject = urllib.parse.quote(text_map["email_subject"])
+            body = urllib.parse.quote(text_map["email_body"])
+            url = f"mailto:{email}?subject={subject}&body={body}"
+            webbrowser.open(url)
+            try:
+                self._engine._purchase_order_engine.mark_sent(purchase_order_id, "email", 1)
+            except Exception:
+                pass
+            QMessageBox.information(self, "Opened", "Email client opened.")
+            self.refresh()
+        except Exception as exc:
+            logger.exception("Failed to open Email link")
+            QMessageBox.critical(self, "Error", f"Could not open Email link: {exc}")
+
+    def _on_view_clicked(self, purchase_order_id: int):
+        try:
+            dto = self._engine.get_purchase_order(purchase_order_id)
+            if not dto:
+                QMessageBox.warning(self, "Not found", "Purchase order not found.")
+                return
+            # Simple read-only dialog showing lines (reuse minimal QMessageBox)
+            lines = "\n".join([f"{ln.item_id}  qty:{ln.ordered_qty} rate:{ln.rate}" for ln in dto.lines]) if dto.lines else "(no lines)"
+            QMessageBox.information(self, f"PO {dto.po_number}", f"Supplier ID: {dto.supplier_id}\nStatus: {dto.status}\n\nLines:\n{lines}")
+        except Exception as exc:
+            logger.exception("View failed")
+            QMessageBox.critical(self, "Error", f"Could not open PO: {exc}")
+
+    def _on_cancel_clicked(self, purchase_order_id: int):
+        resp = QMessageBox.question(self, "Confirm", "Cancel this purchase order? (soft-delete)")
+        if resp != QMessageBox.Yes:
+            return
+        try:
+            self._engine.cancel_purchase_order(purchase_order_id, current_user_id=1)
+            QMessageBox.information(self, "Cancelled", "Purchase order cancelled.")
+            self.refresh()
+        except Exception as exc:
+            logger.exception("Cancel failed")
+            QMessageBox.critical(self, "Error", f"Could not cancel PO: {exc}")
 
 
 ================================================================================
@@ -24791,6 +27245,52 @@ class UserListScreen(QWidget):
 
 
 __all__ = ["UserListScreen"]
+
+
+================================================================================
+FILE: scripts/purchase_wireup.py
+================================================================================
+
+# scripts/purchase_wireup.py
+# Example: how to construct engines and wire them into the app.
+# Run/import this from your main startup code to create engine instances.
+
+from models.purchase_order_model import PurchaseOrderModel
+from models.purchase_invoice_model import PurchaseInvoiceModel
+from models.item_model import ItemModel
+from engines.purchase_order_engine import PurchaseOrderEngine
+from engines.purchase_engine import PurchaseEngine
+
+# item_engine_instance should be your real ItemEngine instance from app startup
+# item_lookup_registry functions from engines.item_lookup_registry
+from engines.item_lookup_registry import country_tax_lookup, manufacturer_lookup
+
+def build_purchase_engines(item_engine_instance, settings_engine=None, date_engine=None, supplier_engine=None):
+    # Create models
+    po_model = PurchaseOrderModel()
+    pi_model = PurchaseInvoiceModel()
+    item_model = ItemModel()
+
+    # Build PO engine
+    po_engine = PurchaseOrderEngine(
+        model=po_model,
+        item_model=item_model,
+        date_engine=date_engine,
+        settings_engine=settings_engine,
+    )
+
+    # Build Purchase engine (needs po_engine + item_engine)
+    purchase_engine = PurchaseEngine(
+        model=pi_model,
+        date_engine=date_engine,
+        settings_engine=settings_engine,
+        item_engine=item_engine_instance,
+        purchase_order_engine=po_engine,
+        country_tax_lookup_fn=country_tax_lookup,
+        manufacturer_lookup_fn=manufacturer_lookup,
+    )
+
+    return po_engine, purchase_engine
 
 
 ================================================================================

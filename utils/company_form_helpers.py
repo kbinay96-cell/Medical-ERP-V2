@@ -32,6 +32,8 @@ def build_company_payload(raw: dict) -> dict:
         "email": (raw.get("email") or "").strip(),
         "panno": (raw.get("panno") or "").strip(),
         "registrationno": (raw.get("registrationno") or "").strip(),
+        "ddano": (raw.get("ddano") or "").strip(),
+        "logopath": (raw.get("logopath") or "").strip(),
         "remarks": (raw.get("remarks") or "").strip(),
         "status": raw.get("status") or "Active",
     }

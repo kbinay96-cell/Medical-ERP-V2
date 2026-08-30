@@ -144,3 +144,18 @@ class PhotoPicker(QWidget):
         self.btn_upload.show()
         self.btn_change.hide()
         self.btn_remove.hide()
+
+
+def host_photo_beside_scroll(root_layout, scroll_widget: QWidget) -> "PhotoPicker":
+    """Places PhotoPicker to the left of an existing scroll area (Customer pattern)."""
+    picker = PhotoPicker(scroll_widget.parentWidget())
+    index = root_layout.indexOf(scroll_widget)
+    root_layout.removeWidget(scroll_widget)
+    row = QWidget()
+    h = QHBoxLayout(row)
+    h.setContentsMargins(0, 0, 0, 0)
+    h.setSpacing(16)
+    h.addWidget(picker, 0, Qt.AlignmentFlag.AlignTop)
+    h.addWidget(scroll_widget, 1)
+    root_layout.insertWidget(index, row, 1)
+    return picker

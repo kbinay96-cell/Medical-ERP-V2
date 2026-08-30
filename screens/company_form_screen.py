@@ -21,13 +21,16 @@ import logging
 from typing import Optional
 
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QDialog, QFileDialog, QWidget
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from engines.company_engine import CompanyEngine
+from engines.settings_engine import get_company_setting, save_company_setting_value
 from ui.ui_company_form import Ui_CompanyFormDialog
 from utils.integration_adapters import get_current_user_id, show_success
 from utils.company_form_helpers import build_company_payload
+from utils.ui_standards import standardize_action_buttons
+from utils.window_chrome import apply_standard_window_chrome
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,8 @@ class CompanyFormScreen(QDialog):
         super().__init__(parent)
         self.ui = Ui_CompanyFormDialog()
         self.ui.setupUi(self)
+        apply_standard_window_chrome(self, width=780, height=640)
+        standardize_action_buttons(self)
 
         self._engine = engine or CompanyEngine()
         self._company_id = company_id
@@ -67,6 +72,7 @@ class CompanyFormScreen(QDialog):
     def _connect_signals(self) -> None:
         self.ui.btnSave.clicked.connect(self._on_save_clicked)
         self.ui.btnCancel.clicked.connect(self.reject)
+        self.ui.btnBrowseLogo.clicked.connect(self._on_browse_logo_clicked)
 
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
@@ -95,8 +101,15 @@ class CompanyFormScreen(QDialog):
         self.ui.txtEmail.setText(dto.email or "")
         self.ui.txtPanVatNo.setText(dto.pan_vat_no or "")
         self.ui.txtRegistrationNo.setText(dto.registration_no or "")
+        self.ui.txtDdaNo.setText(dto.dda_no or "")
+        self.ui.txtLogoPath.setText(dto.logo_path or "")
         self.ui.cmbStatus.setCurrentText(dto.status or "Active")
         self.ui.txtRemarks.setPlainText(dto.remarks or "")
+
+        self.ui.txtSmtpHost.setText(str(get_company_setting(self._company_id, "smtp.host", "") or ""))
+        self.ui.txtSmtpPort.setText(str(get_company_setting(self._company_id, "smtp.port", "587") or "587"))
+        self.ui.txtSmtpEmail.setText(str(get_company_setting(self._company_id, "smtp.email", "") or ""))
+        self.ui.txtSmtpAppPassword.setText(str(get_company_setting(self._company_id, "smtp.app_password", "") or ""))
 
     # ------------------------------------------------------------------ #
     # Save
@@ -111,6 +124,8 @@ class CompanyFormScreen(QDialog):
             "email": self.ui.txtEmail.text(),
             "panno": self.ui.txtPanVatNo.text(),
             "registrationno": self.ui.txtRegistrationNo.text(),
+            "ddano": self.ui.txtDdaNo.text(),
+            "logopath": self.ui.txtLogoPath.text(),
             "status": self.ui.cmbStatus.currentText(),
             "remarks": self.ui.txtRemarks.toPlainText(),
         }
@@ -145,9 +160,35 @@ class CompanyFormScreen(QDialog):
             self._show_validation_message(f"Unexpected error: {exc}")
             return
 
+        self._save_smtp_settings(dto.company_id, current_user_id)
+
         action = "updated" if self._is_edit_mode else "created"
         show_success(self, "Company Master", f"Company '{dto.company_name}' {action}.")
         self.accept()
+
+    def _save_smtp_settings(self, company_id: str, current_user_id) -> None:
+        """SMTP fields aren't part of CompanyDTO/company table -- they're
+        company-scoped Settings entries, saved separately after the
+        company record itself is created/updated."""
+        smtp_fields = {
+            "smtp.host": self.ui.txtSmtpHost.text().strip(),
+            "smtp.port": self.ui.txtSmtpPort.text().strip() or "587",
+            "smtp.email": self.ui.txtSmtpEmail.text().strip(),
+            "smtp.app_password": self.ui.txtSmtpAppPassword.text(),
+        }
+        for key, value in smtp_fields.items():
+            success, message = save_company_setting_value(
+                company_id, key, value, str(current_user_id), reason="Company Form save"
+            )
+            if not success:
+                logger.warning(f"Could not save '{key}' for company '{company_id}': {message}")
+
+    def _on_browse_logo_clicked(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Company Logo", "", "Images (*.png *.jpg *.jpeg)"
+        )
+        if file_path:
+            self.ui.txtLogoPath.setText(file_path)
 
     def _show_validation_message(self, message: str) -> None:
         self.ui.lblValidationMessage.setText(message)

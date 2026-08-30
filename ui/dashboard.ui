@@ -18,22 +18,52 @@
     <!-- ================= TOP HEADER / TOOLBAR ================= -->
     <item>
      <widget class="QFrame" name="frmTopHeader">
+      <property name="maximumSize">
+       <size><width>16777215</width><height>64</height></size>
+      </property>
       <layout class="QHBoxLayout" name="topHeaderLayout">
        <item><widget class="QLabel" name="lblCompanyLogoSmall"><property name="text"><string>[Logo]</string></property></widget></item>
        <item><widget class="QLabel" name="lblCompanyNameHeader"><property name="text"><string>Company Name</string></property></widget></item>
 
        <item>
-        <spacer name="topHeaderSpacer">
+        <spacer name="topHeaderSpacerLeft">
          <property name="orientation"><enum>Qt::Horizontal</enum></property>
         </spacer>
        </item>
 
-       <item><widget class="QLineEdit" name="txtSearchMenu"><property name="placeholderText"><string>Search menu...</string></property></widget></item>
+       <!-- Search bar — widened and given stretch priority so it grows
+            with the window instead of staying a fixed narrow width -->
+       <item>
+        <widget class="QLineEdit" name="txtSearchMenu">
+         <property name="placeholderText"><string>Search menu...</string></property>
+         <property name="minimumWidth"><number>320</number></property>
+         <property name="maximumHeight"><number>36</number></property>
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+           <horstretch>1</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+        </widget>
+       </item>
 
-       <item><widget class="QLabel" name="lblLoggedInUser"><property name="text"><string>User</string></property></widget></item>
-       <item><widget class="QLabel" name="lblUserRole"><property name="text"><string>Role</string></property></widget></item>
-       <item><widget class="QLabel" name="lblCurrentFinancialYearHeader"><property name="text"><string>FY</string></property></widget></item>
-       <item><widget class="QLabel" name="lblDashboardClock"><property name="text"><string>00:00:00</string></property></widget></item>
+       <!-- User + Role + Financial Year grouped together, explicitly
+            horizontal, height-capped so it sits as a compact label row
+            right next to Search — same position as before, not centered
+            in a tall empty box -->
+       <item>
+        <widget class="QFrame" name="frmUserInfo">
+         <property name="maximumSize">
+          <size><width>16777215</width><height>40</height></size>
+         </property>
+         <layout class="QHBoxLayout" name="userInfoLayout">
+          <property name="spacing"><number>6</number></property>
+          <item><widget class="QLabel" name="lblLoggedInUser"><property name="text"><string>User</string></property></widget></item>
+          <item><widget class="QLabel" name="lblUserRole"><property name="text"><string>Role</string></property></widget></item>
+          <item><widget class="QLabel" name="lblCurrentFinancialYearHeader"><property name="text"><string>FY</string></property></widget></item>
+         </layout>
+        </widget>
+       </item>
 
        <item><widget class="QPushButton" name="btnNotifications"><property name="text"><string>Alerts (0)</string></property></widget></item>
        <item><widget class="QPushButton" name="btnTheme"><property name="text"><string>Theme</string></property></widget></item>
@@ -50,12 +80,6 @@
       <!-- LEFT SIDEBAR NAVIGATION -->
       <widget class="QFrame" name="frmSidebar">
        <layout class="QVBoxLayout" name="sidebarLayout">
-        <item><widget class="QLabel" name="lblFavoritesTitle"><property name="text"><string>Favorites</string></property></widget></item>
-        <item><widget class="QListWidget" name="lstFavorites"/></item>
-
-        <item><widget class="QLabel" name="lblRecentTitle"><property name="text"><string>Recently Opened</string></property></widget></item>
-        <item><widget class="QListWidget" name="lstRecentlyOpened"/></item>
-
         <item><widget class="QLabel" name="lblMenuTitle"><property name="text"><string>Modules</string></property></widget></item>
         <item><widget class="QTreeWidget" name="treeSidebarMenu">
           <column><property name="text"><string>Menu</string></property></column>
@@ -101,26 +125,50 @@
           </widget>
          </item>
 
-         <!-- ALERTS + RECENT ACTIVITY -->
+         <!-- FAVORITES / RECENTLY OPENED / ALERTS / RECENT ACTIVITIES —
+              all four together in one 2x2 area, per user request. Kept
+              as 4 separate widgets: "Recently Opened" (navigation
+              history — what screens the user opened) and "Recent
+              Activities" (business activity feed — e.g. "Invoice #123
+              created") are DIFFERENT things, so both stay. -->
          <item>
-          <layout class="QHBoxLayout" name="lowerAreaLayout">
-           <item>
-            <widget class="QGroupBox" name="grpAlerts">
-             <property name="title"><string>Alerts</string></property>
-             <layout class="QVBoxLayout" name="alertsLayout">
-              <item><widget class="QListWidget" name="lstAlerts"/></item>
-             </layout>
-            </widget>
-           </item>
-           <item>
-            <widget class="QGroupBox" name="grpRecentActivity">
-             <property name="title"><string>Recent Activities</string></property>
-             <layout class="QVBoxLayout" name="recentActivityLayout">
-              <item><widget class="QListWidget" name="lstRecentActivity"/></item>
-             </layout>
-            </widget>
-           </item>
-          </layout>
+          <widget class="QGroupBox" name="grpActivityArea">
+           <property name="title"><string>Favorites &amp; Activity</string></property>
+           <layout class="QGridLayout" name="activityAreaGridLayout">
+            <item row="0" column="0">
+             <widget class="QGroupBox" name="grpAlerts">
+              <property name="title"><string>Alerts</string></property>
+              <layout class="QVBoxLayout" name="alertsLayout">
+               <item><widget class="QListWidget" name="lstAlerts"/></item>
+              </layout>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QGroupBox" name="grpRecentActivity">
+              <property name="title"><string>Recent Activities</string></property>
+              <layout class="QVBoxLayout" name="recentActivityLayout">
+               <item><widget class="QListWidget" name="lstRecentActivity"/></item>
+              </layout>
+             </widget>
+            </item>
+            <item row="1" column="0">
+             <widget class="QGroupBox" name="grpFavorites">
+              <property name="title"><string>Favorites</string></property>
+              <layout class="QVBoxLayout" name="favoritesLayout">
+               <item><widget class="QListWidget" name="lstFavorites"/></item>
+              </layout>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QGroupBox" name="grpRecentlyOpened">
+              <property name="title"><string>Recently Opened</string></property>
+              <layout class="QVBoxLayout" name="recentlyOpenedLayout">
+               <item><widget class="QListWidget" name="lstRecentlyOpened"/></item>
+              </layout>
+             </widget>
+            </item>
+           </layout>
+          </widget>
          </item>
 
         </layout>
@@ -133,7 +181,13 @@
    </layout>
   </widget>
 
-  <widget class="QStatusBar" name="statusbar"/>
+  <widget class="QStatusBar" name="statusbar">
+   <widget class="QLabel" name="lblDashboardClock">
+    <property name="minimumWidth"><number>260</number></property>
+    <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+    <property name="text"><string>00:00:00</string></property>
+   </widget>
+  </widget>
  </widget>
  <resources/>
  <connections/>

@@ -28,6 +28,8 @@ class CompanyDTO:
     email: Optional[str]
     pan_vat_no: Optional[str]
     registration_no: Optional[str]
+    dda_no: Optional[str]
+    logo_path: Optional[str]
     country: Optional[str]
     remarks: Optional[str]
     status: str
@@ -45,6 +47,8 @@ def _row_to_dto(row: dict) -> CompanyDTO:
         email=row.get("email"),
         pan_vat_no=row.get("panno"),
         registration_no=row.get("registrationno"),
+        dda_no=row.get("ddano"),
+        logo_path=row.get("logopath"),
         country=row.get("country"),
         remarks=row.get("remarks"),
         status=row.get("status") or "Active",

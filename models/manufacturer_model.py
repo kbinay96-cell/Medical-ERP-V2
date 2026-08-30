@@ -69,11 +69,11 @@ class ManufacturerModel:
         sql = """
             INSERT INTO manufacturer (
                 manufacturer_code, manufacturer_name, manufacturer_short_name,
-                country, status,
+                country, default_margin_percent, status,
                 created_by, created_at_ad, created_at_bs
             ) VALUES (
                 %(manufacturer_code)s, %(manufacturer_name)s, %(manufacturer_short_name)s,
-                %(country)s, %(status)s,
+                %(country)s, %(default_margin_percent)s, %(status)s,
                 %(created_by)s, %(created_at_ad)s, %(created_at_bs)s
             )
             RETURNING manufacturer_id;
@@ -102,6 +102,7 @@ class ManufacturerModel:
             SET manufacturer_name       = %(manufacturer_name)s,
                 manufacturer_short_name = %(manufacturer_short_name)s,
                 country                 = %(country)s,
+                default_margin_percent  = %(default_margin_percent)s,
                 status                  = %(status)s,
                 updated_by              = %(updated_by)s,
                 updated_at_ad           = %(updated_at_ad)s,

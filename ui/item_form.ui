@@ -87,23 +87,25 @@
           <item row="1" column="1"><widget class="QLineEdit" name="txtSaleRate"><property name="text"><string>0.00</string></property></widget></item>
           <item row="2" column="0"><widget class="QLabel" name="lblMrp"><property name="text"><string>MRP:</string></property></widget></item>
           <item row="2" column="1"><widget class="QLineEdit" name="txtMrp"><property name="text"><string>0.00</string></property></widget></item>
-          <item row="3" column="0"><widget class="QLabel" name="lblMinimumStock"><property name="text"><string>Minimum Stock:</string></property></widget></item>
-          <item row="3" column="1"><widget class="QLineEdit" name="txtMinimumStock">
+           <item row="3" column="0"><widget class="QLabel" name="lblSuperDiscountPercent"><property name="text"><string>Super Discount %:</string></property></widget></item>
+           <item row="3" column="1"><widget class="QLineEdit" name="txtSuperDiscountPercent"><property name="text"><string>0.00</string></property></widget></item>
+          <item row="4" column="0"><widget class="QLabel" name="lblMinimumStock"><property name="text"><string>Minimum Stock:</string></property></widget></item>
+          <item row="4" column="1"><widget class="QLineEdit" name="txtMinimumStock">
             <property name="text"><string>0</string></property>
             <property name="toolTip"><string>Reorder level -- can be changed anytime, no lock.</string></property>
           </widget></item>
-          <item row="4" column="0"><widget class="QLabel" name="lblCurrentStockDisplay"><property name="text"><string>Current Total Stock:</string></property></widget></item>
-          <item row="4" column="1"><widget class="QLabel" name="lblCurrentStockValue">
+          <item row="5" column="0"><widget class="QLabel" name="lblCurrentStockDisplay"><property name="text"><string>Current Total Stock:</string></property></widget></item>
+          <item row="5" column="1"><widget class="QLabel" name="lblCurrentStockValue">
             <property name="text"><string>0</string></property>
             <property name="toolTip"><string>Read-only -- sum of all batch quantities.</string></property>
           </widget></item>
-          <item row="5" column="0"><widget class="QLabel" name="lblOpeningQty"><property name="text"><string>Opening Quantity:</string></property></widget></item>
-          <item row="5" column="1"><widget class="QLineEdit" name="txtOpeningQty">
+          <item row="6" column="0"><widget class="QLabel" name="lblOpeningQty"><property name="text"><string>Opening Quantity:</string></property></widget></item>
+          <item row="6" column="1"><widget class="QLineEdit" name="txtOpeningQty">
             <property name="text"><string>0</string></property>
             <property name="toolTip"><string>Leave 0 if this item has no stock yet -- the item still saves fine.</string></property>
           </widget></item>
-          <item row="6" column="0"><widget class="QLabel" name="lblOpeningExpiry"><property name="text"><string>Expiry (Month/Year, AD):</string></property></widget></item>
-          <item row="6" column="1">
+          <item row="7" column="0"><widget class="QLabel" name="lblOpeningExpiry"><property name="text"><string>Expiry (Month/Year, AD):</string></property></widget></item>
+          <item row="7" column="1">
            <layout class="QHBoxLayout" name="horizontalLayoutOpeningExpiry">
             <item><widget class="QComboBox" name="cmbOpeningExpiryMonth">
               <item><property name="text"><string>01 - January</string></property></item>
@@ -124,11 +126,11 @@
             </widget></item>
            </layout>
           </item>
-          <item row="7" column="1"><widget class="QLabel" name="lblOpeningExpiryHint">
+          <item row="8" column="1"><widget class="QLabel" name="lblOpeningExpiryHint">
             <property name="text"><string>Only needed if Opening Quantity is more than 0.</string></property>
             <property name="styleSheet"><string notr="true">color: #666666;</string></property>
           </widget></item>
-          <item row="8" column="1"><widget class="QPushButton" name="btnAddBatch">
+          <item row="9" column="1"><widget class="QPushButton" name="btnAddBatch">
             <property name="text"><string>Add Batch</string></property>
             <property name="toolTip"><string>Add another batch (e.g. a new Purchase lot) to this item.</string></property>
           </widget></item>
