@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QDialog, QLineEdit, QWidget
 
@@ -59,17 +59,23 @@ logger = logging.getLogger(__name__)
 class ItemFormScreen(QDialog):
     """Add/Edit dialog for a single item. Create mode when item_id is None."""
 
+    saved = Signal()
+    close_requested = Signal()
+
     def __init__(
         self,
         parent: Optional[QWidget] = None,
         item_id: Optional[int] = None,
         engine: Optional[ItemEngine] = None,
+        embedded: bool = False,
     ) -> None:
         super().__init__(parent)
+        self._embedded = embedded
         self.ui = Ui_ItemFormDialog()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=920, height=760)
-        self._photo_picker = host_photo_beside_scroll(self.ui.verticalLayoutRoot, self.ui.scrollArea)
+        apply_standard_window_chrome(self, width=920, height=760, embedded=embedded)
+        self._photo_picker = host_photo_beside_scroll(self.ui.verticalLayoutRoot, self.ui.scrollArea, side="right")
+        self.ui.scrollAreaContents.setStyleSheet("QLineEdit { max-width: 220px; }")
         self._install_batch_fields()
         standardize_action_buttons(self)
 
@@ -171,15 +177,63 @@ class ItemFormScreen(QDialog):
         self.ui.txtPurchaseRate.textEdited.connect(self._on_purchase_rate_manually_edited)
         self.ui.txtSuperDiscountPercent.editingFinished.connect(self._on_super_discount_percent_changed)
 
+    def reject(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().reject()
 
+    def _finish_success(self) -> None:
+        if self._embedded:
+            self.saved.emit()
+        else:
+            self.accept()
 
+    def _finish_partial(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+        else:
+            self.accept()
 
+    def _reset_for_new_item(self) -> None:
+        """Clears the form back to a blank Add-Item state (stay-open multi-add)."""
+        self.ui.txtItemCode.clear()
+        self.ui.txtItemName.clear()
 
+        self._set_combo_by_data(self.ui.cmbCategory, None)
+        self._refresh_sub_category_combo(None)
+        self._set_combo_by_data(self.ui.cmbItemGroup, None)
+        self._set_combo_by_data(self.ui.cmbManufacturer, None)
+        self._set_combo_by_data(self.ui.cmbGeneric, None)
+        self.ui.cmbUnit.setCurrentIndex(0)
+        self._set_combo_by_data(self.ui.cmbPurchaseUnit, None)
 
+        self.ui.txtPurchaseRate.setText("0.00")
+        self.ui.txtSaleRate.setText("0.00")
+        self.ui.txtMrp.setText("0.00")
+        self.ui.txtMinimumStock.clear()
+        self.ui.lblCurrentStockValue.setText("0")
 
+        self.ui.cmbStatus.setCurrentText("Active")
+        self.ui.txtRemarks.clear()
 
+        self.ui.radioIndividual.setChecked(False)
+        self.ui.radioCountryDefault.setChecked(True)
+        self.ui.chkVat.setChecked(False)
+        self.ui.txtVatPercent.clear()
+        self.ui.chkCustom.setChecked(False)
+        self.ui.txtCustomPercent.clear()
 
+        self._photo_picker.load_existing(None)
 
+        self.txtBatchNo.clear()
+        self.ui.txtOpeningQty.clear()
+        next_year = QDate.currentDate().addYears(1)
+        self._expiry_picker.set_month_year(next_year.month(), next_year.year())
+        self._existing_batch_id = None
+
+        self._current_manufacturer_margin = None
+        self._purchase_rate_is_autofilled = False
 
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
@@ -579,7 +633,7 @@ class ItemFormScreen(QDialog):
                   self, "Item Master",
                   f"Item '{dto.item_name}' was saved, but the batch could not be registered: {message}"
               )
-              self.accept()
+              self._finish_partial()
               return
           except Exception as exc:  # noqa: BLE001
               logger.exception("Unexpected error saving opening batch for item %s.", dto.item_id)
@@ -587,12 +641,20 @@ class ItemFormScreen(QDialog):
                   self, "Item Master",
                   f"Item '{dto.item_name}' was saved, but the batch could not be registered: {exc}"
               )
-              self.accept()
+              self._finish_partial()
               return
 
         action = "updated" if self._is_edit_mode else "created"
         show_success(self, "Item Master", f"Item '{dto.item_name}' {action}.")
-        self.accept()
+
+        if self._is_edit_mode:
+            self._finish_success()
+            return
+
+        # Create mode: stay open, reset for the next entry instead of closing --
+        # lets the user add several items back-to-back without reopening the form.
+        self._reset_for_new_item()
+        self.ui.txtItemName.setFocus()
 
     def _build_opening_batch_payload_if_needed(self) -> Optional[dict]:
         """

@@ -76,6 +76,27 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
 
         self.verticalLayoutRoot.addWidget(self.frmToolbar)
 
+        # ---------------- Breadcrumb / Back ----------------
+        self.horizontalLayoutBreadcrumb = QHBoxLayout()
+        self.horizontalLayoutBreadcrumb.setObjectName("horizontalLayoutBreadcrumb")
+
+        self.btnBack = QPushButton("< Back", SupplierManufacturerDiscountListWidget)
+        self.btnBack.setObjectName("btnBack")
+        self.btnBack.setVisible(False)
+        self.horizontalLayoutBreadcrumb.addWidget(self.btnBack)
+
+        self.lblBreadcrumb = QLabel("Suppliers", SupplierManufacturerDiscountListWidget)
+        self.lblBreadcrumb.setObjectName("lblBreadcrumb")
+        font_bc = self.lblBreadcrumb.font()
+        font_bc.setBold(True)
+        self.lblBreadcrumb.setFont(font_bc)
+        self.horizontalLayoutBreadcrumb.addWidget(self.lblBreadcrumb)
+
+        self.horizontalSpacerBreadcrumb = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.horizontalLayoutBreadcrumb.addItem(self.horizontalSpacerBreadcrumb)
+
+        self.verticalLayoutRoot.addLayout(self.horizontalLayoutBreadcrumb)
+
         # ---------------- Table ----------------
         self.tblDiscount = QTableWidget(SupplierManufacturerDiscountListWidget)
         self.tblDiscount.setObjectName("tblDiscount")
@@ -90,6 +111,27 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
         self.tblDiscount.setSortingEnabled(True)
         self.tblDiscount.horizontalHeader().setStretchLastSection(True)
         self.verticalLayoutRoot.addWidget(self.tblDiscount)
+
+        # ---------------- Pagination ----------------
+        self.horizontalLayoutPagination = QHBoxLayout()
+        self.horizontalLayoutPagination.setObjectName("horizontalLayoutPagination")
+
+        self.btnPrev = QPushButton("< Prev", SupplierManufacturerDiscountListWidget)
+        self.btnPrev.setObjectName("btnPrev")
+        self.horizontalLayoutPagination.addWidget(self.btnPrev)
+
+        self.lblPageInfo = QLabel("Page 1", SupplierManufacturerDiscountListWidget)
+        self.lblPageInfo.setObjectName("lblPageInfo")
+        self.horizontalLayoutPagination.addWidget(self.lblPageInfo)
+
+        self.btnNext = QPushButton("Next >", SupplierManufacturerDiscountListWidget)
+        self.btnNext.setObjectName("btnNext")
+        self.horizontalLayoutPagination.addWidget(self.btnNext)
+
+        self.horizontalSpacerPagination = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.horizontalLayoutPagination.addItem(self.horizontalSpacerPagination)
+
+        self.verticalLayoutRoot.addLayout(self.horizontalLayoutPagination)
 
         self.lblRecordCount = QLabel("0 mapping(s) found", SupplierManufacturerDiscountListWidget)
         self.lblRecordCount.setObjectName("lblRecordCount")

@@ -25,9 +25,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QTableWidgetItem, QWidget
+from PySide6.QtWidgets import QMenu, QPushButton, QTableWidgetItem, QVBoxLayout, QWidget
 
 from engines.exceptions import RecordNotFoundError
 from engines.item_engine import ItemDTO, ItemEngine
@@ -49,11 +49,16 @@ SEARCH_DEBOUNCE_MS = 300
 class ItemListScreen(QWidget):
     """Item Master list/search/filter screen. Opens ItemFormScreen for Add/Edit."""
 
-    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[ItemEngine] = None) -> None:
+    close_requested = Signal()  # emitted instead of self.close() when embedded=True
+    form_requested = Signal(object)  # embedded: ask Dashboard to open the Item form (item_id or None)
+
+    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[ItemEngine] = None,
+                 embedded: bool = False) -> None:
         super().__init__(parent)
+        self._embedded = embedded
         self.ui = Ui_ItemListWidget()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=1360, height=760)
+        apply_standard_window_chrome(self, width=1360, height=760, embedded=embedded)
         standardize_action_buttons(self)
 
         self._engine = engine or ItemEngine()
@@ -70,8 +75,20 @@ class ItemListScreen(QWidget):
                 "MRP:", "Stock:", "Min. Stock:", "Nearest Batch:", "Expiry:", "Status:",
                 "Created:", "Updated:", "Deleted:",
             ),
+            wide=embedded,
         )
-        install_detail_splitter(self.ui.verticalLayoutRoot, self.ui.tblItem, self._detail)
+        if embedded:
+            # Embedded in the Dashboard's content area: keep the table
+            # full-width instead of splitting it with the side detail
+            # panel (there isn't room). Right-clicking a row swaps the
+            # list out for an in-page detail view (Back button returns
+            # to the list) -- same pattern as Supplier-Mfg Discount's
+            # own breadcrumb/Back, just one level deep here.
+            self._init_detail_overlay()
+            self.ui.tblItem.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.ui.tblItem.customContextMenuRequested.connect(self._show_item_detail_inline)
+        else:
+            install_detail_splitter(self.ui.verticalLayoutRoot, self.ui.tblItem, self._detail)
         configure_table_columns(self.ui.tblItem, stretch_columns=(1, 2, 3))
 
         self._search_debounce_timer = QTimer(self)
@@ -267,9 +284,69 @@ class ItemListScreen(QWidget):
         )
 
     # ------------------------------------------------------------------ #
+    # Embedded-mode in-page detail view (right-click a row -> Back)
+    # ------------------------------------------------------------------ #
+    def _embedded_list_widgets(self) -> list:
+        """Top-level widgets that make up 'list mode' -- hidden while the
+        in-page detail view is shown, restored on Back. Confirmed against
+        ui/item_list.ui + ui/ui_item_list.py: frmToolbar wraps ALL of
+        txtSearch/cmbCategoryFilter/cmbManufacturerFilter/cmbStatusFilter/
+        chkShowDeleted/btnRefresh, so hiding frmToolbar alone covers all
+        six. The button row (btnAdd/btnEdit/btnDelete/btnRestore/btnClose)
+        has NO wrapper frame (bare QHBoxLayout), so each button is listed
+        individually. lblTitle is left visible (cosmetic, harmless either
+        way)."""
+        return [
+            self.ui.frmToolbar,
+            self.ui.frmSearchBar,
+            self.ui.tblItem,
+            self.ui.lblRecordCount,
+            self.ui.btnAdd, self.ui.btnEdit, self.ui.btnDelete,
+            self.ui.btnRestore, self.ui.btnClose,
+        ]
+
+    def _init_detail_overlay(self) -> None:
+        self._detail_container = QWidget(self)
+        detail_layout = QVBoxLayout(self._detail_container)
+        btn_back = QPushButton("← Back to List")
+        btn_back.clicked.connect(self._hide_item_detail_inline)
+        detail_layout.addWidget(btn_back)
+        detail_layout.addWidget(self._detail)
+        self.ui.verticalLayoutRoot.addWidget(self._detail_container)
+        self._detail_container.hide()
+
+    def _show_item_detail_inline(self, pos) -> None:
+        index = self.ui.tblItem.indexAt(pos)
+        if not index.isValid():
+            return
+        self.ui.tblItem.selectRow(index.row())
+        dto = self._selected_dto()
+        if dto is None:
+            return
+
+        menu = QMenu(self)
+        action_view = menu.addAction("View Details")
+        chosen = menu.exec(self.ui.tblItem.viewport().mapToGlobal(pos))
+        if chosen != action_view:
+            return
+
+        self._show_detail(dto)
+        for w in self._embedded_list_widgets():
+            w.hide()
+        self._detail_container.show()
+
+    def _hide_item_detail_inline(self) -> None:
+        self._detail_container.hide()
+        for w in self._embedded_list_widgets():
+            w.show()
+
+    # ------------------------------------------------------------------ #
     # CRUD actions
     # ------------------------------------------------------------------ #
     def _on_add_clicked(self) -> None:
+        if self._embedded:
+            self.form_requested.emit(None)
+            return
         dialog = ItemFormScreen(self, item_id=None, engine=self._engine)
         if dialog.exec():
             self.refresh()
@@ -277,6 +354,9 @@ class ItemListScreen(QWidget):
     def _on_edit_clicked(self) -> None:
         dto = self._selected_dto()
         if dto is None or dto.is_deleted:
+            return
+        if self._embedded:
+            self.form_requested.emit(dto.item_id)
             return
         dialog = ItemFormScreen(self, item_id=dto.item_id, engine=self._engine)
         if dialog.exec():
@@ -317,7 +397,10 @@ class ItemListScreen(QWidget):
             self.refresh()
 
     def _on_close_clicked(self) -> None:
-        self.close()
+        if self._embedded:
+            self.close_requested.emit()
+        else:
+            self.close()
 
 
 __all__ = ["ItemListScreen"]

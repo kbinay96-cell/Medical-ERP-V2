@@ -10,14 +10,17 @@ everything goes through engines.dashboard_engine.
 
 from PySide6.QtCore import Qt, QTimer, QTime, QDate, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
+from utils.icon_utils import themed_icon
 from PySide6.QtWidgets import QMainWindow, QTreeWidgetItem
 
 from ui.ui_dashboard import Ui_MainWindow
 from utils.message import show_info, confirm
 from utils.app_logger import get_logger
+from utils.ui_standards import standardize_action_buttons, apply_action_button_style
 from engines.authentication_engine import logout
 from engines.dashboard_engine import build_dashboard, SIDEBAR_MODULES
 from engines.theme_engine import toggle_theme, get_current_theme
+from engines import settings_engine
 from engines.date_engine import ad_to_bs, DateEngineError
 
 from screens.supplier_list_screen import SupplierListScreen
@@ -28,6 +31,7 @@ from screens.country_tax_list_screen import CountryTaxListScreen
 
 from screens.company_list_screen import CompanyListScreen
 from screens.item_list_screen import ItemListScreen
+from screens.item_form_screen import ItemFormScreen
 
 from screens.settings_screen import SettingsScreen
 
@@ -50,6 +54,7 @@ from utils.window_chrome import apply_standard_window_chrome
 from engines.purchase_order_engine import PurchaseOrderEngine
 from engines.purchase_engine import PurchaseEngine
 from engines.sale_engine import SaleEngine
+from engines.item_free_scheme_engine import ItemFreeSchemeEngine
 from engines.supplier_engine import SupplierEngine
 from engines.item_engine import ItemEngine
 from engines.item_lookup_registry import manufacturer_lookup, country_tax_lookup
@@ -58,6 +63,7 @@ from engines.item_lookup_registry import manufacturer_lookup, country_tax_lookup
 from models.purchase_order_model import PurchaseOrderModel
 from models.purchase_invoice_model import PurchaseInvoiceModel
 from models.sale_invoice_model import SaleInvoiceModel
+from models.sale_item_free_scheme_model import SaleItemFreeSchemeModel
 from models.item_model import ItemModel
 
 logger = get_logger()
@@ -85,6 +91,9 @@ class DashboardScreen(QMainWindow):
 
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+
+        standardize_action_buttons(self)
+        apply_action_button_style(self.ui.btnBackupDatabase)  # "backup" isn't a keyword match
 
         # lblDashboardClock is defined inside the statusbar in the .ui file,
         # which pyside6-uic wires up as a normal (left-aligned) status bar
@@ -138,10 +147,14 @@ class DashboardScreen(QMainWindow):
                 purchase_order_engine=self._purchase_order_engine,
             )
 
+            self._item_free_scheme_engine = ItemFreeSchemeEngine(model=SaleItemFreeSchemeModel())
+
             self._sale_engine = SaleEngine(
                 model=SaleInvoiceModel(),
-                date_engine=date_engine,
                 item_engine=self._item_engine,
+                item_free_scheme_engine=self._item_free_scheme_engine,
+                country_tax_lookup_fn=country_tax_lookup,
+                manufacturer_lookup_fn=manufacturer_lookup,
             )
         except Exception as e:
             from utils.app_logger import get_logger
@@ -163,9 +176,35 @@ class DashboardScreen(QMainWindow):
         #      self._purchase_engine) ----
         self._init_purchase_engines()
 
+        # ---- Content-area navigation state (QStackedWidget-based) ----
+        # self._nav_history holds the *previous* widget each time we
+        # navigate forward, so Back always returns to exactly where the
+        # user came from. Page 0 of stackedContentArea (the original
+        # scrollMainArea / dashboard home) is never removed.
+        self._nav_history = []
+
         self._show_user_context()
         self._apply_icons()
         self._build_sidebar_menu()
+
+        # Restoring the saved width has to wait until AFTER the window's
+        # initial layout pass finishes -- calling it immediately here
+        # (before show()) reads bodySplitter.width() while it still has
+        # its designer-time placeholder size, so setSizes() gets computed
+        # against the wrong total and Qt's real layout then overrides it
+        # once the window actually appears. singleShot(0, ...) defers it
+        # to right after that first layout/show, once the real size is known.
+        QTimer.singleShot(0, self._restore_sidebar_width)
+
+        # Debounced save -- splitterMoved fires continuously while
+        # dragging, so we only persist ~400ms after the user stops
+        # moving it (same debounce pattern used elsewhere, e.g. Item
+        # Master's search box).
+        self._sidebar_width_save_timer = QTimer(self)
+        self._sidebar_width_save_timer.setSingleShot(True)
+        self._sidebar_width_save_timer.timeout.connect(self._save_sidebar_width)
+        self.ui.bodySplitter.splitterMoved.connect(self._on_sidebar_splitter_moved)
+
         self._apply_tooltips_and_status_tips()
         self._setup_shortcuts()
         self._start_clock()
@@ -174,7 +213,7 @@ class DashboardScreen(QMainWindow):
         self.ui.btnLogout.clicked.connect(self.handle_logout)
         self.ui.btnAddSupplier.clicked.connect(self.open_supplier_form)
         self.ui.btnAddCustomer.clicked.connect(self.open_customer_form)
-        self.ui.treeSidebarMenu.itemDoubleClicked.connect(self.open_module_from_sidebar)
+        self.ui.treeSidebarMenu.itemClicked.connect(self.open_module_from_sidebar)
         self.ui.btnTheme.clicked.connect(self._handle_theme_toggle)
         self.ui.txtSearchMenu.textChanged.connect(self._filter_sidebar_menu)
 
@@ -186,17 +225,17 @@ class DashboardScreen(QMainWindow):
         icon_size = QSize(18, 18)
 
         self.ui.txtSearchMenu.addAction(
-            QIcon(f"{ICON_DIR}/search.svg"), self.ui.txtSearchMenu.ActionPosition.LeadingPosition
+            themed_icon("search"), self.ui.txtSearchMenu.ActionPosition.LeadingPosition
         )
 
         self.ui.btnNotifications.setIconSize(icon_size)
         self.ui.btnLogout.setIconSize(icon_size)
 
         theme_icon = "moon" if get_current_theme() == "Light" else "sun"
-        self.ui.btnTheme.setIcon(QIcon(f"{ICON_DIR}/{theme_icon}.svg"))
+        self.ui.btnTheme.setIcon(themed_icon(theme_icon))
         self.ui.btnTheme.setIconSize(icon_size)
 
-        self.ui.lblCompanyLogoSmall.setPixmap(QIcon(f"{ICON_DIR}/building.svg").pixmap(QSize(28, 28)))
+        self.ui.lblCompanyLogoSmall.setPixmap(themed_icon("building").pixmap(QSize(28, 28)))
 
     def _apply_tooltips_and_status_tips(self):
         self.ui.btnLogout.setToolTip("Logout (Ctrl+Q)")
@@ -217,8 +256,7 @@ class DashboardScreen(QMainWindow):
 
     def _handle_theme_toggle(self):
         new_theme = toggle_theme()
-        theme_icon = "moon" if new_theme == "Light" else "sun"
-        self.ui.btnTheme.setIcon(QIcon(f"{ICON_DIR}/{theme_icon}.svg"))
+        self._apply_icons()
         self.statusBar().showMessage(f"Theme switched to {new_theme}", 3000)
 
     def _show_user_context(self):
@@ -236,14 +274,15 @@ class DashboardScreen(QMainWindow):
         for module_name, screen_names in SIDEBAR_MODULES.items():
             module_item = QTreeWidgetItem([module_name])
             icon_name = MODULE_ICONS.get(module_name, "list")
-            module_item.setIcon(0, QIcon(f"{ICON_DIR}/{icon_name}.svg"))
+            module_item.setIcon(0, themed_icon(icon_name))
 
             for screen_name in screen_names:
                 module_item.addChild(QTreeWidgetItem([screen_name]))
 
             self.ui.treeSidebarMenu.addTopLevelItem(module_item)
 
-        self.ui.treeSidebarMenu.expandAll()
+        # Collapsed by default -- only module headers (Masters/Purchase/
+        # Sales/...) show; user clicks a header to expand its screens.
 
     def _filter_sidebar_menu(self, search_text: str):
         """
@@ -277,6 +316,26 @@ class DashboardScreen(QMainWindow):
 
             if search_text and (module_matches or any_child_matches):
                 module_item.setExpanded(True)
+
+    def _restore_sidebar_width(self):
+        try:
+            width = int(settings_engine.get_setting("dashboard.sidebar_width", 260))
+        except (TypeError, ValueError):
+            width = 260
+        total = self.ui.bodySplitter.width() or 1200
+        self.ui.bodySplitter.setSizes([width, max(total - width, 200)])
+
+    def _on_sidebar_splitter_moved(self, pos, index):
+        self._sidebar_width_save_timer.start(400)
+
+    def _save_sidebar_width(self):
+        sizes = self.ui.bodySplitter.sizes()
+        if not sizes:
+            return
+        width = sizes[0]
+        updated_by = self.login_result.username or "system"
+        settings_engine.save_setting("dashboard.sidebar_width", str(width), updated_by,
+                                      reason="Dashboard sidebar resized by user")
 
     def _start_clock(self):
         self.clock_timer = QTimer(self)
@@ -318,7 +377,40 @@ class DashboardScreen(QMainWindow):
         self.ui.lstAlerts.addItems(data.alerts)
         self.ui.btnNotifications.setText(f"Alerts ({len(data.alerts)})")
 
-        # -----------------------------------------------------
+    # -----------------------------------------------------
+    # CONTENT-AREA NAVIGATION (QStackedWidget)
+    # -----------------------------------------------------
+
+    def _navigate_to(self, widget):
+        """Push `widget` onto the content-area stack and show it."""
+        self._nav_history.append(self.ui.stackedContentArea.currentWidget())
+        self.ui.stackedContentArea.addWidget(widget)
+        self.ui.stackedContentArea.setCurrentWidget(widget)
+
+    def _navigate_back(self):
+        """Return to the previous screen and dispose of the one we leave."""
+        if not self._nav_history:
+            return
+        leaving = self.ui.stackedContentArea.currentWidget()
+        previous = self._nav_history.pop()
+        self.ui.stackedContentArea.setCurrentWidget(previous)
+        if leaving is not previous:
+            self.ui.stackedContentArea.removeWidget(leaving)
+            leaving.deleteLater()
+
+    def _open_item_form(self, item_id=None):
+        """Open the Item form embedded in the content-area stack."""
+        form = ItemFormScreen(self, item_id=item_id, engine=self._item_engine, embedded=True)
+        form.saved.connect(lambda: self._on_item_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_item_form_saved(self, form):
+        self._navigate_back()
+        if getattr(self, "item_list", None) is not None:
+            self.item_list.refresh()
+
+    # -----------------------------------------------------
     # MODULE OPENERS
     # -----------------------------------------------------
 
@@ -375,9 +467,10 @@ class DashboardScreen(QMainWindow):
             self.customer_list.show()
 
         elif module_name == "item":
-            self.item_list = ItemListScreen(self)
-            apply_standard_window_chrome(self.item_list)
-            self.item_list.show()
+            self.item_list = ItemListScreen(self, engine=self._item_engine, embedded=True)
+            self.item_list.close_requested.connect(self._navigate_back)
+            self.item_list.form_requested.connect(self._open_item_form)
+            self._navigate_to(self.item_list)
 
         elif module_name == "user master":
             self.user_list = UserListScreen(self, current_user_id=self.login_result.userid)
@@ -452,6 +545,7 @@ class DashboardScreen(QMainWindow):
                 parent=self,
                 engine=self._sale_engine,
                 item_engine=self._item_engine,
+                item_free_scheme_engine=self._item_free_scheme_engine,
                 current_user_id=self.login_result.userid,
             )
             apply_standard_window_chrome(self.sale_invoice_form)

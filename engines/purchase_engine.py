@@ -54,7 +54,8 @@ class PurchaseInvoiceDTO:
     lines: list[PurchaseInvoiceLineDTO] = field(default_factory=list)
     bill_discount_amount: float = 0.0
     round_off_amount: float = 0.0
-    invoice_date_ad: Optional[str] = None          
+    invoice_date_ad: Optional[str] = None
+    remarks: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -341,6 +342,7 @@ class PurchaseEngine:
                 "status": "Posted",
                 "bill_discount_amount": bill_discount_amount,
                 "round_off_amount": round_off_amount,
+                "remarks": (payload.get("remarks") or "").strip() or None,
                 "purchase_order_id": payload.get("purchase_order_id"),
                 "created_by": current_user_id,
                 "created_at_ad": now_ad,
@@ -470,10 +472,11 @@ class PurchaseEngine:
             grand_total=row["grand_total"],
             status=row["status"],
             lines=lines,
-            bill_discount_amount=row.get("bill_discount_amount", 0.0) or 0.0,
-            round_off_amount=row.get("round_off_amount", 0.0) or 0.0,
-            invoice_date_ad=str(row.get("invoice_date_ad")) if row.get("invoice_date_ad") else None,
-        )
+        bill_discount_amount=row.get("bill_discount_amount", 0.0) or 0.0,
+        round_off_amount=row.get("round_off_amount", 0.0) or 0.0,
+        invoice_date_ad=str(row.get("invoice_date_ad")) if row.get("invoice_date_ad") else None,
+        remarks=row.get("remarks"),
+    )
 
     def search_purchase_invoices(
         self,

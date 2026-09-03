@@ -56,6 +56,7 @@ class SupplierManufacturerDiscountFormScreen(QDialog):
         engine: Optional[SupplierManufacturerDiscountEngine] = None,
         supplier_engine: Optional[SupplierEngine] = None,
         manufacturer_engine: Optional[ManufacturerEngine] = None,
+        initial_supplier_id: Optional[int] = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_SupplierManufacturerDiscountFormDialog()
@@ -82,7 +83,15 @@ class SupplierManufacturerDiscountFormScreen(QDialog):
         else:
             self.setWindowTitle("Add Discount Mapping")
             self.ui.lblFormTitle.setText("Add Discount Mapping")
-            self.ui.cmbSupplier.setFocus()
+            if initial_supplier_id is not None:
+                index = self.ui.cmbSupplier.findData(initial_supplier_id)
+                if index >= 0:
+                    self.ui.cmbSupplier.setCurrentIndex(index)
+                    self.ui.cmbManufacturer.setFocus()
+                else:
+                    self.ui.cmbSupplier.setFocus()
+            else:
+                self.ui.cmbSupplier.setFocus()
 
     # ------------------------------------------------------------------ #
     # Wiring

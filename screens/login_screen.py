@@ -15,10 +15,12 @@ from PySide6.QtWidgets import QMainWindow, QLineEdit
 from ui.ui_login import Ui_MainWindow
 from utils.message import show_warning, show_info
 from utils.app_logger import get_logger
+from utils.ui_standards import apply_action_button_style
 from engines.authentication_engine import login
 from engines.license_manager import validate_license
 from engines.subscription_manager import validate_subscription
 from engines.theme_engine import toggle_theme
+from utils.icon_utils import themed_icon
 from engines.date_engine import ad_to_bs, DateEngineError
 from models.company_model import get_active_companies
 from models.financialyear_model import get_all_financial_years
@@ -48,6 +50,13 @@ class LoginScreen(QMainWindow):
     # -----------------------------------------------------
 
     def initialize(self):
+        # Login CTAs previously had their own hardcoded 40px standard
+        # (Designer's setMinimumSize) — now folded into the app-wide
+        # adjustable control-height system so they scale with the
+        # ui.control_height setting like every other action button.
+        apply_action_button_style(self.ui.btnLogin)
+        apply_action_button_style(self.ui.btnExit)
+
         self.ui.txtPassword.textChanged.connect(self._update_caps_lock_hint)
 
         self.ui.btnLogin.clicked.connect(self.handle_login)
@@ -70,20 +79,20 @@ class LoginScreen(QMainWindow):
     def _apply_icons(self):
         icon_size = QSize(18, 18)
 
-        self.ui.lblLoginIcon.setPixmap(QIcon(f"{ICON_DIR}/login.svg").pixmap(QSize(40, 40)))
+        self.ui.lblLoginIcon.setPixmap(themed_icon("login").pixmap(QSize(40, 40)))
 
-        self.ui.txtUsername.addAction(QIcon(f"{ICON_DIR}/user.svg"), QLineEdit.ActionPosition.LeadingPosition)
-        self.ui.txtPassword.addAction(QIcon(f"{ICON_DIR}/lock.svg"), QLineEdit.ActionPosition.LeadingPosition)
+        self.ui.txtUsername.addAction(themed_icon("user"), QLineEdit.ActionPosition.LeadingPosition)
+        self.ui.txtPassword.addAction(themed_icon("lock"), QLineEdit.ActionPosition.LeadingPosition)
 
-        self.ui.btnLogin.setIcon(QIcon(f"{ICON_DIR}/login.svg"))
+        self.ui.btnLogin.setIcon(themed_icon("login"))
         self.ui.btnLogin.setIconSize(icon_size)
-        self.ui.btnExit.setIcon(QIcon(f"{ICON_DIR}/exit.svg"))
+        self.ui.btnExit.setIcon(themed_icon("exit"))
         self.ui.btnExit.setIconSize(icon_size)
-        self.ui.btnTheme.setIcon(QIcon(f"{ICON_DIR}/sun.svg"))
+        self.ui.btnTheme.setIcon(themed_icon("sun"))
         self.ui.btnTheme.setIconSize(icon_size)
-        self.ui.btnForgotPassword.setIcon(QIcon(f"{ICON_DIR}/key.svg"))
+        self.ui.btnForgotPassword.setIcon(themed_icon("key"))
         self.ui.btnForgotPassword.setIconSize(icon_size)
-        self.ui.btnChangeLanguage.setIcon(QIcon(f"{ICON_DIR}/globe.svg"))
+        self.ui.btnChangeLanguage.setIcon(themed_icon("globe"))
         self.ui.btnChangeLanguage.setIconSize(icon_size)
 
     def _apply_tooltips_and_status_tips(self):

@@ -1,60 +1,45 @@
 from __future__ import annotations
 
 import logging
+import os
+import smtplib
+import tempfile
+from email.message import EmailMessage
+from urllib.parse import quote
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QPixmap
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtPdf import QPdfDocument
+from PySide6.QtPdfWidgets import QPdfView
+from PySide6.QtPrintSupport import QPrinter, QPrintPreviewWidget
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QDialog,
-    QFrame,
-    QGridLayout,
+    QFileDialog,
     QHBoxLayout,
-    QHeaderView,
-    QLabel,
+    QInputDialog,
+    QMessageBox,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
 )
 
 from engines.company_engine import CompanyEngine
 from engines.session_manager import get_current_session
+from engines.settings_engine import get_company_setting, save_company_setting_value
+from utils.integration_adapters import get_current_user_id
+from utils.purchase_invoice_pdf import generate_purchase_invoice_pdf
+from utils.window_chrome import apply_standard_window_chrome
 
 logger = logging.getLogger(__name__)
 
-COL_SN = 0
-COL_ITEM = 1
-COL_BATCH_NO = 2
-COL_EXPIRY = 3
-COL_MRP = 4
-COL_QTY = 5
-COL_FREE_QTY = 6
-COL_RATE = 7
-COL_AMOUNT = 8
-COL_DISCOUNT_PCT = 9
-COLUMN_COUNT = 10
-
-COLUMN_HEADERS = [
-    "SN.",
-    "Particulars",
-    "Batch_No",
-    "Expiry",
-    "MRP",
-    "Qty.",
-    "Free",
-    "Rate",
-    "Amount",
-    "Dis%",
-]
-
 
 class PurchaseInvoiceViewDialog(QDialog):
-    """Read-only Purchase Invoice detail dialog, styled after the physical
-    Monika Medico bill layout. Company letterhead comes from the currently
-    logged-in company (this app's own company), NOT the supplier -- the
-    "Supplier Details" box shows the supplier's info instead of the
-    reference bill's "Customer Details" box, since this is Purchase."""
+    """Read-only Purchase Invoice detail dialog. Renders the SAME PDF
+    used by Print/Email/WhatsApp (via generate_purchase_invoice_pdf) in
+    an embedded PDF viewer, so there is exactly one source of truth for
+    what this invoice looks like -- no separate widget-based layout to
+    keep in sync with the print output. The temp PDF used for on-screen
+    viewing is deleted when the dialog closes; it is never saved
+    anywhere by itself."""
 
     def __init__(self, parent, invoice, supplier_name, item_engine, supplier_engine):
         super().__init__(parent)
@@ -62,210 +47,406 @@ class PurchaseInvoiceViewDialog(QDialog):
         self._item_engine = item_engine
         self._supplier_engine = supplier_engine
         self._supplier_name = supplier_name
+        self._view_temp_path: str | None = None
 
         self.setWindowTitle(f"Purchase Invoice — {invoice.internal_ref_number}")
-        self.resize(1050, 750)
+        apply_standard_window_chrome(self, width=1100, height=800, start_maximized=True)
 
         root = QVBoxLayout(self)
 
-        root.addWidget(self._build_details_section(invoice))
-        root.addWidget(self._build_table(invoice), stretch=1)
-        root.addWidget(self._build_summary_section(invoice))
+        self._pdf_document = QPdfDocument(self)
+        self._pdf_view = QPdfView(self)
+        self._pdf_view.setDocument(self._pdf_document)
+        self._pdf_view.setPageMode(QPdfView.PageMode.MultiPage)
+        self._pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self._pdf_view.setZoomFactor(1.0)
+
+        zoom_bar = QHBoxLayout()
+        zoom_out_btn = QPushButton("−")
+        zoom_out_btn.setFixedWidth(30)
+        zoom_out_btn.clicked.connect(self._on_zoom_out)
+        zoom_bar.addWidget(zoom_out_btn)
+
+        zoom_in_btn = QPushButton("+")
+        zoom_in_btn.setFixedWidth(30)
+        zoom_in_btn.clicked.connect(self._on_zoom_in)
+        zoom_bar.addWidget(zoom_in_btn)
+
+        fit_width_btn = QPushButton("Fit Width")
+        fit_width_btn.clicked.connect(self._on_fit_width)
+        zoom_bar.addWidget(fit_width_btn)
+
+        zoom_bar.addStretch(1)
+        root.addLayout(zoom_bar)
+
+        root.addWidget(self._pdf_view, stretch=1)
+
+        self._load_preview_pdf()
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
+
+        print_button = QPushButton("Print")
+        print_button.clicked.connect(self._on_print_clicked)
+        button_row.addWidget(print_button)
+
+        pdf_button = QPushButton("PDF")
+        pdf_button.clicked.connect(self._on_pdf_clicked)
+        button_row.addWidget(pdf_button)
+
+        email_button = QPushButton("Email")
+        email_button.clicked.connect(self._on_email_clicked)
+        button_row.addWidget(email_button)
+
+        whatsapp_button = QPushButton("WhatsApp")
+        whatsapp_button.clicked.connect(self._on_whatsapp_clicked)
+        button_row.addWidget(whatsapp_button)
+
+        change_wa_folder_button = QPushButton("📁")
+        change_wa_folder_button.setToolTip("Change WhatsApp PDF save folder")
+        change_wa_folder_button.setFixedWidth(30)
+        change_wa_folder_button.clicked.connect(self._on_change_whatsapp_folder_clicked)
+        button_row.addWidget(change_wa_folder_button)
+
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.accept)
         button_row.addWidget(close_button)
         root.addLayout(button_row)
 
-    # -- supplier + invoice details boxes --------------------------------
+        # -- zoom controls -----------------------------------------------------
 
-    def _build_details_section(self, invoice) -> QFrame:
-        frame = QFrame(self)
-        frame.setFrameShape(QFrame.StyledPanel)
-        layout = QHBoxLayout(frame)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(20)
+    def _on_zoom_in(self) -> None:
+        self._pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self._pdf_view.setZoomFactor(self._pdf_view.zoomFactor() * 1.2)
 
-        supplier_box = QFrame()
-        supplier_box.setFrameShape(QFrame.StyledPanel)
-        supplier_layout = QGridLayout(supplier_box)
-        supplier_layout.setContentsMargins(10, 8, 10, 8)
-        supplier_layout.setHorizontalSpacing(12)
-        supplier_layout.setVerticalSpacing(6)
-        supplier_layout.addWidget(QLabel("<b>Supplier Details</b>"), 0, 0, 1, 2)
-        supplier_layout.addWidget(QLabel("Name:"), 1, 0)
-        supplier_layout.addWidget(QLabel(self._supplier_name), 1, 1)
+    def _on_zoom_out(self) -> None:
+        self._pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self._pdf_view.setZoomFactor(self._pdf_view.zoomFactor() / 1.2)
 
-        supplier = None
+    def _on_fit_width(self) -> None:
+        self._pdf_view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+
+    def wheelEvent(self, event) -> None:
+        """Ctrl + mouse wheel zooms the PDF preview, like every PDF
+        reader and browser. Plain scroll (no Ctrl) still scrolls the
+        page normally."""
+        if event.modifiers() & Qt.ControlModifier:
+            self._pdf_view.setZoomMode(QPdfView.ZoomMode.Custom)
+            if event.angleDelta().y() > 0:
+                self._pdf_view.setZoomFactor(self._pdf_view.zoomFactor() * 1.1)
+            else:
+                self._pdf_view.setZoomFactor(self._pdf_view.zoomFactor() / 1.1)
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    # -- preview loading / cleanup ---------------------------------------
+
+    def _load_preview_pdf(self) -> None:
         try:
-            supplier = self._supplier_engine.get_supplier(invoice.supplier_id)
+            self._view_temp_path = self._generate_pdf()
+            self._pdf_document.load(self._view_temp_path)
         except Exception:
-            logger.exception("Could not load supplier details for invoice view.")
+            logger.exception("Could not generate/load invoice PDF for preview.")
+            QMessageBox.warning(
+                self, "Purchase Invoice",
+                "Could not generate the invoice preview. You can still use "
+                "the Print/PDF/Email/WhatsApp buttons below to try again.",
+            )
 
-        if supplier and supplier.address:
-            supplier_layout.addWidget(QLabel("Address:"), 2, 0)
-            supplier_layout.addWidget(QLabel(supplier.address), 2, 1)
-        if supplier and supplier.phone_no:
-            supplier_layout.addWidget(QLabel("Phone No:"), 3, 0)
-            supplier_layout.addWidget(QLabel(supplier.phone_no), 3, 1)
-        if supplier and supplier.pan_vat_no:
-            supplier_layout.addWidget(QLabel("Pan No:"), 4, 0)
-            supplier_layout.addWidget(QLabel(supplier.pan_vat_no), 4, 1)
+    def closeEvent(self, event) -> None:
+        self._cleanup_temp_pdf()
+        super().closeEvent(event)
 
-        layout.addWidget(supplier_box, stretch=1)
+    def _cleanup_temp_pdf(self) -> None:
+        if self._view_temp_path and os.path.exists(self._view_temp_path):
+            try:
+                self._pdf_document.close()
+                os.remove(self._view_temp_path)
+            except OSError:
+                logger.warning(f"Could not remove temp preview PDF: {self._view_temp_path}")
 
-        invoice_box = QFrame()
-        invoice_box.setFrameShape(QFrame.StyledPanel)
-        invoice_layout = QGridLayout(invoice_box)
-        invoice_layout.setContentsMargins(10, 8, 10, 8)
-        invoice_layout.setHorizontalSpacing(12)
-        invoice_layout.setVerticalSpacing(6)
-        invoice_layout.addWidget(QLabel("<b>Invoice Details</b>"), 0, 0, 1, 2)
-        invoice_layout.addWidget(QLabel("Invoice No:"), 1, 0)
-        invoice_layout.addWidget(QLabel(invoice.invoice_number), 1, 1)
-        invoice_layout.addWidget(QLabel("Internal Ref:"), 2, 0)
-        invoice_layout.addWidget(QLabel(invoice.internal_ref_number), 2, 1)
-        invoice_layout.addWidget(QLabel("Invoice Miti:"), 3, 0)
-        invoice_layout.addWidget(QLabel(invoice.invoice_date_bs), 3, 1)
-        invoice_layout.addWidget(QLabel("Invoice Date:"), 4, 0)
-        invoice_layout.addWidget(QLabel(invoice.invoice_date_ad or ""), 4, 1)
-        invoice_layout.addWidget(QLabel("Status:"), 5, 0)
-        invoice_layout.addWidget(QLabel(invoice.status), 5, 1)
+    # -- shared helpers -----------------------------------------------------
 
-        layout.addWidget(invoice_box, stretch=1)
+    def _get_current_company(self):
+        try:
+            session = get_current_session()
+            if not session or "companyid" not in session:
+                return None
+            return CompanyEngine().get_company(session["companyid"])
+        except Exception:
+            logger.exception("Could not resolve current company for PDF/print.")
+            return None
 
-        return frame
+    def _get_supplier(self):
+        try:
+            return self._supplier_engine.get_supplier(self._invoice.supplier_id)
+        except Exception:
+            logger.exception("Could not resolve supplier for PDF/print.")
+            return None
 
-    # -- table --------------------------------------------------------------
+    def _generate_pdf(self) -> str:
+        """Generates the PDF to a temp file and returns its path. Reused
+        by the on-screen preview, Print, the PDF button, and Email
+        attachment -- single source of truth for the printable layout."""
+        temp_path = os.path.join(
+            tempfile.gettempdir(), f"PurchaseInvoice_{self._invoice.internal_ref_number}.pdf"
+        )
+        return self._generate_pdf_to(temp_path)
 
-    def _build_table(self, invoice) -> QTableWidget:
-        table = QTableWidget(len(invoice.lines), COLUMN_COUNT, self)
-        table.setHorizontalHeaderLabels(COLUMN_HEADERS)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.verticalHeader().setVisible(False)
-        table.horizontalHeader().setSectionResizeMode(COL_ITEM, QHeaderView.Stretch)
-
-        for row, line in enumerate(invoice.lines):
-            item_name = self._resolve_item_name(line.item_id)
-            expiry_display = f"{line.expiry_month:02d}/{line.expiry_year}"
-            amount = (line.qty or 0) * (line.purchase_rate or 0)
-
-            table.setItem(row, COL_SN, QTableWidgetItem(str(row + 1)))
-            table.setItem(row, COL_ITEM, QTableWidgetItem(item_name))
-            table.setItem(row, COL_BATCH_NO, QTableWidgetItem(line.batch_no or ""))
-            table.setItem(row, COL_EXPIRY, QTableWidgetItem(expiry_display))
-            table.setItem(row, COL_MRP, QTableWidgetItem(f"{line.mrp:.2f}"))
-            table.setItem(row, COL_QTY, QTableWidgetItem(f"{line.qty:.2f}"))
-            table.setItem(row, COL_FREE_QTY, QTableWidgetItem(f"{line.free_qty:.2f}"))
-            table.setItem(row, COL_RATE, QTableWidgetItem(f"{line.purchase_rate:.2f}"))
-            table.setItem(row, COL_AMOUNT, QTableWidgetItem(f"{amount:.2f}"))
-            table.setItem(row, COL_DISCOUNT_PCT, QTableWidgetItem(f"{line.discount_percent:.2f}"))
-
-        return table
-
-    # -- summary --------------------------------------------------------------
-
-    def _build_summary_section(self, invoice) -> QFrame:
-        frame = QFrame(self)
-        frame.setFrameShape(QFrame.StyledPanel)
-        layout = QGridLayout(frame)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setHorizontalSpacing(30)
-        layout.setVerticalSpacing(6)
-
-        basic_amount = sum((line.qty or 0) * (line.purchase_rate or 0) for line in invoice.lines)
-        product_discount = sum(line.discount_amount or 0 for line in invoice.lines)
-        cc_on_free_goods = sum(line.cc_amount or 0 for line in invoice.lines)
-
+    def _generate_pdf_to(self, output_path: str) -> str:
+        """Same as _generate_pdf() but saves directly to a user-chosen
+        path instead of a temp file -- used by WhatsApp so the PDF is
+        somewhere the user can easily find to attach."""
+        company = self._get_current_company()
+        supplier = self._get_supplier()
         current_balance = 0.0
         try:
-            current_balance = self._supplier_engine.get_current_balance(invoice.supplier_id)
+            current_balance = self._supplier_engine.get_current_balance(self._invoice.supplier_id)
         except Exception:
-            logger.exception("Could not resolve current balance for invoice view.")
+            logger.exception("Could not resolve current balance for PDF.")
 
-        layout.addWidget(self._field_label("Basic Amount:", f"{basic_amount:.2f}"), 0, 0)
-        layout.addWidget(self._field_label("Product Discount:", f"{product_discount:.2f}"), 0, 1)
-        layout.addWidget(self._field_label("CC On Free Goods:", f"{cc_on_free_goods:.2f}"), 1, 0)
-        layout.addWidget(
-            self._field_label("Round Off:", f"{invoice.round_off_amount:.2f}"), 1, 1
+        return generate_purchase_invoice_pdf(
+            output_path=output_path,
+            invoice=self._invoice,
+            supplier=supplier,
+            company=company,
+            item_engine=self._item_engine,
+            current_balance=current_balance,
         )
 
-        net_label = self._field_label("Net Total:", f"{invoice.grand_total:.2f}")
-        net_font = QFont()
-        net_font.setPointSize(11)
-        net_font.setBold(True)
-        net_label.setFont(net_font)
-        layout.addWidget(net_label, 2, 0)
+    # -- button handlers -----------------------------------------------------
 
-        layout.addWidget(
-            self._field_label("Current Balance:", f"{current_balance:.2f}"), 2, 1
-        )
-
-        words_label = QLabel(f"<b>In Words:</b> {self._amount_in_words(invoice.grand_total)}")
-        words_label.setWordWrap(True)
-        layout.addWidget(words_label, 3, 0, 1, 2)
-
-        return frame
-
-    # -- helpers ----------------------------------------------------------
-
-    def _resolve_item_name(self, item_id: int) -> str:
+    def _on_print_clicked(self) -> None:
         try:
-            return self._item_engine.get_item(item_id).item_name
-        except Exception:
-            return f"(item #{item_id} not found)"
+            pdf_path = self._generate_pdf()
+        except Exception as exc:
+            logger.exception("PDF generation failed for print.")
+            QMessageBox.warning(self, "Print", f"Could not generate the invoice for printing: {exc}")
+            return
 
-    @staticmethod
-    def _field_label(caption: str, value) -> QLabel:
-        return QLabel(f"<b>{caption}</b> {value}")
+        printer = QPrinter(QPrinter.HighResolution)
 
-    @staticmethod
-    def _amount_in_words(amount: float) -> str:
-        """Simple English amount-in-words converter (Rupees only, no
-        paisa/decimal support needed for this bill format)."""
-        ones = [
-            "", "One", "Two", "Three", "Four", "Five", "Six", "Seven",
-            "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen",
-            "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen",
-            "Nineteen",
-        ]
-        tens = [
-            "", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty",
-            "Seventy", "Eighty", "Ninety",
-        ]
+        def render(printer_to_render):
+            from PySide6.QtGui import QPainter
+            doc = QPdfDocument()
+            doc.load(pdf_path)
+            painter = QPainter(printer_to_render)
+            for page in range(doc.pageCount()):
+                if page > 0:
+                    printer_to_render.newPage()
+                page_size = doc.pagePointSize(page)
+                target_rect = painter.viewport()
+                image = doc.render(page, page_size.toSize() * 2)
+                painter.drawImage(target_rect, image)
+            painter.end()
 
-        def two_digits(n: int) -> str:
-            if n < 20:
-                return ones[n]
-            return (tens[n // 10] + (f" {ones[n % 10]}" if n % 10 else "")).strip()
+        preview_window = QDialog(self)
+        preview_window.setWindowTitle("Print Preview")
+        preview_window.setWindowFlags(
+            Qt.Window
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowCloseButtonHint
+            | Qt.WindowSystemMenuHint
+        )
+        preview_window.resize(1000, 800)
 
-        def three_digits(n: int) -> str:
-            if n >= 100:
-                return f"{ones[n // 100]} Hundred" + (
-                    f" {two_digits(n % 100)}" if n % 100 else ""
+        layout = QVBoxLayout(preview_window)
+
+        toolbar = QHBoxLayout()
+        print_btn = QPushButton("🖨 Print")
+        zoom_in_btn = QPushButton("Zoom In")
+        zoom_out_btn = QPushButton("Zoom Out")
+        fit_btn = QPushButton("Fit Page")
+        close_btn = QPushButton("Close")
+        toolbar.addWidget(print_btn)
+        toolbar.addWidget(zoom_in_btn)
+        toolbar.addWidget(zoom_out_btn)
+        toolbar.addWidget(fit_btn)
+        toolbar.addStretch(1)
+        toolbar.addWidget(close_btn)
+        layout.addLayout(toolbar)
+
+        preview_widget = QPrintPreviewWidget(printer, preview_window)
+        preview_widget.paintRequested.connect(render)
+        layout.addWidget(preview_widget)
+
+        print_btn.clicked.connect(preview_widget.print_)
+        zoom_in_btn.clicked.connect(preview_widget.zoomIn)
+        zoom_out_btn.clicked.connect(preview_widget.zoomOut)
+        fit_btn.clicked.connect(preview_widget.fitInView)
+        close_btn.clicked.connect(preview_window.accept)
+
+        preview_window.setWindowState(Qt.WindowMaximized)
+        preview_window.exec()
+
+    def _on_pdf_clicked(self) -> None:
+        try:
+            pdf_path = self._generate_pdf()
+        except Exception as exc:
+            logger.exception("PDF generation failed.")
+            QMessageBox.warning(self, "PDF", f"Could not generate the PDF: {exc}")
+            return
+
+        default_name = f"PurchaseInvoice_{self._invoice.internal_ref_number}.pdf"
+        save_path, _ = QFileDialog.getSaveFileName(self, "Save Invoice PDF", default_name, "PDF Files (*.pdf)")
+        if not save_path:
+            return
+
+        try:
+            with open(pdf_path, "rb") as src, open(save_path, "wb") as dst:
+                dst.write(src.read())
+            QMessageBox.information(self, "PDF", f"Saved to:\n{save_path}")
+        except OSError as exc:
+            logger.exception("Could not copy generated PDF to chosen location.")
+            QMessageBox.warning(self, "PDF", f"Could not save the file: {exc}")
+
+    def _on_email_clicked(self) -> None:
+        company = self._get_current_company()
+        if not company:
+            QMessageBox.warning(self, "Email", "No company is set up for this session.")
+            return
+
+        smtp_host = get_company_setting(company.company_id, "smtp.host", "")
+        smtp_port = get_company_setting(company.company_id, "smtp.port", 587)
+        smtp_email = get_company_setting(company.company_id, "smtp.email", "")
+        smtp_password = get_company_setting(company.company_id, "smtp.app_password", "")
+
+        if not smtp_host or not smtp_email or not smtp_password:
+            QMessageBox.warning(
+                self, "Email",
+                "Email is not set up for this company yet. Go to Company Form "
+                "and fill in the Email Settings (SMTP) section first.",
+            )
+            return
+
+        supplier = self._get_supplier()
+        default_recipient = supplier.email if supplier and supplier.email else ""
+        recipient, ok = QInputDialog.getText(
+            self, "Email", "Send invoice to:", text=default_recipient
+        )
+        if not ok or not recipient.strip():
+            return
+
+        try:
+            pdf_path = self._generate_pdf()
+        except Exception as exc:
+            logger.exception("PDF generation failed for email.")
+            QMessageBox.warning(self, "Email", f"Could not generate the invoice: {exc}")
+            return
+
+        msg = EmailMessage()
+        msg["Subject"] = f"Purchase Invoice {self._invoice.internal_ref_number}"
+        msg["From"] = smtp_email
+        msg["To"] = recipient.strip()
+        msg.set_content(
+            f"Dear Supplier,\n\nPlease find attached Purchase Invoice "
+            f"{self._invoice.internal_ref_number}.\n\nRegards,\n{company.company_name}"
+        )
+        with open(pdf_path, "rb") as f:
+            msg.add_attachment(
+                f.read(), maintype="application", subtype="pdf",
+                filename=os.path.basename(pdf_path),
+            )
+
+        try:
+            with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
+                server.starttls()
+                server.login(smtp_email, smtp_password)
+                server.send_message(msg)
+            QMessageBox.information(self, "Email", f"Invoice emailed to {recipient.strip()}.")
+        except Exception as exc:
+            logger.exception("Failed to send invoice email.")
+            QMessageBox.warning(self, "Email", f"Could not send the email: {exc}")
+
+    def _on_whatsapp_clicked(self) -> None:
+        company = self._get_current_company()
+        folder = ""
+        if company:
+            folder = get_company_setting(company.company_id, "whatsapp.pdf_save_path", "") or ""
+
+        if not folder or not os.path.isdir(folder):
+            chosen_folder = QFileDialog.getExistingDirectory(
+                self, "Choose a folder to save WhatsApp invoice PDFs (one-time setup)"
+            )
+            if not chosen_folder:
+                return
+            folder = chosen_folder
+            if company:
+                save_company_setting_value(
+                    company.company_id, "whatsapp.pdf_save_path", folder,
+                    str(get_current_user_id()), reason="Set from WhatsApp button",
                 )
-            return two_digits(n)
 
-        n = int(round(amount))
-        if n == 0:
-            return "Zero Only"
+        default_name = f"PurchaseInvoice_{self._invoice.internal_ref_number}.pdf"
+        save_path = os.path.join(folder, default_name)
 
-        crore, n = divmod(n, 10_000_000)
-        lakh, n = divmod(n, 100_000)
-        thousand, n = divmod(n, 1_000)
-        hundred = n
+        try:
+            self._generate_pdf_to(save_path)
+        except Exception as exc:
+            logger.exception("PDF generation failed for WhatsApp.")
+            QMessageBox.warning(self, "WhatsApp", f"Could not generate the invoice: {exc}")
+            return
 
-        parts = []
-        if crore:
-            parts.append(f"{three_digits(crore)} Crore")
-        if lakh:
-            parts.append(f"{two_digits(lakh)} Lakh")
-        if thousand:
-            parts.append(f"{two_digits(thousand)} Thousand")
-        if hundred:
-            parts.append(three_digits(hundred))
+        pdf_path = save_path
+        supplier = self._get_supplier()
 
-        return " ".join(parts) + " Only"
+        default_phone = ""
+        if supplier and (supplier.mobile_no or supplier.phone_no):
+            default_phone = supplier.mobile_no or supplier.phone_no
+
+        phone, ok = QInputDialog.getText(
+            self, "WhatsApp", "Supplier's WhatsApp number (with country code):", text=default_phone
+        )
+        if not ok or not phone.strip():
+            return
+
+        clean_phone = "".join(ch for ch in phone if ch.isdigit())
+        if len(clean_phone) < 10:
+            QMessageBox.warning(
+                self, "WhatsApp",
+                "That doesn't look like a valid phone number (needs at least "
+                "10 digits, including country code). Please check and try again.",
+            )
+            return
+
+        message = (
+            f"Namaste, please find Purchase Invoice "
+            f"{self._invoice.internal_ref_number} attached."
+        )
+        url = f"whatsapp://send?phone={clean_phone}&text={quote(message)}"
+        opened = QDesktopServices.openUrl(QUrl(url))
+        if not opened:
+            QMessageBox.warning(
+                self, "WhatsApp",
+                "Could not open WhatsApp Desktop. Please make sure it is "
+                "installed (download from whatsapp.com/download), or open "
+                "WhatsApp manually and attach the PDF from:\n\n" + pdf_path,
+            )
+            return
+
+        QMessageBox.information(
+            self, "WhatsApp",
+            f"WhatsApp is opening with the message ready.\n\n"
+            f"Please attach this PDF and send:\n{pdf_path}",
+        )
+
+    def _on_change_whatsapp_folder_clicked(self) -> None:
+        company = self._get_current_company()
+        if not company:
+            QMessageBox.warning(self, "WhatsApp Folder", "No company is set up for this session.")
+            return
+
+        chosen_folder = QFileDialog.getExistingDirectory(self, "Choose WhatsApp PDF save folder")
+        if not chosen_folder:
+            return
+
+        save_company_setting_value(
+            company.company_id, "whatsapp.pdf_save_path", chosen_folder,
+            str(get_current_user_id()), reason="Changed from WhatsApp folder button",
+        )
+        QMessageBox.information(self, "WhatsApp Folder", f"Saved:\n{chosen_folder}")
+
+
+__all__ = ["PurchaseInvoiceViewDialog"]

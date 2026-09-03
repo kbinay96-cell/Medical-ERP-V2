@@ -21,6 +21,7 @@ it via get_photo_update() - it never writes an image itself.
 
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QPixmap, QIcon
+from utils.icon_utils import themed_icon_from_path
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog, QSizePolicy
 
 PREVIEW_SIZE = 140
@@ -139,15 +140,19 @@ class PhotoPicker(QWidget):
         self.btn_remove.show()
 
     def _show_placeholder(self):
-        icon_pixmap = QIcon(PLACEHOLDER_ICON).pixmap(QSize(48, 48))
+        icon_pixmap = themed_icon_from_path(PLACEHOLDER_ICON).pixmap(QSize(48, 48))
         self.preview_label.setPixmap(icon_pixmap)
         self.btn_upload.show()
         self.btn_change.hide()
         self.btn_remove.hide()
 
 
-def host_photo_beside_scroll(root_layout, scroll_widget: QWidget) -> "PhotoPicker":
-    """Places PhotoPicker to the left of an existing scroll area (Customer pattern)."""
+def host_photo_beside_scroll(root_layout, scroll_widget: QWidget, side: str = "left") -> "PhotoPicker":
+    """Places PhotoPicker beside an existing scroll area (Customer pattern).
+
+    side="left" (default) keeps existing behavior for other forms.
+    side="right" puts the picker after the scroll area instead.
+    """
     picker = PhotoPicker(scroll_widget.parentWidget())
     index = root_layout.indexOf(scroll_widget)
     root_layout.removeWidget(scroll_widget)
@@ -155,7 +160,11 @@ def host_photo_beside_scroll(root_layout, scroll_widget: QWidget) -> "PhotoPicke
     h = QHBoxLayout(row)
     h.setContentsMargins(0, 0, 0, 0)
     h.setSpacing(16)
-    h.addWidget(picker, 0, Qt.AlignmentFlag.AlignTop)
-    h.addWidget(scroll_widget, 1)
+    if side == "right":
+        h.addWidget(scroll_widget, 1)
+        h.addWidget(picker, 0, Qt.AlignmentFlag.AlignTop)
+    else:
+        h.addWidget(picker, 0, Qt.AlignmentFlag.AlignTop)
+        h.addWidget(scroll_widget, 1)
     root_layout.insertWidget(index, row, 1)
     return picker

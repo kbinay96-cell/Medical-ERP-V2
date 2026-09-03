@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.purchase_engine import PurchaseEngine
 
-from engines.purchase_engine import PurchaseEngine
+from utils.window_chrome import apply_standard_window_chrome
 from screens.purchase_invoice_view_dialog import PurchaseInvoiceViewDialog
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,7 @@ class PurchaseInvoiceListScreen(QWidget):
 
     def __init__(self, parent, engine: PurchaseEngine, supplier_engine, item_engine, current_user_id: int):
         super().__init__(parent)
+        apply_standard_window_chrome(self, width=1200, height=800, start_maximized=True)
         self._engine = engine
         self._supplier_engine = supplier_engine
         self._item_engine = item_engine

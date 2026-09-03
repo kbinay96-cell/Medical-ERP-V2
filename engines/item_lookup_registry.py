@@ -86,15 +86,7 @@ def manufacturer_lookup(manufacturer_id: Optional[int]) -> Optional[dict]:
 # is built.
 # ------------------------------------------------------------------ #
 def country_tax_lookup(country: str) -> tuple[float, float]:
-    """
-    TODO: once the Country Tax Settings engine exists, replace this
-    function's body with a real lookup, e.g.:
-
-        from engines.country_tax_engine import get_country_tax
-        return get_country_tax(country)
-
-    Until then, ALWAYS returns (0, 0) -- exactly the blueprint's rule for
-    an unconfigured/unknown/missing country. Never raises.
-    """
-    logger.info("country_tax_lookup: Country Tax Settings not configured yet; '%s' defaults to (0, 0).", country)
-    return 0.0, 0.0
+    """Resolves (vat_percent, custom_percent) for a country via the real
+    CountryTaxEngine, which is now built and wired."""
+    from engines.country_tax_engine import CountryTaxEngine
+    return CountryTaxEngine().get_tax_for_country(country)

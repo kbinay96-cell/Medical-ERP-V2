@@ -88,6 +88,7 @@
       </widget>
 
       <!-- MAIN DASHBOARD AREA -->
+      <widget class="QStackedWidget" name="stackedContentArea">
       <widget class="QScrollArea" name="scrollMainArea">
        <property name="widgetResizable"><bool>true</bool></property>
        <widget class="QWidget" name="scrollAreaContents">
@@ -174,6 +175,7 @@
         </layout>
        </widget>
       </widget>
+       </widget>
 
      </widget>
     </item>

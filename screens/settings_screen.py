@@ -99,6 +99,9 @@ logger = get_logger()
 # Setting keys that need screen-level side effects beyond a normal
 # save/apply (they affect the running application immediately).
 THEME_SETTING_KEY = "general.theme"
+UI_CONTROL_HEIGHT_KEY = "ui.control_height"
+UI_FONT_SIZE_KEY = "ui.font_size"
+UI_FONT_FAMILY_KEY = "ui.font_family"
 
 # Setting keys with a fixed set of valid choices, rendered as a
 # QComboBox regardless of their declared data_type.
@@ -111,6 +114,10 @@ FIXED_CHOICE_SETTINGS: dict[str, list[str]] = {
         "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
     ],
     "print.default_paper_size": ["A4", "A5", "Letter", "Thermal58", "Thermal80"],
+    UI_FONT_FAMILY_KEY: [
+        "Segoe UI", "Calibri", "Tahoma", "Verdana", "Arial",
+        "Trebuchet MS", "Century Gothic", "Open Sans", "Noto Sans", "Roboto",
+    ],
 }
 
 # Settings that get a dropdown of common values but still allow a
@@ -347,6 +354,38 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
                     lambda _text, key=setting_key: self._on_setting_changed(key)
                 )
                 return combo
+
+        # Special case: adjustable control height, a ranged spinbox
+        # instead of the unranged default integer QSpinBox.
+        if setting_key == UI_CONTROL_HEIGHT_KEY:
+            spin = QSpinBox()
+            spin.setRange(24, 48)
+            spin.setSuffix(" px")
+            try:
+                spin.setValue(int(current_value))
+            except (TypeError, ValueError):
+                spin.setValue(34)
+            spin.valueChanged.connect(
+                lambda _value, key=setting_key: self._on_setting_changed(key)
+            )
+            return spin
+
+        # Special case: adjustable base font size, a ranged spinbox
+        # instead of the unranged default decimal QDoubleSpinBox.
+        if setting_key == UI_FONT_SIZE_KEY:
+            dspin = QDoubleSpinBox()
+            dspin.setRange(8.0, 16.0)
+            dspin.setDecimals(1)
+            dspin.setSingleStep(0.5)
+            dspin.setSuffix(" pt")
+            try:
+                dspin.setValue(float(current_value))
+            except (TypeError, ValueError):
+                dspin.setValue(10.5)
+            dspin.valueChanged.connect(
+                lambda _value, key=setting_key: self._on_setting_changed(key)
+            )
+            return dspin
 
         if setting_key == "general.language":
             combo = QComboBox()
@@ -613,6 +652,8 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
         live stylesheet). Extend this as more such settings are added."""
         if setting_key == THEME_SETTING_KEY:
             theme_engine.apply_theme(value)
+        elif setting_key in (UI_CONTROL_HEIGHT_KEY, UI_FONT_SIZE_KEY, UI_FONT_FAMILY_KEY):
+            theme_engine.apply_theme(theme_engine.get_current_theme())
 
     def _on_btn_restore_default_clicked(self) -> None:
         if self._is_search_view or not self._row_widgets:

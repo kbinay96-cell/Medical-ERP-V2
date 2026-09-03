@@ -4,18 +4,18 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
-from engines.exceptions import RecordNotFoundError, ValidationError
-from engines.sale_validator import SaleValidator
+from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
+from engines.sale_validator import SaleInvoiceValidator
 from models.sale_invoice_model import SaleInvoiceModel, SaleInvoiceSearchFilters
 
 logger = logging.getLogger(__name__)
 
 
-def _ve(message: str) -> None:
-    raise ValidationError([message])
-
+# --------------------------------------------------------------------------- #
+# DTOs
+# --------------------------------------------------------------------------- #
 
 @dataclass
 class SaleInvoiceLineDTO:
@@ -24,6 +24,7 @@ class SaleInvoiceLineDTO:
     batch_no: str
     expiry_month: int
     expiry_year: int
+    entry_mode: str  # "free_qty" | "net_rate"
     qty: float
     free_qty: float
     rate: float
@@ -43,319 +44,317 @@ class SaleInvoiceDTO:
     customer_id: int
     customer_name: str
     invoice_date_bs: str
-    payment_mode: str
+    sale_mode: str
+    payment_type: str
     grand_total: float
-    paid_amount: float
+    amount_paid_now: float
     balance_amount: float
     status: str
+    area_id: Optional[int] = None
+    price_level_id: Optional[int] = None
     lines: list[SaleInvoiceLineDTO] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
+# --------------------------------------------------------------------------- #
+# Partial-success exception
+# --------------------------------------------------------------------------- #
+
+class EngineErrorWithInvoice(Exception):
+    """
+    Raised by create_sale_invoice() when the invoice itself saved
+    cleanly but one or more per-line stock deductions failed. Carries
+    the saved DTO so the Screen can tell the user "invoice X was
+    created, but: ..." rather than silently hiding a partial-stock
+    situation.
+    """
+
+    def __init__(self, dto: SaleInvoiceDTO, stock_errors: list[str]) -> None:
+        self.dto = dto
+        self.stock_errors = stock_errors
+        super().__init__(
+            f"Invoice {dto.invoice_number} saved, but stock errors: {'; '.join(stock_errors)}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# ENGINE
+# --------------------------------------------------------------------------- #
+
 class SaleEngine:
-    """Business-rule orchestration for Sales Invoice.
+    """
+    Business-rule orchestration for Sales Invoice.
 
     Screens call ONLY this class. Stock is never written here — every
     deduction goes through ItemEngine.post_stock_movement(transaction_type='SALE').
     """
 
-    def __init__(self, model: SaleInvoiceModel, date_engine, item_engine) -> None:
+    def __init__(
+        self,
+        model: SaleInvoiceModel,
+        item_engine,
+        item_free_scheme_engine,
+        country_tax_lookup_fn: Callable[[int], float],
+        manufacturer_lookup_fn: Callable[[int], dict],
+    ) -> None:
         self._model = model
-        self._date_engine = date_engine
         self._item_engine = item_engine
+        self._item_free_scheme_engine = item_free_scheme_engine
+        self._country_tax_lookup_fn = country_tax_lookup_fn
+        self._manufacturer_lookup_fn = manufacturer_lookup_fn
+        self._validator = SaleInvoiceValidator(
+            number_exists_fn=self._model.get_by_invoice_number,
+        )
 
-    def generate_invoice_number(self) -> str:
+    # ------------------------------------------------------------------ #
+    # SETTINGS
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _get_setting(key: str, default=None):
         from engines.settings_engine import get_setting
+        return get_setting(key, default)
 
-        prefix = get_setting("sale.invoice_prefix", "SINV-")
+    def is_wholesale_mode(self) -> bool:
+        """Single source of truth: reads sale.column_show_free. When ON,
+        the Free column is visible and free-scheme + CC logic run (Wholesale).
+        When OFF, free-scheme logic does not run at all (Retail)."""
+        return bool(self._get_setting("sale.column_show_free", False))
+
+    # ------------------------------------------------------------------ #
+    # NUMBER GENERATION
+    # ------------------------------------------------------------------ #
+    def generate_invoice_number(self) -> str:
+        prefix = self._get_setting("sale.invoice_prefix", "SINV-")
         next_seq = self._model.get_last_invoice_sequence(prefix) + 1
         return f"{prefix}{next_seq:04d}"
 
-    def _calculate_line(self, line: SaleInvoiceLineDTO) -> SaleInvoiceLineDTO:
-        discount_amount = line.qty * line.rate * (line.discount_percent / 100.0)
-        taxable = (line.qty * line.rate) - discount_amount
-        cc_amount = line.free_qty * line.rate * (line.cc_percent / 100.0)
-        tax_amount = taxable * (line.tax_percent / 100.0)
-        amount = taxable + cc_amount + tax_amount
-        line.discount_amount = round(discount_amount, 4)
-        line.cc_amount = round(cc_amount, 4)
-        line.tax_amount = round(tax_amount, 4)
-        line.amount = round(amount, 4)
-        return line
+    # ------------------------------------------------------------------ #
+    # LINE COMPUTATION (preview + save both use this)
+    # ------------------------------------------------------------------ #
+    def compute_line(self, line_input: dict, is_wholesale: bool) -> dict:
+        """
+        Computes a single Sale Invoice line from raw user input. Resolves
+        item, batch (read-only auto-pick), rate, free scheme, discount, CC
+        on free goods, and tax. Returns a dict ready for insert.
+        """
+        item_id = line_input["item_id"]
+        entry_mode = line_input.get("entry_mode", "free_qty")
+        qty = float(line_input["qty"])
 
-    def _resolve_tax_percent(self, item_id: int) -> float:
+        item_dto = self._item_engine.get_item(item_id)
+        batch = self._pick_nearest_expiry_batch(item_id)
+        if batch is None:
+            raise ValidationError([f"Item '{item_dto.item_name}' has no available stock to sell."])
+
+        current_rate = float(item_dto.sale_rate or 0)
+        rate = float(line_input.get("rate") if line_input.get("rate") is not None else current_rate)
+
+        free_qty = 0.0
+        if is_wholesale:
+            scheme = self._item_free_scheme_engine.get_scheme_for_item(item_id)
+            if scheme is not None:
+                scheme_qty, scheme_free = scheme
+                if entry_mode == "net_rate":
+                    if line_input.get("rate") is None:
+                        rate = self._compute_net_rate(current_rate, scheme_qty, scheme_free)
+                else:
+                    if line_input.get("free_qty") is None:
+                        free_qty = self._compute_auto_free_qty(qty, scheme_qty, scheme_free)
+                    else:
+                        free_qty = float(line_input["free_qty"])
+
+        discount_percent = float(line_input.get("discount_percent", 0) or 0)
+        gross = qty * rate
+        discount_amount = gross * discount_percent / 100
+
+        cc_percent = 0.0
+        cc_amount = 0.0
+        if is_wholesale and free_qty > 0:
+            cc_percent = self._resolve_cc_percent(item_dto.manufacturer_id)
+            purchase_rate = float(item_dto.purchase_rate or 0)
+            cc_amount = free_qty * purchase_rate * cc_percent / 100
+
+        tax_percent = 0.0
+        tax_amount = 0.0
+        if self._get_setting("sale.column_show_tax", False):
+            vat_percent, _custom_percent = self._item_engine.resolve_item_tax(item_id)
+            tax_percent = vat_percent
+            tax_amount = gross * tax_percent / 100
+
+        amount = gross - discount_amount
+
+        return {
+            "item_id": item_id,
+            "item_batch_id": batch["item_batch_id"],
+            "batch_no": batch["batch_no"],
+            "expiry_month": batch["expiry_month"],
+            "expiry_year": batch["expiry_year"],
+            "entry_mode": entry_mode,
+            "qty": qty,
+            "free_qty": free_qty,
+            "rate": round(rate, 4),
+            "discount_percent": discount_percent,
+            "discount_amount": round(discount_amount, 4),
+            "cc_percent": round(cc_percent, 4),
+            "cc_amount": round(cc_amount, 4),
+            "tax_percent": round(tax_percent, 4),
+            "tax_amount": round(tax_amount, 4),
+            "amount": round(amount, 4),
+        }
+
+    # ------------------------------------------------------------------ #
+    # FREE SCHEME HELPERS
+    # ------------------------------------------------------------------ #
+    def _compute_auto_free_qty(self, qty: float, scheme_qty: float, scheme_free: float) -> float:
+        allow_half_free = bool(self._get_setting("sale.allow_half_free", False))
+        minimum_auto_free = float(self._get_setting("sale.minimum_auto_free_qty", 1))
+
+        if allow_half_free:
+            free_qty = (qty / scheme_qty) * scheme_free
+        else:
+            free_qty = (qty // scheme_qty) * scheme_free
+
+        free_qty = round(free_qty, 4)
+        if free_qty < minimum_auto_free:
+            return 0.0
+        return free_qty
+
+    def _compute_net_rate(self, current_rate: float, scheme_qty: float, scheme_free: float) -> float:
+        if scheme_qty + scheme_free == 0:
+            return current_rate
+        return round(current_rate * scheme_qty / (scheme_qty + scheme_free), 4)
+
+    # ------------------------------------------------------------------ #
+    # BATCH + TAX RESOLUTION
+    # ------------------------------------------------------------------ #
+    def _pick_nearest_expiry_batch(self, item_id: int) -> Optional[dict]:
+        """Reuses ItemEngine.get_batches() (already expiry-ascending) rather
+        than duplicating the ordering logic -- takes the first non-zero-qty
+        batch. No new sorting code, per project's 'No Duplicate Logic' rule."""
+        batches = self._item_engine.get_batches(item_id)
+        for batch_dto in batches:
+            if float(batch_dto.batch_qty) > 0:
+                if hasattr(batch_dto, 'to_dict'):
+                    return batch_dto.to_dict()
+                return vars(batch_dto)
+        return None
+
+    def _resolve_cc_percent(self, manufacturer_id: int) -> float:
         try:
-            vat_percent, _custom = self._item_engine.resolve_item_tax(item_id)
-            return float(vat_percent or 0.0)
+            manufacturer = self._manufacturer_lookup_fn(manufacturer_id) or {}
+            country_id = manufacturer.get("country_id")
+            if country_id is None:
+                return 0.0
+            country_tax = self._country_tax_lookup_fn(country_id) or {}
+            return float(country_tax.get("custom_percent") or 0.0)
         except Exception:
-            logger.exception("Failed to resolve VAT%% for item_id=%s", item_id)
+            logger.exception("Failed to resolve CC%% for manufacturer_id=%s", manufacturer_id)
             return 0.0
 
-    def _resolve_cc_percent(self, item_id: int) -> float:
-        try:
-            _vat, custom_percent = self._item_engine.resolve_item_tax(item_id)
-            return float(custom_percent or 0.0)
-        except Exception:
-            logger.exception("Failed to resolve CC%% for item_id=%s", item_id)
-            return 0.0
+    # ------------------------------------------------------------------ #
+    # CREATE
+    # ------------------------------------------------------------------ #
+    def create_sale_invoice(self, payload: dict, current_user_id: int) -> SaleInvoiceDTO:
+        is_wholesale = self.is_wholesale_mode()
 
-    def _invoice_date_ad(self, invoice_date_bs: str) -> date:
-        from engines.date_engine import DateEngineError, bs_to_ad
-
-        try:
-            return bs_to_ad(invoice_date_bs)
-        except DateEngineError:
-            logger.exception("Could not convert BS invoice date %s to AD", invoice_date_bs)
-            return date.today()
-
-    def _now_stamps(self) -> tuple[datetime, Optional[str]]:
-        from engines.date_engine import DateEngineError, ad_to_bs
-
-        now_ad = datetime.now(timezone.utc)
-        try:
-            now_bs = ad_to_bs(now_ad.date())
-        except DateEngineError:
-            logger.exception("Could not resolve BS date for sale invoice audit stamp")
-            now_bs = None
-        return now_ad, now_bs
-
-    def create_sale_invoice(self, payload: dict[str, Any], current_user_id: int) -> SaleInvoiceDTO:
-        is_valid, error = SaleValidator.validate_invoice_header(payload)
-        if not is_valid:
-            _ve(error)
+        header_errors = self._validator.validate_header(payload)
+        if not header_errors.is_valid:
+            raise ValidationError(header_errors.errors)
 
         raw_lines = payload.get("lines") or []
-        for raw_line in raw_lines:
-            is_valid, error = SaleValidator.validate_invoice_line(raw_line)
-            if not is_valid:
-                _ve(error)
+        line_errors = self._validator.validate_lines(raw_lines)
+        if not line_errors.is_valid:
+            raise ValidationError(line_errors.errors)
 
-        lines: list[SaleInvoiceLineDTO] = []
-        needed_by_batch: dict[int, float] = {}
+        computed_lines = [self.compute_line(line, is_wholesale) for line in raw_lines]
 
-        for raw_line in raw_lines:
-            item_batch_id = int(raw_line["item_batch_id"])
-            batch = self._item_engine.get_batch(item_batch_id)
-            if batch.item_id != int(raw_line["item_id"]):
-                _ve(f"Batch '{batch.batch_no}' does not belong to the selected item.")
+        total_qty = sum(l["qty"] for l in computed_lines)
+        total_free_qty = sum(l["free_qty"] for l in computed_lines)
+        total_gross_amount = sum(l["qty"] * l["rate"] for l in computed_lines)
+        total_discount_amount = sum(l["discount_amount"] for l in computed_lines)
+        total_cc_amount = sum(l["cc_amount"] for l in computed_lines)
+        total_tax_amount = sum(l["tax_amount"] for l in computed_lines)
+        subtotal = sum(l["amount"] for l in computed_lines) + total_cc_amount + total_tax_amount
+        grand_total_raw = subtotal
+        grand_total = round(grand_total_raw)
+        round_off = grand_total - grand_total_raw
 
-            qty = float(raw_line.get("qty") or 0.0)
-            free_qty = float(raw_line.get("free_qty") or 0.0)
-            needed_by_batch[item_batch_id] = needed_by_batch.get(item_batch_id, 0.0) + qty + free_qty
-
-            dto_line = SaleInvoiceLineDTO(
-                item_id=int(raw_line["item_id"]),
-                item_batch_id=item_batch_id,
-                batch_no=batch.batch_no,
-                expiry_month=int(batch.expiry_month),
-                expiry_year=int(batch.expiry_year),
-                qty=qty,
-                free_qty=free_qty,
-                rate=float(raw_line.get("rate") or 0.0),
-                discount_percent=float(raw_line.get("discount_percent") or 0.0),
-                tax_percent=self._resolve_tax_percent(int(raw_line["item_id"])),
-                cc_percent=self._resolve_cc_percent(int(raw_line["item_id"])),
-            )
-            lines.append(self._calculate_line(dto_line))
-
-        for item_batch_id, needed in needed_by_batch.items():
-            batch = self._item_engine.get_batch(item_batch_id)
-            if float(batch.batch_qty) < needed:
-                _ve(
-                    f"Insufficient stock for batch '{batch.batch_no}' "
-                    f"(available {batch.batch_qty}, needed {needed})."
-                )
-
-        raw_total = sum(l.amount for l in lines)
-        bill_discount_amount = round(float(payload.get("bill_discount_amount") or 0.0), 4)
-        if bill_discount_amount < 0:
-            _ve("Bill discount cannot be negative.")
-        if bill_discount_amount > raw_total:
-            _ve("Bill discount cannot exceed the invoice total.")
-
-        total_after_discount = raw_total - bill_discount_amount
-        grand_total = round(total_after_discount)
-        round_off_amount = round(grand_total - total_after_discount, 2)
-
-        payment_mode = (payload.get("payment_mode") or "Cash").strip()
-        if payment_mode == "Cash":
-            paid_amount = grand_total
-        elif payment_mode == "Credit":
-            paid_amount = 0.0
-        else:
-            paid_amount = round(float(payload.get("paid_amount") or 0.0), 4)
-            if paid_amount > grand_total:
-                _ve("Paid amount cannot exceed grand total.")
-
-        balance_amount = round(grand_total - paid_amount, 4)
-
-        customer_id = int(payload["customer_id"])
-        self._enforce_credit_limit(customer_id, balance_amount)
-
-        now_ad, now_bs = self._now_stamps()
         invoice_number = self.generate_invoice_number()
-        invoice_date_bs = str(payload["invoice_date_bs"]).strip()
-        invoice_date_ad = self._invoice_date_ad(invoice_date_bs)
+        now_ad = datetime.now(timezone.utc)
+        now_bs = self._now_bs(now_ad)
 
-        new_invoice_id = self._model.insert_invoice(
-            {
-                "invoice_number": invoice_number,
-                "customer_id": customer_id,
-                "invoice_date_ad": invoice_date_ad,
-                "invoice_date_bs": invoice_date_bs,
-                "payment_mode": payment_mode,
-                "total_qty": round(sum(l.qty + l.free_qty for l in lines), 4),
-                "total_gross_amount": round(sum(l.qty * l.rate for l in lines), 4),
-                "total_discount_amount": round(sum(l.discount_amount for l in lines) + bill_discount_amount, 4),
-                "total_cc_amount": round(sum(l.cc_amount for l in lines), 4),
-                "total_tax_amount": round(sum(l.tax_amount for l in lines), 4),
-                "bill_discount_amount": bill_discount_amount,
-                "round_off_amount": round_off_amount,
-                "grand_total": grand_total,
-                "paid_amount": paid_amount,
-                "balance_amount": balance_amount,
-                "status": "Posted",
-                "remarks": (payload.get("remarks") or None),
-                "created_by": current_user_id,
-                "created_at_ad": now_ad,
-                "created_at_bs": now_bs,
-            }
-        )
+        header_data = {
+            "invoice_number": invoice_number,
+            "customer_id": payload["customer_id"],
+            "area_id": payload.get("area_id"),
+            "price_level_id": payload.get("price_level_id"),
+            "invoice_date_ad": payload.get("invoice_date_ad") or now_ad.date(),
+            "invoice_date_bs": payload["invoice_date_bs"],
+            "sale_mode": "Wholesale" if is_wholesale else "Retail",
+            "total_qty": total_qty,
+            "total_free_qty": total_free_qty,
+            "total_gross_amount": total_gross_amount,
+            "total_discount_amount": total_discount_amount,
+            "total_cc_amount": total_cc_amount,
+            "total_tax_amount": total_tax_amount,
+            "round_off": round_off,
+            "grand_total": grand_total,
+            "payment_type": payload.get("payment_type"),
+            "amount_paid_now": payload.get("amount_paid_now", 0) or 0,
+            "status": payload.get("status", "Posted"),
+            "remarks": (payload.get("remarks") or "").strip() or None,
+            "created_by": current_user_id,
+            "created_at_ad": now_ad,
+            "created_at_bs": now_bs,
+        }
 
-        for dto_line in lines:
-            self._model.insert_invoice_item(
-                new_invoice_id,
-                {
-                    "item_id": dto_line.item_id,
-                    "item_batch_id": dto_line.item_batch_id,
-                    "batch_no": dto_line.batch_no,
-                    "expiry_month": dto_line.expiry_month,
-                    "expiry_year": dto_line.expiry_year,
-                    "qty": dto_line.qty,
-                    "free_qty": dto_line.free_qty,
-                    "rate": dto_line.rate,
-                    "discount_percent": dto_line.discount_percent,
-                    "discount_amount": dto_line.discount_amount,
-                    "cc_percent": dto_line.cc_percent,
-                    "cc_amount": dto_line.cc_amount,
-                    "tax_percent": dto_line.tax_percent,
-                    "tax_amount": dto_line.tax_amount,
-                    "amount": dto_line.amount,
-                },
-            )
-
-        for item_batch_id, needed in needed_by_batch.items():
-            self._item_engine.post_stock_movement(
-                item_batch_id=item_batch_id,
-                transaction_type="SALE",
-                quantity_change=-needed,
-                current_user_id=current_user_id,
-                reference_type="sale_invoice",
-                reference_id=new_invoice_id,
-                remarks=f"Sale {invoice_number}",
-            )
-
-        customer_name = ""
         try:
-            from engines.customer_engine import get_customer
+            new_id = self._model.insert_with_items(header_data, computed_lines)
+        except Exception as exc:
+            if self._is_unique_violation(exc):
+                raise DuplicateRecordError("Invoice Number already exists (concurrent save detected).") from exc
+            logger.exception("Unexpected error inserting sale invoice.")
+            raise
 
-            customer = get_customer(customer_id) or {}
-            customer_name = customer.get("customer_name") or ""
-        except Exception:
-            logger.exception("Could not load customer name for sale invoice %s", new_invoice_id)
+        stock_errors: list[str] = []
+        for line in computed_lines:
+            total_deduction = line["qty"] + line["free_qty"]
+            try:
+                self._item_engine.post_stock_movement(
+                    item_batch_id=line["item_batch_id"],
+                    transaction_type="SALE",
+                    quantity_change=-total_deduction,
+                    current_user_id=current_user_id,
+                    reference_type="sale_invoice",
+                    reference_id=new_id,
+                )
+            except Exception as exc:
+                logger.exception("Stock deduction failed for line item_id=%s", line["item_id"])
+                stock_errors.append(f"Item {line['item_id']}: {exc}")
 
-        return SaleInvoiceDTO(
-            sale_invoice_id=new_invoice_id,
-            invoice_number=invoice_number,
-            customer_id=customer_id,
-            customer_name=customer_name,
-            invoice_date_bs=invoice_date_bs,
-            payment_mode=payment_mode,
-            grand_total=grand_total,
-            paid_amount=paid_amount,
-            balance_amount=balance_amount,
-            status="Posted",
-            lines=lines,
-        )
+        if stock_errors:
+            dto = self._to_dto(self._model.get_by_id(new_id, include_deleted=False))
+            raise EngineErrorWithInvoice(dto, stock_errors)
 
-    def _enforce_credit_limit(self, customer_id: int, this_balance: float) -> None:
-        if this_balance <= 0:
-            return
-        try:
-            from engines.customer_engine import get_customer
+        return self._to_dto(self._model.get_by_id(new_id, include_deleted=False))
 
-            customer = get_customer(customer_id)
-        except Exception:
-            logger.exception("Credit-limit check: could not load customer %s", customer_id)
-            return
-        if not customer:
-            _ve("Customer was not found.")
-        credit_limit = float(customer.get("credit_limit") or 0)
-        if credit_limit <= 0:
-            return
-        outstanding = self._model.get_customer_outstanding(customer_id)
-        if outstanding + this_balance > credit_limit:
-            _ve(
-                f"This sale would exceed the customer's credit limit "
-                f"(limit {credit_limit:.2f}, outstanding {outstanding:.2f}, "
-                f"this bill due {this_balance:.2f})."
-            )
-
-    def get_sale_invoice(self, sale_invoice_id: int, include_deleted: bool = False) -> SaleInvoiceDTO:
-        row = self._model.get_by_id(sale_invoice_id, include_deleted=include_deleted)
+    # ------------------------------------------------------------------ #
+    # READ
+    # ------------------------------------------------------------------ #
+    def get_sale_invoice(self, sale_invoice_id: int) -> SaleInvoiceDTO:
+        row = self._model.get_by_id(sale_invoice_id, include_deleted=False)
         if row is None:
             raise RecordNotFoundError(f"Sale invoice {sale_invoice_id} not found.")
-        line_rows = self._model.get_items_by_invoice(sale_invoice_id)
-        lines = [
-            SaleInvoiceLineDTO(
-                item_id=int(r["item_id"]),
-                item_batch_id=int(r["item_batch_id"]),
-                batch_no=r["batch_no"],
-                expiry_month=int(r["expiry_month"]),
-                expiry_year=int(r["expiry_year"]),
-                qty=float(r["qty"]),
-                free_qty=float(r["free_qty"] or 0),
-                rate=float(r["rate"]),
-                discount_percent=float(r["discount_percent"] or 0),
-                discount_amount=float(r["discount_amount"] or 0),
-                cc_percent=float(r["cc_percent"] or 0),
-                cc_amount=float(r["cc_amount"] or 0),
-                tax_percent=float(r["tax_percent"] or 0),
-                tax_amount=float(r["tax_amount"] or 0),
-                amount=float(r["amount"] or 0),
-            )
-            for r in line_rows
-        ]
-        customer_name = row.get("customer_name") or ""
-        if not customer_name:
-            try:
-                from engines.customer_engine import get_customer
-
-                customer = get_customer(row["customer_id"]) or {}
-                customer_name = customer.get("customer_name") or ""
-            except Exception:
-                customer_name = ""
-        return SaleInvoiceDTO(
-            sale_invoice_id=row["sale_invoice_id"],
-            invoice_number=row["invoice_number"],
-            customer_id=row["customer_id"],
-            customer_name=customer_name,
-            invoice_date_bs=row["invoice_date_bs"],
-            payment_mode=row["payment_mode"],
-            grand_total=float(row["grand_total"]),
-            paid_amount=float(row["paid_amount"]),
-            balance_amount=float(row["balance_amount"]),
-            status=row["status"],
-            lines=lines,
-        )
+        return self._to_dto(row)
 
     def search_sale_invoices(
         self,
         search_text: Optional[str] = None,
         customer_id: Optional[int] = None,
         status: Optional[str] = None,
+        sale_mode: Optional[str] = None,
         include_deleted: bool = False,
         page: int = 1,
         page_size: int = 50,
@@ -366,6 +365,7 @@ class SaleEngine:
             search_text=search_text,
             customer_id=customer_id,
             status=status,
+            sale_mode=sale_mode,
             include_deleted=include_deleted,
             page=page,
             page_size=page_size,
@@ -373,32 +373,20 @@ class SaleEngine:
             order_dir=order_dir,
         )
         rows, total_count = self._model.search(filters)
-        results = [
-            SaleInvoiceDTO(
-                sale_invoice_id=r["sale_invoice_id"],
-                invoice_number=r["invoice_number"],
-                customer_id=r["customer_id"],
-                customer_name=r.get("customer_name") or "",
-                invoice_date_bs=r["invoice_date_bs"],
-                payment_mode=r["payment_mode"],
-                grand_total=float(r["grand_total"]),
-                paid_amount=float(r["paid_amount"]),
-                balance_amount=float(r["balance_amount"]),
-                status=r["status"],
-                lines=[],
-            )
-            for r in rows
-        ]
+        results = [self._to_dto(r) for r in rows]
         return results, total_count
 
+    # ------------------------------------------------------------------ #
+    # CANCEL
+    # ------------------------------------------------------------------ #
     def cancel_sale_invoice(self, sale_invoice_id: int, current_user_id: int, reason: str) -> None:
-        """Soft-delete only. Does NOT reverse stock — that is Sale Return."""
         if not reason or not str(reason).strip():
-            _ve("A cancellation reason is required.")
+            raise ValidationError(["A cancellation reason is required."])
         existing = self._model.get_by_id(sale_invoice_id, include_deleted=False)
         if existing is None:
             raise RecordNotFoundError(f"Sale invoice {sale_invoice_id} not found.")
-        now_ad, now_bs = self._now_stamps()
+        now_ad = datetime.now(timezone.utc)
+        now_bs = self._now_bs(now_ad)
         self._model.soft_delete(
             sale_invoice_id=sale_invoice_id,
             deleted_by=current_user_id,
@@ -406,3 +394,70 @@ class SaleEngine:
             deleted_at_bs=now_bs or "",
             reason=reason.strip(),
         )
+
+    # ------------------------------------------------------------------ #
+    # INTERNALS
+    # ------------------------------------------------------------------ #
+    def _to_dto(self, row: dict) -> SaleInvoiceDTO:
+        line_rows = self._model.get_items_by_invoice(row["sale_invoice_id"])
+        lines = [
+            SaleInvoiceLineDTO(
+                item_id=r["item_id"],
+                item_batch_id=r["item_batch_id"],
+                batch_no=r["batch_no"],
+                expiry_month=r["expiry_month"],
+                expiry_year=r["expiry_year"],
+                entry_mode=r.get("entry_mode", "free_qty"),
+                qty=float(r["qty"]),
+                free_qty=float(r["free_qty"]),
+                rate=float(r["rate"]),
+                discount_percent=float(r["discount_percent"]),
+                discount_amount=float(r["discount_amount"]),
+                cc_percent=float(r["cc_percent"]),
+                cc_amount=float(r["cc_amount"]),
+                tax_percent=float(r["tax_percent"]),
+                tax_amount=float(r["tax_amount"]),
+                amount=float(r["amount"]),
+            )
+            for r in line_rows
+        ]
+        customer_name = row.get("customer_name") or ""
+        if not customer_name:
+            try:
+                from engines.customer_engine import get_customer
+                customer = get_customer(row["customer_id"]) or {}
+                customer_name = customer.get("customer_name") or ""
+            except Exception:
+                customer_name = ""
+        return SaleInvoiceDTO(
+            sale_invoice_id=row["sale_invoice_id"],
+            invoice_number=row["invoice_number"],
+            customer_id=row["customer_id"],
+            customer_name=customer_name,
+            invoice_date_bs=row["invoice_date_bs"],
+            sale_mode=row.get("sale_mode", "Retail"),
+            payment_type=row.get("payment_type", "Cash"),
+            grand_total=float(row["grand_total"]),
+            amount_paid_now=float(row.get("amount_paid_now", 0) or 0),
+            balance_amount=float(row.get("balance_amount", 0) or 0),
+            status=row["status"],
+            area_id=row.get("area_id"),
+            price_level_id=row.get("price_level_id"),
+            lines=lines,
+        )
+
+    @staticmethod
+    def _now_bs(now_ad=None) -> str:
+        try:
+            from engines.date_engine import ad_to_bs
+            return ad_to_bs((now_ad or datetime.now(timezone.utc)).date())
+        except Exception:
+            logger.warning("Could not convert AD->BS.")
+            return ""
+
+    @staticmethod
+    def _is_unique_violation(exc: Exception) -> bool:
+        return "unique" in str(exc).lower() or "duplicate" in str(exc).lower()
+
+
+__all__ = ["SaleEngine", "SaleInvoiceDTO", "SaleInvoiceLineDTO", "EngineErrorWithInvoice"]

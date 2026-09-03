@@ -291,6 +291,24 @@ def get_areas(active_only: bool = True) -> list[dict]:
             return cur.fetchall()
 
 
+def get_active_customers_by_area(area_id: int) -> list[dict]:
+    """
+    Backs the Sale Invoice screen's Area -> Customer two-combo search
+    (confirmed requirement): once an Area is picked, this narrows the
+    Customer combo to only that area's active, non-deleted customers.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT customer_id, customer_code, customer_name, price_level_id, credit_limit, "
+                "opening_balance, balance_type FROM customers "
+                "WHERE area_id = %s AND is_active = TRUE AND is_deleted = FALSE ORDER BY customer_name",
+                (area_id,)
+            )
+            return cur.fetchall()
+
+
+
 def get_routes(active_only: bool = True) -> list[dict]:
     query = "SELECT * FROM routes"
     if active_only:

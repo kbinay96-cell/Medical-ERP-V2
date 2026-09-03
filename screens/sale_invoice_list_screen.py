@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from engines.customer_engine import get_active_customers
 from engines.exceptions import RecordNotFoundError, ValidationError
-from engines.sale_engine import SaleEngine
+from engines.sale_engine import EngineErrorWithInvoice, SaleEngine
 from utils.searchable_combo_helper import populate_searchable_combo
 
 logger = logging.getLogger(__name__)
@@ -31,19 +31,21 @@ logger = logging.getLogger(__name__)
 COL_NUMBER = 0
 COL_CUSTOMER = 1
 COL_DATE = 2
-COL_TOTAL = 3
-COL_BALANCE = 4
-COL_STATUS = 5
-COL_VIEW = 6
-COL_CANCEL = 7
-COLUMN_COUNT = 8
+COL_SALE_MODE = 3
+COL_TOTAL = 4
+COL_BALANCE = 5
+COL_STATUS = 6
+COL_VIEW = 7
+COL_CANCEL = 8
+COLUMN_COUNT = 9
 
 
 class SaleInvoiceListScreen(QWidget):
-    def __init__(self, parent, engine: SaleEngine, item_engine, current_user_id: int):
+    def __init__(self, parent, engine: SaleEngine, item_engine, item_free_scheme_engine=None, current_user_id: int = 1):
         super().__init__(parent)
         self._engine = engine
         self._item_engine = item_engine
+        self._item_free_scheme_engine = item_free_scheme_engine
         self._current_user_id = current_user_id
         self._current_page = 1
         self._page_size = 50
@@ -72,6 +74,11 @@ class SaleInvoiceListScreen(QWidget):
         self.status_filter.addItems(["All", "Posted", "Cancelled"])
         filters.addWidget(self.status_filter)
 
+        filters.addWidget(QLabel("Sale Mode:"))
+        self.sale_mode_filter = QComboBox()
+        self.sale_mode_filter.addItems(["All", "Retail", "Wholesale"])
+        filters.addWidget(self.sale_mode_filter)
+
         self.search_button = QPushButton("Search")
         self.new_button = QPushButton("New Sale")
         filters.addWidget(self.search_button)
@@ -80,7 +87,7 @@ class SaleInvoiceListScreen(QWidget):
 
         self.table = QTableWidget(0, COLUMN_COUNT)
         self.table.setHorizontalHeaderLabels(
-            ["Invoice No", "Customer", "Date (BS)", "Grand Total", "Balance", "Status", "View", "Cancel"]
+            ["Invoice No", "Customer", "Date (BS)", "Mode", "Grand Total", "Balance", "Status", "View", "Cancel"]
         )
         self.table.horizontalHeader().setSectionResizeMode(COL_CUSTOMER, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -134,23 +141,24 @@ class SaleInvoiceListScreen(QWidget):
     def refresh(self) -> None:
         status = self.status_filter.currentText()
         status_value = None if status == "All" else status
-        invoices, total = self._engine.search_sale_invoices(
-            search_text=self.search_input.text().strip() or None,
-            customer_id=self.customer_filter.currentData(),
-            status=status_value,
-            page=self._current_page,
-            page_size=self._page_size,
-        )
-        max_page = max(1, (total + self._page_size - 1) // self._page_size)
-        if self._current_page > max_page:
-            self._current_page = max_page
-            invoices, total = self._engine.search_sale_invoices(
+        sale_mode = self.sale_mode_filter.currentText()
+        sale_mode_value = None if sale_mode == "All" else sale_mode
+
+        def _do_search(page_: int):
+            return self._engine.search_sale_invoices(
                 search_text=self.search_input.text().strip() or None,
                 customer_id=self.customer_filter.currentData(),
                 status=status_value,
-                page=self._current_page,
+                sale_mode=sale_mode_value,
+                page=page_,
                 page_size=self._page_size,
             )
+
+        invoices, total = _do_search(self._current_page)
+        max_page = max(1, (total + self._page_size - 1) // self._page_size)
+        if self._current_page > max_page:
+            self._current_page = max_page
+            invoices, total = _do_search(self._current_page)
 
         self.page_label.setText(f"Page {self._current_page} of {max_page} ({total} invoices)")
         self.table.setRowCount(0)
@@ -163,6 +171,7 @@ class SaleInvoiceListScreen(QWidget):
         self.table.setItem(row, COL_NUMBER, QTableWidgetItem(invoice.invoice_number))
         self.table.setItem(row, COL_CUSTOMER, QTableWidgetItem(invoice.customer_name))
         self.table.setItem(row, COL_DATE, QTableWidgetItem(invoice.invoice_date_bs))
+        self.table.setItem(row, COL_SALE_MODE, QTableWidgetItem(invoice.sale_mode))
         self.table.setItem(row, COL_TOTAL, QTableWidgetItem(f"{invoice.grand_total:.2f}"))
         self.table.setItem(row, COL_BALANCE, QTableWidgetItem(f"{invoice.balance_amount:.2f}"))
         self.table.setItem(row, COL_STATUS, QTableWidgetItem(invoice.status))
@@ -187,6 +196,7 @@ class SaleInvoiceListScreen(QWidget):
             parent=self,
             engine=self._engine,
             item_engine=self._item_engine,
+            item_free_scheme_engine=self._item_free_scheme_engine,
             current_user_id=self._current_user_id,
         )
         dialog.exec()
@@ -208,9 +218,10 @@ class SaleInvoiceListScreen(QWidget):
             f"Sale {invoice.invoice_number}",
             f"Customer: {invoice.customer_name}\n"
             f"Date: {invoice.invoice_date_bs}\n"
-            f"Mode: {invoice.payment_mode}\n"
+            f"Mode: {invoice.sale_mode}\n"
+            f"Payment: {invoice.payment_type}\n"
             f"Grand Total: {invoice.grand_total:.2f}\n"
-            f"Paid: {invoice.paid_amount:.2f}\n"
+            f"Paid: {invoice.amount_paid_now:.2f}\n"
             f"Balance: {invoice.balance_amount:.2f}\n"
             f"Status: {invoice.status}\n\n"
             f"Lines:\n{lines_text or '  (none)'}",

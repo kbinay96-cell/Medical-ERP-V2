@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from engines.exceptions import DuplicateRecordError, ValidationError
+from utils.window_chrome import apply_standard_window_chrome
 from engines.purchase_engine import PurchaseEngine
 from engines.item_free_scheme_engine import ItemFreeSchemeEngine
 from engines.item_lookup_registry import manufacturer_engine
@@ -156,6 +157,7 @@ class PurchaseInvoiceFormScreen(QDialog):
         item_free_scheme_engine: ItemFreeSchemeEngine | None = None,
     ):
         super().__init__(parent)
+        apply_standard_window_chrome(self, width=1200, height=800, start_maximized=True)
         self._engine = engine
         self._purchase_order_engine = purchase_order_engine
         self._supplier_engine = supplier_engine
@@ -274,6 +276,10 @@ class PurchaseInvoiceFormScreen(QDialog):
             "instead of item-by-item. Subtracted straight from the grand total."
         )
         charges_form.addRow("Bill Discount (Amount):", self.bill_discount_input)
+
+        self.remarks_input = QLineEdit()
+        self.remarks_input.setPlaceholderText("Optional notes about this invoice")
+        charges_form.addRow("Remarks:", self.remarks_input)
 
         root.addLayout(charges_form)
 
@@ -744,6 +750,7 @@ class PurchaseInvoiceFormScreen(QDialog):
             "total_freight": self.freight_input.value(),
             "total_other_charges": self.other_charges_input.value(),
             "bill_discount_amount": self.bill_discount_input.value(),
+            "remarks": self.remarks_input.text().strip(),
             "lines": lines,
         }
 

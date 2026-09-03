@@ -3,7 +3,7 @@
 ################################################################################
 ## Form generated from reading UI file 'dashboard.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.11.1
+## Created by: Qt User Interface Compiler version 6.11.2
 ##
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (QApplication, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QPushButton,
     QScrollArea, QSizePolicy, QSpacerItem, QSplitter,
-    QStatusBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
-    QWidget)
+    QStackedWidget, QStatusBar, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget)
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -123,7 +123,9 @@ class Ui_MainWindow(object):
         self.sidebarLayout.addWidget(self.treeSidebarMenu)
 
         self.bodySplitter.addWidget(self.frmSidebar)
-        self.scrollMainArea = QScrollArea(self.bodySplitter)
+        self.stackedContentArea = QStackedWidget(self.bodySplitter)
+        self.stackedContentArea.setObjectName(u"stackedContentArea")
+        self.scrollMainArea = QScrollArea()
         self.scrollMainArea.setObjectName(u"scrollMainArea")
         self.scrollMainArea.setWidgetResizable(True)
         self.scrollAreaContents = QWidget()
@@ -366,7 +368,8 @@ class Ui_MainWindow(object):
         self.mainAreaLayout.addWidget(self.grpActivityArea)
 
         self.scrollMainArea.setWidget(self.scrollAreaContents)
-        self.bodySplitter.addWidget(self.scrollMainArea)
+        self.stackedContentArea.addWidget(self.scrollMainArea)
+        self.bodySplitter.addWidget(self.stackedContentArea)
 
         self.mainVerticalLayout.addWidget(self.bodySplitter)
 

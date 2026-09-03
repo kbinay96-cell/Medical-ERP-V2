@@ -23,6 +23,7 @@ class SaleInvoiceSearchFilters:
     search_text: Optional[str] = None
     customer_id: Optional[int] = None
     status: Optional[str] = None
+    sale_mode: Optional[str] = None
     date_from_ad: Optional[str] = None
     date_to_ad: Optional[str] = None
     include_deleted: bool = False
@@ -38,6 +39,7 @@ _SORTABLE_COLUMNS = {
     "invoice_date_bs": "si.invoice_date_bs",
     "grand_total": "si.grand_total",
     "status": "si.status",
+    "sale_mode": "si.sale_mode",
 }
 
 
@@ -112,6 +114,55 @@ class SaleInvoiceModel:
                 cur.execute(sql, params)
                 return int(cur.fetchone()["max_seq"] or 0)
 
+    def get_by_invoice_number(self, invoice_number: str, exclude_id: Optional[int] = None) -> Optional[dict]:
+        """Duplicate-check helper for the validator: returns the invoice
+        row if an invoice with this number already exists (and is not
+        soft-deleted), else None."""
+        sql = "SELECT * FROM sale_invoice WHERE invoice_number = %(num)s AND is_deleted = FALSE"
+        params: dict[str, Any] = {"num": invoice_number}
+        if exclude_id is not None:
+            sql += " AND sale_invoice_id != %(exclude_id)s"
+            params["exclude_id"] = exclude_id
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+                return dict(row) if row else None
+
+    def insert_with_items(self, header_data: dict[str, Any], lines: list[dict]) -> int:
+        """Atomically insert header + all lines in a single transaction.
+        Returns the new sale_invoice_id. Rolls back everything if any
+        line insert fails."""
+        keys = list(header_data.keys())
+        cols = ", ".join(keys)
+        placeholders = ", ".join([f"%({k})s" for k in keys])
+        header_sql = f"INSERT INTO sale_invoice ({cols}) VALUES ({placeholders}) RETURNING sale_invoice_id"
+
+        with _get_connection() as conn:
+            try:
+                with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                    cur.execute(header_sql, header_data)
+                    sale_invoice_id = int(cur.fetchone()["sale_invoice_id"])
+
+                    for line in lines:
+                        line_payload = dict(line)
+                        line_payload["sale_invoice_id"] = sale_invoice_id
+                        line_keys = list(line_payload.keys())
+                        line_cols = ", ".join(line_keys)
+                        line_placeholders = ", ".join([f"%({k})s" for k in line_keys])
+                        line_sql = (
+                            f"INSERT INTO sale_invoice_item ({line_cols}) VALUES ({line_placeholders}) "
+                            "RETURNING sale_invoice_item_id"
+                        )
+                        cur.execute(line_sql, line_payload)
+
+                conn.commit()
+                return sale_invoice_id
+            except Exception:
+                conn.rollback()
+                raise
+
+
     def get_customer_outstanding(self, customer_id: int, exclude_invoice_id: Optional[int] = None) -> float:
         sql = """
             SELECT COALESCE(SUM(balance_amount), 0) AS total
@@ -146,6 +197,10 @@ class SaleInvoiceModel:
         if filters.status:
             where_clauses.append("si.status = %s")
             params.append(filters.status)
+
+        if filters.sale_mode:
+            where_clauses.append("si.sale_mode = %s")
+            params.append(filters.sale_mode)
 
         if filters.date_from_ad:
             where_clauses.append("si.invoice_date_ad >= %s")

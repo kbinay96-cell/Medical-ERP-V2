@@ -20,20 +20,25 @@ STANDARD_WINDOW_FLAGS = (
 )
 
 
-def apply_standard_window_chrome(
-    widget: QWidget,
-    *,
-    width: int = 1100,
-    height: int = 700,
-    min_size: Optional[QSize] = None,
-) -> None:
-    """Min/max/close buttons, a usable default size, and a centered open position."""
+def apply_standard_window_chrome(widget, *, width=1100, height=700, min_size=None,
+                                  start_maximized=False, embedded=False):
+    """
+    embedded=True: skip window-flag/resize/center/maximize entirely -- used
+    when a screen is being mounted inside the Dashboard's QStackedWidget
+    instead of shown as its own top-level window. This lets every existing
+    screen keep its single apply_standard_window_chrome(self, ...) call in
+    __init__ unchanged; only the caller decides embedded=True/False.
+    """
+    if embedded:
+        return
     widget.setWindowFlags(STANDARD_WINDOW_FLAGS)
     if min_size is None:
         min_size = QSize(min(720, width), min(480, height))
     widget.setMinimumSize(min_size)
     widget.resize(width, height)
     center_on_screen(widget)
+    if start_maximized:
+        widget.setWindowState(Qt.WindowState.WindowMaximized)
 
 
 def center_on_screen(widget: QWidget) -> None:

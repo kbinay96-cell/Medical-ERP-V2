@@ -584,6 +584,26 @@ class ItemBatchModel:
                     logger.info("Item batch updated: id=%s", item_batch_id)
                 return updated
 
+    def get_nearest_expiry_batch(self, item_id: int) -> Optional[dict]:
+        """
+        Returns the single nearest-expiry batch with qty > 0 for an item, or
+        None if the item has no available stock. Backs the Sale Invoice
+        grid's auto-batch-pick (read-only Batch/Expiry columns, per confirmed
+        scope). Reuses the exact same ordering ItemModel.search()'s
+        nearest_batch_no/nearest_expiry_display subqueries already use.
+        """
+        sql = """
+            SELECT * FROM item_batch
+            WHERE item_id = %(item_id)s AND batch_qty > 0
+            ORDER BY expiry_year ASC, expiry_month ASC, batch_no ASC
+            LIMIT 1;
+        """
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"item_id": item_id})
+                row = cur.fetchone()
+                return dict(row) if row else None
+
 
 class StockLedgerModel:
     """

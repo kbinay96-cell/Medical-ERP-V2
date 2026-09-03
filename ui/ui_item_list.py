@@ -38,41 +38,37 @@ class Ui_ItemListWidget(object):
         self.verticalLayoutRoot.setSpacing(10)
         self.verticalLayoutRoot.setContentsMargins(12, 12, 12, 12)
 
-        self.lblTitle = QLabel(ItemListWidget)
+        
+        # ---- Row 1: Title + Filters (plain text, no box) ----
+        self.frmToolbar = QFrame(ItemListWidget)
+        self.frmToolbar.setObjectName("frmToolbar")
+        self.frmToolbar.setFrameShape(QFrame.NoFrame)
+        self.horizontalLayoutToolbar = QHBoxLayout(self.frmToolbar)
+        self.horizontalLayoutToolbar.setObjectName("horizontalLayoutToolbar")
+
+        self.lblTitle = QLabel(self.frmToolbar)
         self.lblTitle.setObjectName("lblTitle")
         font = self.lblTitle.font()
         font.setPointSize(14)
         font.setBold(True)
         self.lblTitle.setFont(font)
         self.lblTitle.setText("Item Master")
-        self.verticalLayoutRoot.addWidget(self.lblTitle)
-
-        self.frmToolbar = QFrame(ItemListWidget)
-        self.frmToolbar.setObjectName("frmToolbar")
-        self.frmToolbar.setFrameShape(QFrame.StyledPanel)
-        self.horizontalLayoutToolbar = QHBoxLayout(self.frmToolbar)
-        self.horizontalLayoutToolbar.setObjectName("horizontalLayoutToolbar")
-
-        self.lblSearch = QLabel("Search:", self.frmToolbar)
-        self.horizontalLayoutToolbar.addWidget(self.lblSearch)
-
-        self.txtSearch = QLineEdit(self.frmToolbar)
-        self.txtSearch.setObjectName("txtSearch")
-        self.txtSearch.setPlaceholderText("Search by Code or Name...")
-        self.txtSearch.setClearButtonEnabled(True)
-        self.txtSearch.setToolTip("Search Items (Ctrl+F)")
-        self.horizontalLayoutToolbar.addWidget(self.txtSearch)
+        self.horizontalLayoutToolbar.addWidget(self.lblTitle)
 
         self.lblCategoryFilter = QLabel("Category:", self.frmToolbar)
         self.horizontalLayoutToolbar.addWidget(self.lblCategoryFilter)
         self.cmbCategoryFilter = QComboBox(self.frmToolbar)
         self.cmbCategoryFilter.setObjectName("cmbCategoryFilter")
+        self.cmbCategoryFilter.setMinimumWidth(150)
+        self.cmbCategoryFilter.setMinimumHeight(30)
         self.horizontalLayoutToolbar.addWidget(self.cmbCategoryFilter)
 
         self.lblManufacturerFilter = QLabel("Manufacturer:", self.frmToolbar)
         self.horizontalLayoutToolbar.addWidget(self.lblManufacturerFilter)
         self.cmbManufacturerFilter = QComboBox(self.frmToolbar)
         self.cmbManufacturerFilter.setObjectName("cmbManufacturerFilter")
+        self.cmbManufacturerFilter.setMinimumWidth(150)
+        self.cmbManufacturerFilter.setMinimumHeight(30)
         self.horizontalLayoutToolbar.addWidget(self.cmbManufacturerFilter)
 
         self.lblStatusFilter = QLabel("Status:", self.frmToolbar)
@@ -80,6 +76,8 @@ class Ui_ItemListWidget(object):
         self.cmbStatusFilter = QComboBox(self.frmToolbar)
         self.cmbStatusFilter.setObjectName("cmbStatusFilter")
         self.cmbStatusFilter.addItems(["All", "Active", "Inactive"])
+        self.cmbStatusFilter.setMinimumWidth(120)
+        self.cmbStatusFilter.setMinimumHeight(30)
         self.horizontalLayoutToolbar.addWidget(self.cmbStatusFilter)
 
         self.chkShowDeleted = QCheckBox("Show Deleted", self.frmToolbar)
@@ -95,6 +93,26 @@ class Ui_ItemListWidget(object):
         self.horizontalLayoutToolbar.addWidget(self.btnRefresh)
 
         self.verticalLayoutRoot.addWidget(self.frmToolbar)
+
+        # ---- Row 2: Search only (bigger, standalone) ----
+        self.frmSearchBar = QFrame(ItemListWidget)
+        self.frmSearchBar.setObjectName("frmSearchBar")
+        self.frmSearchBar.setFrameShape(QFrame.NoFrame)
+        self.horizontalLayoutSearchBar = QHBoxLayout(self.frmSearchBar)
+        self.horizontalLayoutSearchBar.setObjectName("horizontalLayoutSearchBar")
+
+        self.lblSearch = QLabel("Search:", self.frmSearchBar)
+        self.horizontalLayoutSearchBar.addWidget(self.lblSearch)
+
+        self.txtSearch = QLineEdit(self.frmSearchBar)
+        self.txtSearch.setObjectName("txtSearch")
+        self.txtSearch.setPlaceholderText("Search by Code or Name...")
+        self.txtSearch.setClearButtonEnabled(True)
+        self.txtSearch.setToolTip("Search Items (Ctrl+F)")
+        self.txtSearch.setMinimumHeight(32)
+        self.horizontalLayoutSearchBar.addWidget(self.txtSearch, 1)
+
+        self.verticalLayoutRoot.addWidget(self.frmSearchBar)
 
         self.tblItem = QTableWidget(ItemListWidget)
         self.tblItem.setObjectName("tblItem")

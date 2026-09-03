@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 from screens.login_screen import LoginScreen
 from screens.dashboard_screen import DashboardScreen
 from engines.theme_engine import apply_theme
+from utils.font_utils import load_application_fonts
 from utils.app_logger import get_logger
 
 logger = get_logger()
@@ -26,7 +27,14 @@ logger = get_logger()
 
 def main():
     app = QApplication(sys.argv)
-    apply_theme("Dark")
+
+    # Register bundled fonts before the theme QSS is applied — font-
+    # family resolution happens at stylesheet-apply time, so this must
+    # come first. No re-loading needed on theme toggle; QFontDatabase
+    # registrations persist for the app's lifetime.
+    load_application_fonts()
+
+    apply_theme("Black")
 
     login_screen = LoginScreen()
     login_screen.show()

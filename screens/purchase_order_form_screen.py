@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from engines.exceptions import ValidationError
 from engines.purchase_order_engine import PurchaseOrderEngine
+from utils.window_chrome import apply_standard_window_chrome
 from utils.searchable_combo_helper import populate_searchable_combo
 
 logger = logging.getLogger(__name__)
@@ -58,15 +59,15 @@ class PurchaseOrderFormScreen(QDialog):
         current_user_id: int,
     ):
         super().__init__(parent)
+        apply_standard_window_chrome(self, width=1200, height=800, start_maximized=True)
         self._engine = engine
         self._supplier_engine = supplier_engine
         self._item_engine = item_engine
         self._current_user_id = current_user_id
-        self._saved_purchase_order_id: int | None = None
 
         self.setWindowTitle("New Purchase Order")
-        self.setMinimumSize(900, 600)
 
+        self._saved_purchase_order_id: int | None = None
         self._build_ui()
         self._connect_signals()
         self._populate_supplier_combo()

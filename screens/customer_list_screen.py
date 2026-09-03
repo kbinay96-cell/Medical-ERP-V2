@@ -31,6 +31,7 @@ from utils.app_logger import get_logger
 from utils.message import show_success, show_error, confirm
 from utils.ui_standards import standardize_action_buttons
 from utils.window_chrome import apply_standard_window_chrome
+from utils.icon_utils import themed_icon
 from engines import customer_engine
 from screens.customer_form_screen import CustomerFormScreen
 
@@ -109,7 +110,7 @@ class CustomerListScreen(QMainWindow):
         row.setContentsMargins(0, 0, 0, 0)
 
         icon_label = QLabel()
-        icon_label.setPixmap(QIcon(f"{ICON_DIR}/customer.svg").pixmap(QSize(22, 22)))
+        icon_label.setPixmap(themed_icon("customer").pixmap(QSize(22, 22)))
         row.addWidget(icon_label)
 
         title = QLabel("Customers")
@@ -118,7 +119,7 @@ class CustomerListScreen(QMainWindow):
         row.addStretch(1)
 
         self.btn_add = QPushButton()
-        self.btn_add.setIcon(QIcon(f"{ICON_DIR}/plus.svg"))
+        self.btn_add.setIcon(themed_icon("plus"))
         self.btn_add.setText(" Add Customer")
         self.btn_add.setToolTip("Add a new customer")
         self.btn_add.clicked.connect(lambda: self._open_form(None))
@@ -139,7 +140,7 @@ class CustomerListScreen(QMainWindow):
         search_row.setSpacing(6)
 
         search_icon = QLabel()
-        search_icon.setPixmap(QIcon(f"{ICON_DIR}/search.svg").pixmap(QSize(14, 14)))
+        search_icon.setPixmap(themed_icon("search").pixmap(QSize(14, 14)))
         search_row.addWidget(search_icon)
 
         self.txt_search = QLineEdit()
@@ -431,7 +432,7 @@ class CustomerListScreen(QMainWindow):
         self._show_detail(row_data)
 
     def _show_detail_placeholder(self):
-        self.lbl_detail_photo.setPixmap(QIcon(f"{ICON_DIR}/user.svg").pixmap(QSize(48, 48)))
+        self.lbl_detail_photo.setPixmap(themed_icon("user").pixmap(QSize(48, 48)))
         self.lbl_detail_name.setText("Select a customer")
         self.lbl_detail_code.setText("")
         for label in (

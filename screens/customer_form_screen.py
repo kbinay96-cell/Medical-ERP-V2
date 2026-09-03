@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from utils.message import show_success, show_error, confirm
+
 from engines import customer_engine
 from widgets.photo_picker import PhotoPicker
 
@@ -83,7 +84,7 @@ class CustomerFormScreen(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
 
         icon_label = QLabel()
-        icon_label.setPixmap(QIcon(f"{ICON_DIR}/customer.svg").pixmap(24, 24))
+        icon_label.setPixmap(themed_icon("customer").pixmap(24, 24))
         row.addWidget(icon_label)
 
         title = QLabel("Edit Customer" if self.is_edit_mode else "Add Customer")

@@ -11,6 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QLineEdit
+from utils.icon_utils import themed_icon_from_path
 
 _EYE_OPEN_ICON = "resources/icons/eye.svg"
 _EYE_CLOSED_ICON = "resources/icons/eye_off.svg"
@@ -21,18 +22,18 @@ def attach_show_password_toggle(line_edit: QLineEdit) -> None:
     that toggles between hidden and visible text."""
     line_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
-    action = line_edit.addAction(QIcon(_EYE_OPEN_ICON), QLineEdit.ActionPosition.TrailingPosition)
+    action = line_edit.addAction(themed_icon_from_path(_EYE_OPEN_ICON), QLineEdit.ActionPosition.TrailingPosition)
     action.setCheckable(True)
     action.setToolTip("Show password")
 
     def _on_toggled(checked: bool) -> None:
         if checked:
             line_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            action.setIcon(QIcon(_EYE_CLOSED_ICON))
+            action.setIcon(themed_icon_from_path(_EYE_CLOSED_ICON))
             action.setToolTip("Hide password")
         else:
             line_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            action.setIcon(QIcon(_EYE_OPEN_ICON))
+            action.setIcon(themed_icon_from_path(_EYE_OPEN_ICON))
             action.setToolTip("Show password")
 
     action.toggled.connect(_on_toggled)

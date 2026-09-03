@@ -20,7 +20,11 @@ _ACTION_KEYWORDS = (
 
 
 def apply_action_button_style(button: QPushButton) -> None:
-    button.setMinimumSize(ACTION_BUTTON_MIN_WIDTH, ACTION_BUTTON_MIN_HEIGHT)
+    # Height is intentionally NOT set here anymore — it now comes from
+    # the dynamic QSS override (ui.control_height setting) so it stays
+    # adjustable at runtime. setMinimumSize() would silently override
+    # any stylesheet min-height, so only width is enforced in code.
+    button.setMinimumWidth(ACTION_BUTTON_MIN_WIDTH)
     button.setProperty("cssClass", "actionButton")
     button.style().unpolish(button)
     button.style().polish(button)
