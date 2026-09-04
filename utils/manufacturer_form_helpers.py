@@ -35,11 +35,10 @@ def dto_to_table_row(dto: Any) -> list[str]:
     """
     Formats a ManufacturerDTO into display strings for one QTableWidget row,
     in the exact column order defined in ui/manufacturer_list.ui:
-    Code, Short Name, Manufacturer Name, Country, Status.
+    Code, Manufacturer Name, Country, Status.
     """
     return [
         dto.manufacturer_code or "",
-        dto.manufacturer_short_name or "",
         dto.manufacturer_name or "",
         dto.country or "",
         "Deleted" if dto.is_deleted else (dto.status or ""),

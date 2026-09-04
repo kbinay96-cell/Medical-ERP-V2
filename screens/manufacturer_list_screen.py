@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QTableWidgetItem, QWidget
 
@@ -38,11 +38,20 @@ SEARCH_DEBOUNCE_MS = 300
 class ManufacturerListScreen(QWidget):
     """Manufacturer Master list/search/filter screen. Opens ManufacturerFormScreen for Add/Edit."""
 
-    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[ManufacturerEngine] = None) -> None:
+    close_requested = Signal()  # emitted instead of self.close() when embedded=True
+    form_requested = Signal(object)  # embedded: ask Dashboard to open the Manufacturer form (manufacturer_id or None)
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        engine: Optional[ManufacturerEngine] = None,
+        embedded: bool = False,
+    ) -> None:
         super().__init__(parent)
+        self._embedded = embedded
         self.ui = Ui_ManufacturerListWidget()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=1200, height=720)
+        apply_standard_window_chrome(self, width=1200, height=720, embedded=embedded)
         standardize_action_buttons(self)
 
         self._engine = engine or ManufacturerEngine()
@@ -149,6 +158,9 @@ class ManufacturerListScreen(QWidget):
     # CRUD actions
     # ------------------------------------------------------------------ #
     def _on_add_clicked(self) -> None:
+        if self._embedded:
+            self.form_requested.emit(None)
+            return
         dialog = ManufacturerFormScreen(self, manufacturer_id=None, engine=self._engine)
         dialog.exec()
         if dialog.data_changed:
@@ -157,6 +169,9 @@ class ManufacturerListScreen(QWidget):
     def _on_edit_clicked(self) -> None:
         dto = self._selected_dto()
         if dto is None or dto.is_deleted:
+            return
+        if self._embedded:
+            self.form_requested.emit(dto.manufacturer_id)
             return
         dialog = ManufacturerFormScreen(self, manufacturer_id=dto.manufacturer_id, engine=self._engine)
         dialog.exec()
@@ -198,6 +213,9 @@ class ManufacturerListScreen(QWidget):
             self.refresh()
 
     def _on_close_clicked(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
         self.close()
 
 

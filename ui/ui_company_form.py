@@ -8,7 +8,8 @@
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QPlainTextEdit, QPushButton, QSizePolicy, QSpacerItem, QVBoxLayout, QWidget
+    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpacerItem,
+    QVBoxLayout, QWidget
 )
 
 
@@ -159,9 +160,16 @@ class Ui_CompanyFormDialog(object):
         self.txtSmtpAppPassword.setObjectName(u"txtSmtpAppPassword")
         self.txtSmtpAppPassword.setEchoMode(QLineEdit.Password)
         self.formLayout.addRow(self.lblSmtpAppPassword, self.txtSmtpAppPassword)
-
-        self.verticalLayout_root.addLayout(self.formLayout)
-
+        self.scrollArea = QScrollArea(CompanyFormDialog)
+        self.scrollArea.setObjectName(u"scrollArea")
+        self.scrollArea.setWidgetResizable(True)
+        self.scrollAreaContents = QWidget()
+        self.scrollAreaContents.setObjectName(u"scrollAreaContents")
+        self.verticalLayout_contents = QVBoxLayout(self.scrollAreaContents)
+        self.verticalLayout_contents.setContentsMargins(0, 0, 0, 0)
+        self.verticalLayout_contents.addLayout(self.formLayout)
+        self.scrollArea.setWidget(self.scrollAreaContents)
+        self.verticalLayout_root.addWidget(self.scrollArea, 1)
         self.lblValidationMessage = QLabel(CompanyFormDialog)
         self.lblValidationMessage.setObjectName(u"lblValidationMessage")
         self.lblValidationMessage.setStyleSheet(u"color: #C0392B;")

@@ -26,10 +26,12 @@ from engines.date_engine import ad_to_bs, DateEngineError
 from screens.supplier_list_screen import SupplierListScreen
 from screens.supplier_form_screen import SupplierFormScreen
 from screens.manufacturer_list_screen import ManufacturerListScreen
+from screens.manufacturer_form_screen import ManufacturerFormScreen
 from screens.supplier_manufacturer_discount_list_screen import SupplierManufacturerDiscountListScreen
 from screens.country_tax_list_screen import CountryTaxListScreen
 
 from screens.company_list_screen import CompanyListScreen
+from screens.company_form_screen import CompanyFormScreen
 from screens.item_list_screen import ItemListScreen
 from screens.item_form_screen import ItemFormScreen
 
@@ -46,6 +48,10 @@ from screens.purchase_invoice_list_screen import PurchaseInvoiceListScreen
 from screens.purchase_invoice_form_screen import PurchaseInvoiceFormScreen
 from screens.sale_invoice_form_screen import SaleInvoiceFormScreen
 from screens.sale_invoice_list_screen import SaleInvoiceListScreen
+from engines import customer_engine
+from engines.sale_item_free_scheme_engine import SaleItemFreeSchemeEngine
+from engines.sale_engine import SaleEngine
+from screens.item_free_scheme_list_screen import ItemFreeSchemeListScreen
 from screens.stock_ledger_screen import StockLedgerScreen
 from screens.stock_master_screen import StockMasterScreen
 from utils.window_chrome import apply_standard_window_chrome
@@ -92,6 +98,7 @@ class DashboardScreen(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
+        
         standardize_action_buttons(self)
         apply_action_button_style(self.ui.btnBackupDatabase)  # "backup" isn't a keyword match
 
@@ -147,7 +154,7 @@ class DashboardScreen(QMainWindow):
                 purchase_order_engine=self._purchase_order_engine,
             )
 
-            self._item_free_scheme_engine = ItemFreeSchemeEngine(model=SaleItemFreeSchemeModel())
+            self._item_free_scheme_engine = SaleItemFreeSchemeEngine(SaleItemFreeSchemeModel())
 
             self._sale_engine = SaleEngine(
                 model=SaleInvoiceModel(),
@@ -156,6 +163,7 @@ class DashboardScreen(QMainWindow):
                 country_tax_lookup_fn=country_tax_lookup,
                 manufacturer_lookup_fn=manufacturer_lookup,
             )
+            
         except Exception as e:
             from utils.app_logger import get_logger
             logger = get_logger()
@@ -410,6 +418,50 @@ class DashboardScreen(QMainWindow):
         if getattr(self, "item_list", None) is not None:
             self.item_list.refresh()
 
+    def _open_manufacturer_form(self, manufacturer_id=None):
+        """Open the Manufacturer form embedded in the content-area stack."""
+        form = ManufacturerFormScreen(self, manufacturer_id=manufacturer_id, embedded=True)
+        form.saved.connect(lambda: self._on_manufacturer_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_manufacturer_form_saved(self, form):
+        self._navigate_back()
+        if getattr(self, "manufacturer_list", None) is not None:
+            self.manufacturer_list.refresh()
+
+    def _open_company_form(self, company_id=None):
+        """Open the Company form embedded in the content-area stack."""
+        form = CompanyFormScreen(self, company_id=company_id, engine=self.company_list._engine, embedded=True)
+        form.saved.connect(lambda: self._on_company_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_company_form_saved(self, form):
+        self._navigate_back()
+        if getattr(self, "company_list", None) is not None:
+            self.company_list.refresh()
+
+    def _open_sale_invoice_form(self):
+        """Open the Sale Invoice form embedded in the content-area stack."""
+        form = SaleInvoiceFormScreen(
+            self,
+            self._sale_engine,
+            customer_engine,
+            self._item_engine,
+            self._item_free_scheme_engine,
+            self.login_result.userid,
+            embedded=True,
+        )
+        form.saved.connect(lambda: self._on_sale_invoice_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_sale_invoice_form_saved(self, form):
+        self._navigate_back()
+        if getattr(self, "sale_invoice_list", None) is not None:
+            self.sale_invoice_list.refresh()
+
     # -----------------------------------------------------
     # MODULE OPENERS
     # -----------------------------------------------------
@@ -441,15 +493,16 @@ class DashboardScreen(QMainWindow):
             self.supplier_list.show()
 
         elif module_name == "company":
-            
-            self.company_list = CompanyListScreen(self)
-            apply_standard_window_chrome(self.company_list)
-            self.company_list.show()
+            self.company_list = CompanyListScreen(self, embedded=True)
+            self.company_list.close_requested.connect(self._navigate_back)
+            self.company_list.form_requested.connect(self._open_company_form)
+            self._navigate_to(self.company_list)
 
         elif module_name == "manufacturer":
-            self.manufacturer_list = ManufacturerListScreen(self)
-            apply_standard_window_chrome(self.manufacturer_list)
-            self.manufacturer_list.show()
+            self.manufacturer_list = ManufacturerListScreen(self, embedded=True)
+            self.manufacturer_list.close_requested.connect(self._navigate_back)
+            self.manufacturer_list.form_requested.connect(self._open_manufacturer_form)
+            self._navigate_to(self.manufacturer_list)
 
         elif module_name == "supplier-mfg discount":
             self.supplier_manufacturer_discount_list = SupplierManufacturerDiscountListScreen(self)
@@ -541,15 +594,7 @@ class DashboardScreen(QMainWindow):
                 from utils.integration_adapters import show_error
                 show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
                 return
-            self.sale_invoice_form = SaleInvoiceFormScreen(
-                parent=self,
-                engine=self._sale_engine,
-                item_engine=self._item_engine,
-                item_free_scheme_engine=self._item_free_scheme_engine,
-                current_user_id=self.login_result.userid,
-            )
-            apply_standard_window_chrome(self.sale_invoice_form)
-            self.sale_invoice_form.show()
+            self._open_sale_invoice_form()
 
         elif module_name == "sale list":
             if self._sale_engine is None or self._item_engine is None:
@@ -557,13 +602,17 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
                 return
             self.sale_invoice_list = SaleInvoiceListScreen(
-                parent=self,
-                engine=self._sale_engine,
-                item_engine=self._item_engine,
-                current_user_id=self.login_result.userid,
+                self,
+                self._sale_engine,
+                customer_engine,
+                self._item_engine,
+                self._item_free_scheme_engine,
+                self.login_result.userid,
+                embedded=True,
             )
-            apply_standard_window_chrome(self.sale_invoice_list)
-            self.sale_invoice_list.show()
+            self.sale_invoice_list.close_requested.connect(self._navigate_back)
+            self.sale_invoice_list.form_requested.connect(self._open_sale_invoice_form)
+            self._navigate_to(self.sale_invoice_list)
 
         elif module_name == "stock ledger":
             if self._item_engine is None:

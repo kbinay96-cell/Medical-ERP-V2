@@ -7,9 +7,6 @@ Responsibilities (and ONLY these -- project rule "No SQL. No business
 logic."):
     - Load ui/manufacturer_form.ui via ui/ui_manufacturer_form.py
     - Populate fields when editing an existing manufacturer
-    - Live-preview the auto-generated Short Name as the user types the
-      Manufacturer Name (calling the Engine's preview_short_name(), never
-      computing it itself)
     - Read fields back out, marshal them via utils/manufacturer_form_helpers.py,
       and hand the payload to ManufacturerEngine.create_manufacturer /
       update_manufacturer
@@ -22,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QDialog, QWidget
 
@@ -35,22 +33,25 @@ from utils.window_chrome import apply_standard_window_chrome
 
 logger = logging.getLogger(__name__)
 
-SHORT_NAME_PREVIEW_DEBOUNCE_MS = 250
-
 
 class ManufacturerFormScreen(QDialog):
     """Add/Edit dialog for a single manufacturer. Create mode when manufacturer_id is None."""
+
+    saved = Signal()  # embedded: successful save (edit-mode only; create-mode stays open)
+    close_requested = Signal()  # embedded: emitted instead of reject()
 
     def __init__(
         self,
         parent: Optional[QWidget] = None,
         manufacturer_id: Optional[int] = None,
         engine: Optional[ManufacturerEngine] = None,
+        embedded: bool = False,
     ) -> None:
         super().__init__(parent)
+        self._embedded = embedded
         self.ui = Ui_ManufacturerFormDialog()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=780, height=640)
+        apply_standard_window_chrome(self, width=780, height=640, embedded=embedded)
         standardize_action_buttons(self)
 
         self._engine = engine or ManufacturerEngine()
@@ -81,23 +82,19 @@ class ManufacturerFormScreen(QDialog):
         self.ui.btnUpdate.clicked.connect(self._on_save_clicked)
         self.ui.btnClear.clicked.connect(self._on_clear_clicked)
         self.ui.btnClose.clicked.connect(self.reject)
-        self.ui.txtManufacturerName.textChanged.connect(self._on_name_changed)
 
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
-        # Escape already closes/rejects a QDialog by default.
+        # Escape already closes/rejects a QDialog by default (routes through
+        # the reject() override below, which handles embedded mode).
 
-    # ------------------------------------------------------------------ #
-    # Live Short Name preview (Engine-computed, screen only displays it)
-    # ------------------------------------------------------------------ #
-    def _on_name_changed(self, text: str) -> None:
-        try:
-            preview = self._engine.preview_short_name(text, exclude_id=self._manufacturer_id)
-        except Exception:  # noqa: BLE001 - preview must never block typing
-            logger.debug("Short Name preview failed for '%s'.", text, exc_info=True)
-            preview = ""
-        self.ui.txtManufacturerShortName.setText(preview)
+    def reject(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().reject()
 
+    
     # ------------------------------------------------------------------ #
     # Load (edit mode)
     # ------------------------------------------------------------------ #
@@ -114,7 +111,6 @@ class ManufacturerFormScreen(QDialog):
         self.ui.txtManufacturerCode.setToolTip("Manufacturer Code cannot be changed after creation.")
 
         self.ui.txtManufacturerName.setText(dto.manufacturer_name or "")
-        self.ui.txtManufacturerShortName.setText(dto.manufacturer_short_name or "")
         self.ui.txtCountry.setText(dto.country or "")
         self.ui.txtDefaultMarginPercent.setText(
             f"{float(dto.default_margin_percent):.2f}" if dto.default_margin_percent is not None else ""
@@ -163,12 +159,17 @@ class ManufacturerFormScreen(QDialog):
         self.data_changed = True
 
         if self._is_edit_mode:
-            self.accept()
+            if self._embedded:
+                self.saved.emit()
+                self.close_requested.emit()
+            else:
+                self.accept()
             return
 
         # Create mode: stay open, reset for the next entry instead of closing --
         # lets the user add several manufacturers back-to-back without
-        # reopening the dialog each time.
+        # reopening the dialog each time (embedded or not). List refresh
+        # then only happens when the user explicitly navigates back.
         self._on_clear_clicked()
         self.ui.txtManufacturerName.setFocus()
 
@@ -177,7 +178,6 @@ class ManufacturerFormScreen(QDialog):
         if not self._is_edit_mode:
             self.ui.txtManufacturerCode.clear()
         self.ui.txtManufacturerName.clear()
-        self.ui.txtManufacturerShortName.clear()
         self.ui.txtCountry.clear()
         self.ui.cmbStatus.setCurrentText("Active")
         self.ui.txtManufacturerName.setFocus()

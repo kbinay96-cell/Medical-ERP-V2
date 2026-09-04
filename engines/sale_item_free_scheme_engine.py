@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ItemFreeSchemeDTO:
+class SaleItemFreeSchemeDTO:
     sale_item_free_scheme_id: Optional[int]
     item_id: int
     item_name: str
@@ -23,6 +23,7 @@ class ItemFreeSchemeDTO:
     scheme_free: float
     is_active: bool
     remarks: Optional[str]
+    is_deleted: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -34,6 +35,7 @@ class ItemFreeSchemeDTO:
             "scheme_free": self.scheme_free,
             "is_active": self.is_active,
             "remarks": self.remarks,
+            "is_deleted": self.is_deleted,
         }
 
 
@@ -49,7 +51,7 @@ class SaleItemFreeSchemeEngine:
             scheme_exists_fn=self._model.exists_active_for_item,
         )
 
-    def create_scheme(self, data: dict, current_user_id: int) -> ItemFreeSchemeDTO:
+    def create_scheme(self, data: dict, current_user_id: int) -> SaleItemFreeSchemeDTO:
         errors = self._validator.validate(data)
         if not errors.is_valid:
             raise ValidationError(errors.errors)
@@ -73,7 +75,7 @@ class SaleItemFreeSchemeEngine:
             raise
         return self.get_scheme(new_id)
 
-    def update_scheme(self, sale_item_free_scheme_id: int, data: dict, current_user_id: int) -> ItemFreeSchemeDTO:
+    def update_scheme(self, sale_item_free_scheme_id: int, data: dict, current_user_id: int) -> SaleItemFreeSchemeDTO:
         existing = self._model.get_by_id(sale_item_free_scheme_id, include_deleted=False)
         if existing is None:
             raise RecordNotFoundError(f"Free scheme {sale_item_free_scheme_id} not found.")
@@ -96,7 +98,7 @@ class SaleItemFreeSchemeEngine:
     # ------------------------------------------------------------------ #
     # READ
     # ------------------------------------------------------------------ #
-    def get_scheme(self, sale_item_free_scheme_id: int) -> ItemFreeSchemeDTO:
+    def get_scheme(self, sale_item_free_scheme_id: int) -> SaleItemFreeSchemeDTO:
         row = self._model.get_by_id(sale_item_free_scheme_id, include_deleted=False)
         if row is None:
             raise RecordNotFoundError(f"Free scheme {sale_item_free_scheme_id} not found.")
@@ -117,7 +119,7 @@ class SaleItemFreeSchemeEngine:
         include_deleted: bool = False,
         page: int = 1,
         page_size: int = 50,
-    ) -> tuple[list[ItemFreeSchemeDTO], int]:
+    ) -> tuple[list[SaleItemFreeSchemeDTO], int]:
         filters = SaleItemFreeSchemeSearchFilters(
             search_text=search_text,
             include_deleted=include_deleted,
@@ -157,8 +159,8 @@ class SaleItemFreeSchemeEngine:
     # ------------------------------------------------------------------ #
     # INTERNALS
     # ------------------------------------------------------------------ #
-    def _to_dto(self, row: dict) -> ItemFreeSchemeDTO:
-        return ItemFreeSchemeDTO(
+    def _to_dto(self, row: dict) -> SaleItemFreeSchemeDTO:
+        return SaleItemFreeSchemeDTO(
             sale_item_free_scheme_id=row.get("sale_item_free_scheme_id"),
             item_id=row["item_id"],
             item_name=row.get("item_name", ""),
@@ -167,6 +169,7 @@ class SaleItemFreeSchemeEngine:
             scheme_free=float(row["scheme_free"]),
             is_active=bool(row.get("is_active", True)),
             remarks=row.get("remarks"),
+            is_deleted=bool(row.get("is_deleted", False)),
         )
 
     @staticmethod
@@ -185,4 +188,4 @@ class SaleItemFreeSchemeEngine:
         return "unique" in str(exc).lower() or "duplicate" in str(exc).lower()
 
 
-__all__ = ["SaleItemFreeSchemeEngine", "ItemFreeSchemeDTO"]
+__all__ = ["SaleItemFreeSchemeEngine", "SaleItemFreeSchemeDTO"]

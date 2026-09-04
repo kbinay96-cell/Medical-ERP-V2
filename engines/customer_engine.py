@@ -217,6 +217,16 @@ def get_customer(customer_id: int) -> dict | None:
         logger.exception(f"get_customer: database error for id {customer_id}: {e}")
         return None
 
+def get_active_customers_by_area(area_id: int) -> list[dict]:
+    """Thin pass-through to customer_model.get_active_customers_by_area(),
+    same delegation shape as the existing get_customer(). Backs the Sale
+    Invoice form's Area -> Customer cascade."""
+    try:
+        return customer_model.get_active_customers_by_area(area_id)
+    except Exception as e:
+        logger.exception(f"get_active_customers_by_area: database error for area_id {area_id}: {e}")
+        return []
+
 
 def search_customers(
     search_text: str | None = None,

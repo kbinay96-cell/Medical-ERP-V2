@@ -107,8 +107,7 @@ class Ui_CompanyListWidget(object):
         self.btnClose.setObjectName(u"btnClose")
         self.horizontalLayout_actions.addWidget(self.btnClose)
 
-        self.verticalLayout_root.addWidget(self.frameActions)
-
+        
         # ---------------- Table ----------------
         self.tblCompany = QTableWidget(CompanyListWidget)
         if self.tblCompany.columnCount() < 7:
@@ -126,6 +125,7 @@ class Ui_CompanyListWidget(object):
         self.tblCompany.setAlternatingRowColors(True)
         self.tblCompany.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.verticalLayout_root.addWidget(self.tblCompany)
+        self.verticalLayout_root.addWidget(self.frameActions)
 
         # ---------------- Status bar / record count ----------------
         self.statusBar = QStatusBar(CompanyListWidget)

@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QTableWidgetItem, QWidget
+from PySide6.QtWidgets import QPushButton, QTableWidgetItem, QWidget
 
 from engines.exceptions import RecordNotFoundError
 from engines.company_engine import CompanyDTO, CompanyEngine
@@ -31,11 +31,20 @@ SEARCH_DEBOUNCE_MS = 300
 class CompanyListScreen(QWidget):
     """Company Master list/search/filter screen. Opens CompanyFormScreen for Add/Edit."""
 
-    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[CompanyEngine] = None) -> None:
+    close_requested = Signal()
+    form_requested = Signal(object)
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        engine: Optional[CompanyEngine] = None,
+        embedded: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.ui = Ui_CompanyListWidget()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=1200, height=720)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=1200, height=720, embedded=embedded)
         standardize_action_buttons(self)
 
         self._engine = engine or CompanyEngine()
@@ -45,9 +54,26 @@ class CompanyListScreen(QWidget):
         self._search_debounce_timer.setSingleShot(True)
         self._search_debounce_timer.timeout.connect(self.refresh)
 
+        if self._embedded:
+            self._setup_back_button()
+
         self._connect_signals()
         self._setup_shortcuts()
         self.refresh()
+
+    def _setup_back_button(self) -> None:
+        """Text-based back button, inserted leftmost in the filters row — matches the
+        existing repo convention (receipt_form_screen.py / supplier_manufacturer_discount
+        list use the same "\u2190 Back" QPushButton style, no icon asset needed)."""
+        self.btnBack = QPushButton("\u2190 Back", self)
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.btnBack.clicked.connect(self._on_close_clicked)
+        self.ui.horizontalLayout_filters.insertWidget(0, self.btnBack)
 
     # ------------------------------------------------------------------ #
     # Wiring
@@ -117,8 +143,7 @@ class CompanyListScreen(QWidget):
         table.setSortingEnabled(True)
         configure_table_columns(table, stretch_columns=(1,))
         self._on_selection_changed()
-        self._on_selection_changed()
-
+        
     # ------------------------------------------------------------------ #
     # Selection state -> button enablement
     # ------------------------------------------------------------------ #
@@ -145,6 +170,9 @@ class CompanyListScreen(QWidget):
     # CRUD actions
     # ------------------------------------------------------------------ #
     def _on_add_clicked(self) -> None:
+        if self._embedded:
+            self.form_requested.emit(None)
+            return
         dialog = CompanyFormScreen(self, company_id=None, engine=self._engine)
         if dialog.exec():
             self.refresh()
@@ -152,6 +180,9 @@ class CompanyListScreen(QWidget):
     def _on_edit_clicked(self) -> None:
         dto = self._selected_dto()
         if dto is None or dto.is_deleted:
+            return
+        if self._embedded:
+            self.form_requested.emit(dto.company_id)
             return
         dialog = CompanyFormScreen(self, company_id=dto.company_id, engine=self._engine)
         if dialog.exec():
@@ -243,6 +274,9 @@ class CompanyListScreen(QWidget):
             show_error(self, "Company Master", f"Failed to print: {exc}")
 
     def _on_close_clicked(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
         self.close()
 
 

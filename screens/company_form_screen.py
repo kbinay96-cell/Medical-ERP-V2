@@ -20,8 +20,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QFileDialog, QWidget
+from PySide6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QPushButton, QWidget
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from engines.company_engine import CompanyEngine
@@ -38,21 +39,29 @@ logger = logging.getLogger(__name__)
 class CompanyFormScreen(QDialog):
     """Add/Edit dialog for a single company. Create mode when company_id is None."""
 
+    saved = Signal()
+    close_requested = Signal()
+
     def __init__(
         self,
         parent: Optional[QWidget] = None,
         company_id: Optional[str] = None,
         engine: Optional[CompanyEngine] = None,
+        embedded: bool = False,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_CompanyFormDialog()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=780, height=640)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=780, height=640, embedded=embedded)
         standardize_action_buttons(self)
 
         self._engine = engine or CompanyEngine()
         self._company_id = company_id
         self._is_edit_mode = company_id is not None
+
+        if self._embedded:
+            self._setup_back_button()
 
         self._connect_signals()
         self._setup_shortcuts()
@@ -66,6 +75,27 @@ class CompanyFormScreen(QDialog):
             self.ui.lblFormTitle.setText("Add Company")
             self.ui.txtCompanyName.setFocus()
 
+    def _setup_back_button(self) -> None:
+        """Wrap lblFormTitle in a new header row with a text-based back button on the left —
+        matches the existing repo convention ("\u2190 Back" QPushButton), no icon asset needed."""
+        root_layout = self.ui.verticalLayout_root
+        title_label = self.ui.lblFormTitle
+        index = root_layout.indexOf(title_label)
+        root_layout.removeWidget(title_label)
+        self.btnBack = QPushButton("\u2190 Back", self)
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.btnBack.clicked.connect(self.reject)
+        header_row = QHBoxLayout()
+        header_row.addWidget(self.btnBack)
+        header_row.addWidget(title_label)
+        header_row.addStretch()
+        root_layout.insertLayout(index, header_row)
+
     # ------------------------------------------------------------------ #
     # Wiring
     # ------------------------------------------------------------------ #
@@ -77,6 +107,12 @@ class CompanyFormScreen(QDialog):
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
         # Escape already closes/rejects a QDialog by default.
+
+    def reject(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().reject()
 
     # ------------------------------------------------------------------ #
     # Load (edit mode)
@@ -164,6 +200,11 @@ class CompanyFormScreen(QDialog):
 
         action = "updated" if self._is_edit_mode else "created"
         show_success(self, "Company Master", f"Company '{dto.company_name}' {action}.")
+
+        if self._embedded:
+            self.saved.emit()
+            self.close_requested.emit()
+            return
         self.accept()
 
     def _save_smtp_settings(self, company_id: str, current_user_id) -> None:

@@ -88,9 +88,9 @@ class Ui_ManufacturerListWidget(object):
         # ---------------- Table ----------------
         self.tblManufacturer = QTableWidget(ManufacturerListWidget)
         self.tblManufacturer.setObjectName("tblManufacturer")
-        self.tblManufacturer.setColumnCount(5)
+        self.tblManufacturer.setColumnCount(4)
         self.tblManufacturer.setHorizontalHeaderLabels(
-            ["Code", "Short Name", "Manufacturer Name", "Country", "Status"]
+            ["Code", "Manufacturer Name", "Country", "Status"]
         )
         self.tblManufacturer.setAlternatingRowColors(True)
         self.tblManufacturer.setSelectionBehavior(QAbstractItemView.SelectRows)

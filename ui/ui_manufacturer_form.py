@@ -65,38 +65,26 @@ class Ui_ManufacturerFormDialog(object):
 
         self.formLayoutBasic.setWidget(1, QFormLayout.ItemRole.FieldRole, self.txtManufacturerName)
 
-        self.lblManufacturerShortName = QLabel(self.grpBasicInfo)
-        self.lblManufacturerShortName.setObjectName(u"lblManufacturerShortName")
-
-        self.formLayoutBasic.setWidget(2, QFormLayout.ItemRole.LabelRole, self.lblManufacturerShortName)
-
-        self.txtManufacturerShortName = QLineEdit(self.grpBasicInfo)
-        self.txtManufacturerShortName.setObjectName(u"txtManufacturerShortName")
-        self.txtManufacturerShortName.setReadOnly(True)
-
-        self.formLayoutBasic.setWidget(2, QFormLayout.ItemRole.FieldRole, self.txtManufacturerShortName)
-
         self.lblCountry = QLabel(self.grpBasicInfo)
         self.lblCountry.setObjectName(u"lblCountry")
 
-        self.formLayoutBasic.setWidget(3, QFormLayout.ItemRole.LabelRole, self.lblCountry)
+        self.formLayoutBasic.setWidget(2, QFormLayout.ItemRole.LabelRole, self.lblCountry)
 
         self.txtCountry = QLineEdit(self.grpBasicInfo)
         self.txtCountry.setObjectName(u"txtCountry")
         self.txtCountry.setMaxLength(100)
 
-        self.formLayoutBasic.setWidget(3, QFormLayout.ItemRole.FieldRole, self.txtCountry)
+        self.formLayoutBasic.setWidget(2, QFormLayout.ItemRole.FieldRole, self.txtCountry)
 
         self.lblDefaultMarginPercent = QLabel(self.grpBasicInfo)
         self.lblDefaultMarginPercent.setObjectName(u"lblDefaultMarginPercent")
 
-        self.formLayoutBasic.setWidget(4, QFormLayout.ItemRole.LabelRole, self.lblDefaultMarginPercent)
+        self.formLayoutBasic.setWidget(3, QFormLayout.ItemRole.LabelRole, self.lblDefaultMarginPercent)
 
         self.txtDefaultMarginPercent = QLineEdit(self.grpBasicInfo)
         self.txtDefaultMarginPercent.setObjectName(u"txtDefaultMarginPercent")
 
-        self.formLayoutBasic.setWidget(4, QFormLayout.ItemRole.FieldRole, self.txtDefaultMarginPercent)
-
+        self.formLayoutBasic.setWidget(3, QFormLayout.ItemRole.FieldRole, self.txtDefaultMarginPercent)
 
         self.verticalLayoutRoot.addWidget(self.grpBasicInfo)
 
@@ -192,10 +180,6 @@ class Ui_ManufacturerFormDialog(object):
         self.lblManufacturerName.setText(QCoreApplication.translate("ManufacturerFormDialog", u"Manufacturer Name: *", None))
 #if QT_CONFIG(tooltip)
         self.txtManufacturerName.setToolTip(QCoreApplication.translate("ManufacturerFormDialog", u"Mandatory. Must be unique.", None))
-#endif // QT_CONFIG(tooltip)
-        self.lblManufacturerShortName.setText(QCoreApplication.translate("ManufacturerFormDialog", u"Short Name:", None))
-#if QT_CONFIG(tooltip)
-        self.txtManufacturerShortName.setToolTip(QCoreApplication.translate("ManufacturerFormDialog", u"Auto-generated from the first word of the Manufacturer Name. Not editable.", None))
 #endif // QT_CONFIG(tooltip)
         self.lblCountry.setText(QCoreApplication.translate("ManufacturerFormDialog", u"Country:", None))
         self.lblDefaultMarginPercent.setText(QCoreApplication.translate("ManufacturerFormDialog", u"Default Purchase Margin %:", None))
