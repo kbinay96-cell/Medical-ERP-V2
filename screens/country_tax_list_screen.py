@@ -19,9 +19,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QTableWidgetItem, QWidget
+from PySide6.QtWidgets import QPushButton, QTableWidgetItem, QWidget
 
 from engines.exceptions import RecordNotFoundError
 from engines.country_tax_engine import CountryTaxDTO, CountryTaxEngine
@@ -40,23 +40,44 @@ SEARCH_DEBOUNCE_MS = 300
 class CountryTaxListScreen(QWidget):
     """Country Tax Settings list/search/filter screen. Opens CountryTaxFormScreen for Add/Edit."""
 
-    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[CountryTaxEngine] = None) -> None:
+    close_requested = Signal()
+    form_requested = Signal(object)
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        engine: Optional[CountryTaxEngine] = None,
+        embedded: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.ui = Ui_CountryTaxListWidget()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=1100, height=700)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=1100, height=700, embedded=embedded)
         standardize_action_buttons(self)
-
         self._engine = engine or CountryTaxEngine()
         self._rows: list[CountryTaxDTO] = []
-
         self._search_debounce_timer = QTimer(self)
         self._search_debounce_timer.setSingleShot(True)
         self._search_debounce_timer.timeout.connect(self.refresh)
-
+        if self._embedded:
+            self._setup_back_button()
         self._connect_signals()
         self._setup_shortcuts()
         self.refresh()
+
+    def _setup_back_button(self) -> None:
+        """Text-based back button — note this screen's toolbar layout is
+        horizontalLayoutToolbar (camelCase), unlike Company's horizontalLayout_filters."""
+        self.btnBack = QPushButton("\u2190 Back", self)
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.btnBack.clicked.connect(self._on_close_clicked)
+        self.ui.horizontalLayoutToolbar.insertWidget(0, self.btnBack)
 
     # ------------------------------------------------------------------ #
     # Wiring
@@ -151,13 +172,18 @@ class CountryTaxListScreen(QWidget):
     # CRUD actions
     # ------------------------------------------------------------------ #
     def _on_add_clicked(self) -> None:
+        if self._embedded:
+            self.form_requested.emit(None)
+            return
         dialog = CountryTaxFormScreen(self, country_tax_id=None, engine=self._engine)
         if dialog.exec():
             self.refresh()
-
     def _on_edit_clicked(self) -> None:
         dto = self._selected_dto()
         if dto is None or dto.is_deleted:
+            return
+        if self._embedded:
+            self.form_requested.emit(dto.country_tax_id)
             return
         dialog = CountryTaxFormScreen(self, country_tax_id=dto.country_tax_id, engine=self._engine)
         if dialog.exec():
@@ -198,6 +224,9 @@ class CountryTaxListScreen(QWidget):
             self.refresh()
 
     def _on_close_clicked(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
         self.close()
 
 

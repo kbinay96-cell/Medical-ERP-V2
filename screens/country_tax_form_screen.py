@@ -22,8 +22,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QWidget
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from engines.country_tax_engine import CountryTaxEngine
@@ -40,28 +41,32 @@ logger = logging.getLogger(__name__)
 class CountryTaxFormScreen(QDialog):
     """Add/Edit dialog for a single country tax row. Create mode when country_tax_id is None."""
 
+    saved = Signal()
+    close_requested = Signal()
+
     def __init__(
         self,
         parent: Optional[QWidget] = None,
         country_tax_id: Optional[int] = None,
         engine: Optional[CountryTaxEngine] = None,
         manufacturer_engine: Optional[ManufacturerEngine] = None,
+        embedded: bool = False,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_CountryTaxFormDialog()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=720, height=560)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=720, height=560, embedded=embedded)
         standardize_action_buttons(self)
-
         self._engine = engine or CountryTaxEngine()
         self._manufacturer_engine = manufacturer_engine or ManufacturerEngine()
         self._country_tax_id = country_tax_id
         self._is_edit_mode = country_tax_id is not None
-
+        if self._embedded:
+            self._setup_back_button()
         self._connect_signals()
         self._setup_shortcuts()
         self._populate_country_combo()
-
         if self._is_edit_mode:
             self.setWindowTitle("Edit Country Tax")
             self.ui.lblFormTitle.setText("Edit Country Tax")
@@ -74,6 +79,28 @@ class CountryTaxFormScreen(QDialog):
             self.ui.cmbStatus.setCurrentText("Active")
             self.ui.cmbCountry.setCurrentText("")
             self.ui.cmbCountry.setFocus()
+
+    def _setup_back_button(self) -> None:
+        """Text-based back button wrapping lblFormTitle in a new header row — note
+        this form's root layout is verticalLayoutRoot (camelCase), unlike Company's
+        verticalLayout_root."""
+        root_layout = self.ui.verticalLayoutRoot
+        title_label = self.ui.lblFormTitle
+        index = root_layout.indexOf(title_label)
+        root_layout.removeWidget(title_label)
+        self.btnBack = QPushButton("\u2190 Back", self)
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.btnBack.clicked.connect(self.reject)
+        header_row = QHBoxLayout()
+        header_row.addWidget(self.btnBack)
+        header_row.addWidget(title_label)
+        header_row.addStretch()
+        root_layout.insertLayout(index, header_row)
 
     # ------------------------------------------------------------------ #
     # Country dropdown -- sourced from Manufacturer's distinct countries
@@ -110,6 +137,12 @@ class CountryTaxFormScreen(QDialog):
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
         # Escape already closes/rejects a QDialog by default.
+
+    def reject(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().reject()
 
     # ------------------------------------------------------------------ #
     # Load (edit mode)
@@ -172,6 +205,14 @@ class CountryTaxFormScreen(QDialog):
 
         action = "updated" if self._is_edit_mode else "created"
         show_success(self, "Country Tax", f"Country Tax for '{dto.country}' {action}.")
+
+        if self._embedded:
+            self.saved.emit()
+            if self._is_edit_mode:
+                self.close_requested.emit()
+            else:
+                self._on_clear_clicked()
+            return
         self.accept()
 
     def _on_clear_clicked(self) -> None:

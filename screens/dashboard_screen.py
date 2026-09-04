@@ -29,6 +29,7 @@ from screens.manufacturer_list_screen import ManufacturerListScreen
 from screens.manufacturer_form_screen import ManufacturerFormScreen
 from screens.supplier_manufacturer_discount_list_screen import SupplierManufacturerDiscountListScreen
 from screens.country_tax_list_screen import CountryTaxListScreen
+from screens.country_tax_form_screen import CountryTaxFormScreen
 
 from screens.company_list_screen import CompanyListScreen
 from screens.company_form_screen import CompanyFormScreen
@@ -63,6 +64,7 @@ from engines.sale_engine import SaleEngine
 from engines.item_free_scheme_engine import ItemFreeSchemeEngine
 from engines.supplier_engine import SupplierEngine
 from engines.item_engine import ItemEngine
+from engines.manufacturer_engine import ManufacturerEngine
 from engines.item_lookup_registry import manufacturer_lookup, country_tax_lookup
 
 # Models
@@ -442,6 +444,25 @@ class DashboardScreen(QMainWindow):
         if getattr(self, "company_list", None) is not None:
             self.company_list.refresh()
 
+    def _open_country_tax_form(self, country_tax_id=None):
+        """Open the Country Tax form embedded in the content-area stack."""
+        form = CountryTaxFormScreen(
+            self,
+            country_tax_id=country_tax_id,
+            engine=self.country_tax_list._engine,
+            manufacturer_engine=ManufacturerEngine(),
+            embedded=True,
+        )
+        form.saved.connect(lambda: self._on_country_tax_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_country_tax_form_saved(self, form):
+        # No _navigate_back() here on purpose — create-mode stays open (multi-add);
+        # close_requested (emitted only on edit-mode save, or Back/Close) handles navigation.
+        if getattr(self, "country_tax_list", None) is not None:
+            self.country_tax_list.refresh()
+
     def _open_sale_invoice_form(self):
         """Open the Sale Invoice form embedded in the content-area stack."""
         form = SaleInvoiceFormScreen(
@@ -509,10 +530,11 @@ class DashboardScreen(QMainWindow):
             apply_standard_window_chrome(self.supplier_manufacturer_discount_list)
             self.supplier_manufacturer_discount_list.show()
 
-        elif module_name == "country tax":                          # <-- NAYA BLOCK
-            self.country_tax_list = CountryTaxListScreen(self)
-            apply_standard_window_chrome(self.country_tax_list)
-            self.country_tax_list.show()
+        elif module_name == "country tax":
+            self.country_tax_list = CountryTaxListScreen(self, embedded=True)
+            self.country_tax_list.close_requested.connect(self._navigate_back)
+            self.country_tax_list.form_requested.connect(self._open_country_tax_form)
+            self._navigate_to(self.country_tax_list)
 
         elif module_name == "customer":
             self.customer_list = CustomerListScreen(self.login_result, parent=self)
