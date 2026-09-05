@@ -20,8 +20,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QWidget
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from engines.supplier_engine import SupplierEngine
@@ -38,22 +39,31 @@ logger = logging.getLogger(__name__)
 class SupplierFormScreen(QDialog):
     """Add/Edit dialog for a single supplier. Create mode when supplier_id is None."""
 
+    saved = Signal()
+    close_requested = Signal()
+
     def __init__(
         self,
         parent: Optional[QWidget] = None,
         supplier_id: Optional[int] = None,
         engine: Optional[SupplierEngine] = None,
+        embedded: bool = False,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_SupplierFormDialog()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=860, height=720)
-        self._photo_picker = host_photo_beside_scroll(self.ui.verticalLayoutRoot, self.ui.scrollArea)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=920, height=760, embedded=embedded)
+        self._photo_picker = host_photo_beside_scroll(self.ui.verticalLayoutRoot, self.ui.scrollArea, side="right")
+        self.ui.scrollAreaContents.setStyleSheet("QLineEdit { max-width: 220px; }")
         standardize_action_buttons(self)
 
         self._engine = engine or SupplierEngine()
         self._supplier_id = supplier_id
         self._is_edit_mode = supplier_id is not None
+
+        if self._embedded:
+            self._setup_back_button()
 
         self._connect_signals()
         self._setup_shortcuts()
@@ -67,6 +77,26 @@ class SupplierFormScreen(QDialog):
             self.ui.lblFormTitle.setText("Add Supplier")
             self.ui.txtSupplierName.setFocus()
 
+    def _setup_back_button(self) -> None:
+        """Text-based back button wrapping lblFormTitle in a new header row."""
+        root_layout = self.ui.verticalLayoutRoot
+        title_label = self.ui.lblFormTitle
+        index = root_layout.indexOf(title_label)
+        root_layout.removeWidget(title_label)
+        self.btnBack = QPushButton("\u2190 Back", self)
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.btnBack.clicked.connect(self.reject)
+        header_row = QHBoxLayout()
+        header_row.addWidget(self.btnBack)
+        header_row.addWidget(title_label)
+        header_row.addStretch()
+        root_layout.insertLayout(index, header_row)
+
     # ------------------------------------------------------------------ #
     # Wiring
     # ------------------------------------------------------------------ #
@@ -77,6 +107,12 @@ class SupplierFormScreen(QDialog):
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
         # Escape already closes/rejects a QDialog by default.
+
+    def reject(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().reject()
 
     # ------------------------------------------------------------------ #
     # Load (edit mode)
@@ -108,6 +144,27 @@ class SupplierFormScreen(QDialog):
         self.ui.cmbStatus.setCurrentText(dto.status or "Active")
         self.ui.txtRemarks.setPlainText(dto.remarks or "")
         self._photo_picker.load_existing(getattr(dto, "photo_path", None))
+
+    def _reset_for_new_supplier(self) -> None:
+        """Clear the form for the next entry after a create-mode save (multi-add)."""
+        self.ui.txtSupplierCode.clear()
+        self.ui.txtSupplierName.clear()
+        self.ui.txtContactPerson.clear()
+        self.ui.txtMobileNo.clear()
+        self.ui.txtPhoneNo.clear()
+        self.ui.txtEmail.clear()
+        self.ui.txtAddress.clear()
+        self.ui.txtCity.clear()
+        self.ui.txtPanVatNo.clear()
+        self.ui.txtOpeningBalance.setText("0.00")
+        self.ui.cmbBalanceType.setCurrentText("Dr")
+        self.ui.txtCreditLimit.setText("0.00")
+        self.ui.txtCreditDays.setText("0")
+        self.ui.cmbStatus.setCurrentText("Active")
+        self.ui.txtRemarks.clear()
+        self._photo_picker.load_existing(None)
+        self._show_validation_message("")
+        self.ui.txtSupplierName.setFocus()
 
     # ------------------------------------------------------------------ #
     # Save
@@ -165,6 +222,14 @@ class SupplierFormScreen(QDialog):
 
         action = "updated" if self._is_edit_mode else "created"
         show_success(self, "Supplier Master", f"Supplier '{dto.supplier_name}' {action}.")
+
+        if self._embedded:
+            self.saved.emit()
+            if self._is_edit_mode:
+                self.close_requested.emit()
+            else:
+                self._reset_for_new_supplier()
+            return
         self.accept()
 
     def _show_validation_message(self, message: str) -> None:

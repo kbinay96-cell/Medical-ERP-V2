@@ -47,32 +47,20 @@ class Ui_SupplierListWidget(object):
         self.verticalLayoutRoot.setSpacing(10)
         self.verticalLayoutRoot.setContentsMargins(12, 12, 12, 12)
 
-        self.lblTitle = QLabel(SupplierListWidget)
+        self.frmToolbar = QFrame(SupplierListWidget)
+        self.frmToolbar.setObjectName("frmToolbar")
+        self.frmToolbar.setFrameShape(QFrame.NoFrame)
+        self.horizontalLayoutToolbar = QHBoxLayout(self.frmToolbar)
+        self.horizontalLayoutToolbar.setObjectName("horizontalLayoutToolbar")
+
+        self.lblTitle = QLabel(self.frmToolbar)
         self.lblTitle.setObjectName("lblTitle")
         font = self.lblTitle.font()
         font.setPointSize(14)
         font.setBold(True)
         self.lblTitle.setFont(font)
         self.lblTitle.setText("Supplier Master")
-        self.verticalLayoutRoot.addWidget(self.lblTitle)
-
-        self.frmToolbar = QFrame(SupplierListWidget)
-        self.frmToolbar.setObjectName("frmToolbar")
-        self.frmToolbar.setFrameShape(QFrame.StyledPanel)
-        self.horizontalLayoutToolbar = QHBoxLayout(self.frmToolbar)
-        self.horizontalLayoutToolbar.setObjectName("horizontalLayoutToolbar")
-
-        self.lblSearch = QLabel(self.frmToolbar)
-        self.lblSearch.setObjectName("lblSearch")
-        self.lblSearch.setText("Search:")
-        self.horizontalLayoutToolbar.addWidget(self.lblSearch)
-
-        self.txtSearch = QLineEdit(self.frmToolbar)
-        self.txtSearch.setObjectName("txtSearch")
-        self.txtSearch.setPlaceholderText("Search by Code, Name, Mobile or PAN/VAT...")
-        self.txtSearch.setClearButtonEnabled(True)
-        self.txtSearch.setToolTip("Search Suppliers (Ctrl+F)")
-        self.horizontalLayoutToolbar.addWidget(self.txtSearch)
+        self.horizontalLayoutToolbar.addWidget(self.lblTitle)
 
         self.lblStatusFilter = QLabel(self.frmToolbar)
         self.lblStatusFilter.setObjectName("lblStatusFilter")
@@ -103,6 +91,25 @@ class Ui_SupplierListWidget(object):
         self.horizontalLayoutToolbar.addWidget(self.btnRefresh)
 
         self.verticalLayoutRoot.addWidget(self.frmToolbar)
+
+        self.frmSearchBar = QFrame(SupplierListWidget)
+        self.frmSearchBar.setObjectName("frmSearchBar")
+        self.frmSearchBar.setFrameShape(QFrame.NoFrame)
+        self.horizontalLayoutSearchBar = QHBoxLayout(self.frmSearchBar)
+        self.horizontalLayoutSearchBar.setObjectName("horizontalLayoutSearchBar")
+
+        self.lblSearch = QLabel("Search:", self.frmSearchBar)
+        self.horizontalLayoutSearchBar.addWidget(self.lblSearch)
+
+        self.txtSearch = QLineEdit(self.frmSearchBar)
+        self.txtSearch.setObjectName("txtSearch")
+        self.txtSearch.setPlaceholderText("Search by Code, Name, Mobile or PAN/VAT...")
+        self.txtSearch.setClearButtonEnabled(True)
+        self.txtSearch.setToolTip("Search Suppliers (Ctrl+F)")
+        self.txtSearch.setMinimumHeight(32)
+        self.horizontalLayoutSearchBar.addWidget(self.txtSearch, 1)
+
+        self.verticalLayoutRoot.addWidget(self.frmSearchBar)
 
         self.tblSupplier = QTableWidget(SupplierListWidget)
         self.tblSupplier.setObjectName("tblSupplier")

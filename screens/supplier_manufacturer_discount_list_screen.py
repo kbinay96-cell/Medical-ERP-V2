@@ -17,9 +17,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QTableWidgetItem, QWidget
+from PySide6.QtWidgets import QPushButton, QTableWidgetItem, QWidget
 
 from engines.exceptions import RecordNotFoundError
 from engines.item_engine import ItemDTO, ItemEngine
@@ -47,17 +47,22 @@ STATE_ITEMS = "items"
 class SupplierManufacturerDiscountListScreen(QWidget):
     """Supplier -> Manufacturer/Discount -> Item drill-down, all in one table."""
 
+    close_requested = Signal()
+    form_requested = Signal(object)
+
     def __init__(
         self,
         parent: Optional[QWidget] = None,
         engine: Optional[SupplierManufacturerDiscountEngine] = None,
         supplier_engine: Optional[SupplierEngine] = None,
         item_engine: Optional[ItemEngine] = None,
+        embedded: bool = False,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_SupplierManufacturerDiscountListWidget()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=1100, height=700)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=1100, height=700, embedded=embedded)
         standardize_action_buttons(self)
 
         self._engine = engine or SupplierManufacturerDiscountEngine()
@@ -94,7 +99,6 @@ class SupplierManufacturerDiscountListScreen(QWidget):
         self.ui.btnEdit.clicked.connect(self._on_edit_clicked)
         self.ui.btnDelete.clicked.connect(self._on_delete_clicked)
         self.ui.btnRestore.clicked.connect(self._on_restore_clicked)
-        self.ui.btnClose.clicked.connect(self._on_close_clicked)
         self.ui.btnBack.clicked.connect(self._on_back_clicked)
         self.ui.btnPrev.clicked.connect(self._on_prev_page)
         self.ui.btnNext.clicked.connect(self._on_next_page)
@@ -119,7 +123,6 @@ class SupplierManufacturerDiscountListScreen(QWidget):
         self.ui.txtSearch.clear()
         self.ui.txtSearch.setPlaceholderText("Search Suppliers...")
         self.ui.txtSearch.blockSignals(False)
-        self.ui.btnBack.setVisible(False)
         self.ui.lblBreadcrumb.setText("Suppliers")
         self._apply_level_button_visibility()
         self._reload_current_level()
@@ -134,7 +137,6 @@ class SupplierManufacturerDiscountListScreen(QWidget):
         self.ui.txtSearch.clear()
         self.ui.txtSearch.setPlaceholderText("Search by Manufacturer or Item name...")
         self.ui.txtSearch.blockSignals(False)
-        self.ui.btnBack.setVisible(True)
         self.ui.lblBreadcrumb.setText(f"Suppliers > {supplier.supplier_name}")
         self._apply_level_button_visibility()
         self._reload_current_level()
@@ -148,7 +150,6 @@ class SupplierManufacturerDiscountListScreen(QWidget):
         self.ui.txtSearch.clear()
         self.ui.txtSearch.setPlaceholderText("Search Items...")
         self.ui.txtSearch.blockSignals(False)
-        self.ui.btnBack.setVisible(True)
         supplier_name = self._current_supplier.supplier_name if self._current_supplier else ""
         self.ui.lblBreadcrumb.setText(f"Suppliers > {supplier_name} > {manufacturer_name}")
         self._apply_level_button_visibility()
@@ -159,6 +160,8 @@ class SupplierManufacturerDiscountListScreen(QWidget):
             self._enter_mappings_level(self._current_supplier)
         elif self._view_state == STATE_MAPPINGS:
             self._enter_suppliers_level()
+        else:
+            self._on_close_clicked()
 
     def _apply_level_button_visibility(self) -> None:
         is_mappings = self._view_state == STATE_MAPPINGS
@@ -404,6 +407,9 @@ class SupplierManufacturerDiscountListScreen(QWidget):
     def _on_add_clicked(self) -> None:
         if self._current_supplier is None:
             return
+        if self._embedded:
+            self.form_requested.emit((None, self._current_supplier.supplier_id))
+            return
         dialog = SupplierManufacturerDiscountFormScreen(
             self, discount_id=None, engine=self._engine,
             initial_supplier_id=self._current_supplier.supplier_id,
@@ -414,6 +420,9 @@ class SupplierManufacturerDiscountListScreen(QWidget):
     def _on_edit_clicked(self) -> None:
         dto = self._selected_mapping_dto()
         if dto is None or dto.is_deleted:
+            return
+        if self._embedded:
+            self.form_requested.emit((dto.id, None))
             return
         dialog = SupplierManufacturerDiscountFormScreen(self, discount_id=dto.id, engine=self._engine)
         if dialog.exec():
@@ -462,6 +471,9 @@ class SupplierManufacturerDiscountListScreen(QWidget):
             self._reload_current_level()
 
     def _on_close_clicked(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
         self.close()
 
 

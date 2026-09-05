@@ -28,6 +28,7 @@ from screens.supplier_form_screen import SupplierFormScreen
 from screens.manufacturer_list_screen import ManufacturerListScreen
 from screens.manufacturer_form_screen import ManufacturerFormScreen
 from screens.supplier_manufacturer_discount_list_screen import SupplierManufacturerDiscountListScreen
+from screens.supplier_manufacturer_discount_form_screen import SupplierManufacturerDiscountFormScreen
 from screens.country_tax_list_screen import CountryTaxListScreen
 from screens.country_tax_form_screen import CountryTaxFormScreen
 
@@ -463,6 +464,41 @@ class DashboardScreen(QMainWindow):
         if getattr(self, "country_tax_list", None) is not None:
             self.country_tax_list.refresh()
 
+    def _open_supplier_form(self, supplier_id=None):
+        """Open the Supplier form embedded in the content-area stack."""
+        form = SupplierFormScreen(self, supplier_id=supplier_id, engine=self._supplier_engine, embedded=True)
+        form.saved.connect(lambda: self._on_supplier_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_supplier_form_saved(self, form):
+        # No _navigate_back() here on purpose — create-mode stays open (multi-add);
+        # close_requested (emitted only on edit-mode save, or Back/Escape) handles navigation.
+        if getattr(self, "supplier_list", None) is not None:
+            self.supplier_list.refresh()
+
+    def _open_supplier_manufacturer_discount_form(self, payload):
+        """Open the Supplier-Manufacturer Discount form embedded in the content-area stack."""
+        discount_id, initial_supplier_id = payload
+        form = SupplierManufacturerDiscountFormScreen(
+            self,
+            discount_id=discount_id,
+            engine=self.supplier_manufacturer_discount_list._engine,
+            supplier_engine=self._supplier_engine,
+            manufacturer_engine=ManufacturerEngine(),
+            initial_supplier_id=initial_supplier_id,
+            embedded=True,
+        )
+        form.saved.connect(lambda: self._on_supplier_manufacturer_discount_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_supplier_manufacturer_discount_form_saved(self, form):
+        # No _navigate_back() here on purpose — create-mode stays open (multi-add);
+        # close_requested (emitted only on edit-mode save, or Back/Escape) handles navigation.
+        if getattr(self, "supplier_manufacturer_discount_list", None) is not None:
+            self.supplier_manufacturer_discount_list._reload_current_level()
+
     def _open_sale_invoice_form(self):
         """Open the Sale Invoice form embedded in the content-area stack."""
         form = SaleInvoiceFormScreen(
@@ -509,9 +545,10 @@ class DashboardScreen(QMainWindow):
         module_name = item.text(0).strip().lower()
 
         if module_name == "supplier":
-            self.supplier_list = SupplierListScreen(self)
-            apply_standard_window_chrome(self.supplier_list)
-            self.supplier_list.show()
+            self.supplier_list = SupplierListScreen(self, engine=self._supplier_engine, embedded=True)
+            self.supplier_list.close_requested.connect(self._navigate_back)
+            self.supplier_list.form_requested.connect(self._open_supplier_form)
+            self._navigate_to(self.supplier_list)
 
         elif module_name == "company":
             self.company_list = CompanyListScreen(self, embedded=True)
@@ -526,9 +563,14 @@ class DashboardScreen(QMainWindow):
             self._navigate_to(self.manufacturer_list)
 
         elif module_name == "supplier-mfg discount":
-            self.supplier_manufacturer_discount_list = SupplierManufacturerDiscountListScreen(self)
-            apply_standard_window_chrome(self.supplier_manufacturer_discount_list)
-            self.supplier_manufacturer_discount_list.show()
+            self.supplier_manufacturer_discount_list = SupplierManufacturerDiscountListScreen(
+                self, supplier_engine=self._supplier_engine, item_engine=self._item_engine, embedded=True,
+            )
+            self.supplier_manufacturer_discount_list.close_requested.connect(self._navigate_back)
+            self.supplier_manufacturer_discount_list.form_requested.connect(
+                self._open_supplier_manufacturer_discount_form
+            )
+            self._navigate_to(self.supplier_manufacturer_discount_list)
 
         elif module_name == "country tax":
             self.country_tax_list = CountryTaxListScreen(self, embedded=True)

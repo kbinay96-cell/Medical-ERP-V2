@@ -22,9 +22,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QTableWidgetItem, QWidget
+from PySide6.QtWidgets import QMenu, QPushButton, QTableWidgetItem, QVBoxLayout, QWidget
 
 from engines.exceptions import RecordNotFoundError
 from engines.supplier_engine import SupplierDTO, SupplierEngine
@@ -44,11 +44,20 @@ SEARCH_DEBOUNCE_MS = 300
 class SupplierListScreen(QWidget):
     """Supplier Master list/search/filter screen. Opens SupplierFormScreen for Add/Edit."""
 
-    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[SupplierEngine] = None) -> None:
+    close_requested = Signal()
+    form_requested = Signal(object)
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        engine: Optional[SupplierEngine] = None,
+        embedded: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.ui = Ui_SupplierListWidget()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=1360, height=760)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=1360, height=760, embedded=embedded)
         standardize_action_buttons(self)
 
         self._engine = engine or SupplierEngine()
@@ -62,17 +71,38 @@ class SupplierListScreen(QWidget):
                 "PAN/VAT:", "Balance:", "Credit Limit:", "Credit Days:", "Status:",
                 "Created:", "Updated:", "Deleted:",
             ),
+            wide=embedded,
         )
-        install_detail_splitter(self.ui.verticalLayoutRoot, self.ui.tblSupplier, self._detail)
-        configure_table_columns(self.ui.tblSupplier, stretch_columns=(1, 2))
+        if embedded:
+            self._init_detail_overlay()
+            self.ui.tblSupplier.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.ui.tblSupplier.customContextMenuRequested.connect(self._show_item_detail_inline)
+        else:
+            install_detail_splitter(self.ui.verticalLayoutRoot, self.ui.tblSupplier, self._detail)
+        configure_table_columns(self.ui.tblSupplier, stretch_columns=(1, 2, 3))
 
         self._search_debounce_timer = QTimer(self)
         self._search_debounce_timer.setSingleShot(True)
         self._search_debounce_timer.timeout.connect(self.refresh)
 
+        if self._embedded:
+            self._setup_back_button()
+
         self._connect_signals()
         self._setup_shortcuts()
         self.refresh()
+
+    def _setup_back_button(self) -> None:
+        """Text-based back button, inserted leftmost in the toolbar row."""
+        self.btnBack = QPushButton("\u2190 Back", self)
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.btnBack.clicked.connect(self._on_close_clicked)
+        self.ui.horizontalLayoutToolbar.insertWidget(0, self.btnBack)
 
     # ------------------------------------------------------------------ #
     # Wiring
@@ -139,7 +169,7 @@ class SupplierListScreen(QWidget):
                     item.setForeground(Qt.gray)
                 table.setItem(row_index, col_index, item)
         table.setSortingEnabled(True)
-        configure_table_columns(table, stretch_columns=(1, 2))
+        configure_table_columns(table, stretch_columns=(1, 2, 3))
         self._on_selection_changed()
 
     # ------------------------------------------------------------------ #
@@ -204,6 +234,9 @@ class SupplierListScreen(QWidget):
     # CRUD actions
     # ------------------------------------------------------------------ #
     def _on_add_clicked(self) -> None:
+        if self._embedded:
+            self.form_requested.emit(None)
+            return
         dialog = SupplierFormScreen(self, supplier_id=None, engine=self._engine)
         if dialog.exec():
             self.refresh()
@@ -211,6 +244,9 @@ class SupplierListScreen(QWidget):
     def _on_edit_clicked(self) -> None:
         dto = self._selected_dto()
         if dto is None or dto.is_deleted:
+            return
+        if self._embedded:
+            self.form_requested.emit(dto.supplier_id)
             return
         dialog = SupplierFormScreen(self, supplier_id=dto.supplier_id, engine=self._engine)
         if dialog.exec():
@@ -251,7 +287,56 @@ class SupplierListScreen(QWidget):
             self.refresh()
 
     def _on_close_clicked(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
         self.close()
+
+    # ------------------------------------------------------------------ #
+    # Embedded in-page detail overlay (mirrors Item Master's pattern)
+    # ------------------------------------------------------------------ #
+    def _embedded_list_widgets(self) -> list:
+        return [
+            self.ui.frmToolbar,
+            self.ui.frmSearchBar,
+            self.ui.tblSupplier,
+            self.ui.lblRecordCount,
+            self.ui.btnAdd, self.ui.btnEdit, self.ui.btnDelete,
+            self.ui.btnRestore, self.ui.btnClose,
+        ]
+
+    def _init_detail_overlay(self) -> None:
+        self._detail_container = QWidget(self)
+        detail_layout = QVBoxLayout(self._detail_container)
+        btn_back = QPushButton("\u2190 Back to List")
+        btn_back.clicked.connect(self._hide_item_detail_inline)
+        detail_layout.addWidget(btn_back)
+        detail_layout.addWidget(self._detail)
+        self.ui.verticalLayoutRoot.addWidget(self._detail_container)
+        self._detail_container.hide()
+
+    def _show_item_detail_inline(self, pos) -> None:
+        index = self.ui.tblSupplier.indexAt(pos)
+        if not index.isValid():
+            return
+        self.ui.tblSupplier.selectRow(index.row())
+        dto = self._selected_dto()
+        if dto is None:
+            return
+        menu = QMenu(self)
+        action_view = menu.addAction("View Details")
+        chosen = menu.exec(self.ui.tblSupplier.viewport().mapToGlobal(pos))
+        if chosen != action_view:
+            return
+        self._show_detail(dto)
+        for w in self._embedded_list_widgets():
+            w.hide()
+        self._detail_container.show()
+
+    def _hide_item_detail_inline(self) -> None:
+        self._detail_container.hide()
+        for w in self._embedded_list_widgets():
+            w.show()
 
 
 __all__ = ["SupplierListScreen"]

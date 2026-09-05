@@ -29,8 +29,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QWidget
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from engines.manufacturer_engine import ManufacturerEngine
@@ -49,6 +50,9 @@ logger = logging.getLogger(__name__)
 class SupplierManufacturerDiscountFormScreen(QDialog):
     """Add/Edit dialog for a single discount mapping. Create mode when discount_id is None."""
 
+    saved = Signal()
+    close_requested = Signal()
+
     def __init__(
         self,
         parent: Optional[QWidget] = None,
@@ -57,11 +61,13 @@ class SupplierManufacturerDiscountFormScreen(QDialog):
         supplier_engine: Optional[SupplierEngine] = None,
         manufacturer_engine: Optional[ManufacturerEngine] = None,
         initial_supplier_id: Optional[int] = None,
+        embedded: bool = False,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_SupplierManufacturerDiscountFormDialog()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=720, height=560)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=720, height=560, embedded=embedded)
         standardize_action_buttons(self)
 
         self._engine = engine or SupplierManufacturerDiscountEngine()
@@ -69,6 +75,10 @@ class SupplierManufacturerDiscountFormScreen(QDialog):
         self._manufacturer_engine = manufacturer_engine or ManufacturerEngine()
         self._discount_id = discount_id
         self._is_edit_mode = discount_id is not None
+        self._initial_supplier_id = initial_supplier_id
+
+        if self._embedded:
+            self._setup_back_button()
 
         self._connect_signals()
         self._setup_shortcuts()
@@ -103,6 +113,32 @@ class SupplierManufacturerDiscountFormScreen(QDialog):
     def _setup_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._on_save_clicked)
         # Escape already closes/rejects a QDialog by default.
+
+    def _setup_back_button(self) -> None:
+        """Text-based back button wrapping lblFormTitle in a new header row."""
+        root_layout = self.ui.verticalLayoutRoot
+        title_label = self.ui.lblFormTitle
+        index = root_layout.indexOf(title_label)
+        root_layout.removeWidget(title_label)
+        self.btnBack = QPushButton("\u2190 Back", self)
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.btnBack.clicked.connect(self.reject)
+        header_row = QHBoxLayout()
+        header_row.addWidget(self.btnBack)
+        header_row.addWidget(title_label)
+        header_row.addStretch()
+        root_layout.insertLayout(index, header_row)
+
+    def reject(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().reject()
 
     # ------------------------------------------------------------------ #
     # Lookup combo population -- via the EXISTING Supplier/Manufacturer
@@ -156,6 +192,18 @@ class SupplierManufacturerDiscountFormScreen(QDialog):
         self.ui.txtDiscountPercent.setText(f"{float(dto.discount_percent or 0):.2f}")
         self.ui.txtRemarks.setPlainText(dto.remarks or "")
 
+    def _reset_for_new_mapping(self) -> None:
+        """Clear the form for the next entry after a create-mode save (multi-add)."""
+        if self._initial_supplier_id is not None:
+            self._set_combo_by_data(self.ui.cmbSupplier, self._initial_supplier_id)
+        else:
+            self.ui.cmbSupplier.setCurrentIndex(0)
+        self.ui.cmbManufacturer.setCurrentIndex(0)
+        self.ui.txtDiscountPercent.setText("0.00")
+        self.ui.txtRemarks.clear()
+        self._show_validation_message("")
+        self.ui.cmbManufacturer.setFocus()
+
     # ------------------------------------------------------------------ #
     # Save
     # ------------------------------------------------------------------ #
@@ -202,6 +250,14 @@ class SupplierManufacturerDiscountFormScreen(QDialog):
             self, "Supplier-Manufacturer Discount",
             f"Discount mapping for '{dto.supplier_name}' / '{dto.manufacturer_name}' {action}.",
         )
+
+        if self._embedded:
+            self.saved.emit()
+            if self._is_edit_mode:
+                self.close_requested.emit()
+            else:
+                self._reset_for_new_mapping()
+            return
         self.accept()
 
     def _show_validation_message(self, message: str) -> None:

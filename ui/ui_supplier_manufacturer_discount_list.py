@@ -9,6 +9,7 @@ with:
     pyside6-uic ui/supplier_manufacturer_discount_list.ui -o ui/ui_supplier_manufacturer_discount_list.py
 """
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -44,6 +45,32 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
         self.lblTitle.setText("Supplier-Manufacturer Discount")
         self.verticalLayoutRoot.addWidget(self.lblTitle)
 
+        # ---------------- Breadcrumb / Back (near title) ----------------
+        self.horizontalLayoutBreadcrumb = QHBoxLayout()
+        self.horizontalLayoutBreadcrumb.setObjectName("horizontalLayoutBreadcrumb")
+
+        self.btnBack = QPushButton("\u2190 Back", SupplierManufacturerDiscountListWidget)
+        self.btnBack.setObjectName("btnBack")
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.horizontalLayoutBreadcrumb.addWidget(self.btnBack)
+
+        self.lblBreadcrumb = QLabel("Suppliers", SupplierManufacturerDiscountListWidget)
+        self.lblBreadcrumb.setObjectName("lblBreadcrumb")
+        font_bc = self.lblBreadcrumb.font()
+        font_bc.setBold(True)
+        self.lblBreadcrumb.setFont(font_bc)
+        self.horizontalLayoutBreadcrumb.addWidget(self.lblBreadcrumb)
+
+        self.horizontalSpacerBreadcrumb = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.horizontalLayoutBreadcrumb.addItem(self.horizontalSpacerBreadcrumb)
+
+        self.verticalLayoutRoot.addLayout(self.horizontalLayoutBreadcrumb)
+
         # ---------------- Toolbar ----------------
         self.frmToolbar = QFrame(SupplierManufacturerDiscountListWidget)
         self.frmToolbar.setObjectName("frmToolbar")
@@ -76,43 +103,7 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
 
         self.verticalLayoutRoot.addWidget(self.frmToolbar)
 
-        # ---------------- Breadcrumb / Back ----------------
-        self.horizontalLayoutBreadcrumb = QHBoxLayout()
-        self.horizontalLayoutBreadcrumb.setObjectName("horizontalLayoutBreadcrumb")
-
-        self.btnBack = QPushButton("< Back", SupplierManufacturerDiscountListWidget)
-        self.btnBack.setObjectName("btnBack")
-        self.btnBack.setVisible(False)
-        self.horizontalLayoutBreadcrumb.addWidget(self.btnBack)
-
-        self.lblBreadcrumb = QLabel("Suppliers", SupplierManufacturerDiscountListWidget)
-        self.lblBreadcrumb.setObjectName("lblBreadcrumb")
-        font_bc = self.lblBreadcrumb.font()
-        font_bc.setBold(True)
-        self.lblBreadcrumb.setFont(font_bc)
-        self.horizontalLayoutBreadcrumb.addWidget(self.lblBreadcrumb)
-
-        self.horizontalSpacerBreadcrumb = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.horizontalLayoutBreadcrumb.addItem(self.horizontalSpacerBreadcrumb)
-
-        self.verticalLayoutRoot.addLayout(self.horizontalLayoutBreadcrumb)
-
-        # ---------------- Table ----------------
-        self.tblDiscount = QTableWidget(SupplierManufacturerDiscountListWidget)
-        self.tblDiscount.setObjectName("tblDiscount")
-        self.tblDiscount.setColumnCount(4)
-        self.tblDiscount.setHorizontalHeaderLabels(
-            ["Supplier Name", "Manufacturer Name", "Discount %", "Status"]
-        )
-        self.tblDiscount.setAlternatingRowColors(True)
-        self.tblDiscount.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tblDiscount.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tblDiscount.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tblDiscount.setSortingEnabled(True)
-        self.tblDiscount.horizontalHeader().setStretchLastSection(True)
-        self.verticalLayoutRoot.addWidget(self.tblDiscount)
-
-        # ---------------- Pagination ----------------
+        # ---------------- Pagination (right below Refresh) ----------------
         self.horizontalLayoutPagination = QHBoxLayout()
         self.horizontalLayoutPagination.setObjectName("horizontalLayoutPagination")
 
@@ -132,6 +123,21 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
         self.horizontalLayoutPagination.addItem(self.horizontalSpacerPagination)
 
         self.verticalLayoutRoot.addLayout(self.horizontalLayoutPagination)
+
+        # ---------------- Table ----------------
+        self.tblDiscount = QTableWidget(SupplierManufacturerDiscountListWidget)
+        self.tblDiscount.setObjectName("tblDiscount")
+        self.tblDiscount.setColumnCount(4)
+        self.tblDiscount.setHorizontalHeaderLabels(
+            ["Supplier Name", "Manufacturer Name", "Discount %", "Status"]
+        )
+        self.tblDiscount.setAlternatingRowColors(True)
+        self.tblDiscount.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tblDiscount.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tblDiscount.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tblDiscount.setSortingEnabled(True)
+        self.tblDiscount.horizontalHeader().setStretchLastSection(True)
+        self.verticalLayoutRoot.addWidget(self.tblDiscount)
 
         self.lblRecordCount = QLabel("0 mapping(s) found", SupplierManufacturerDiscountListWidget)
         self.lblRecordCount.setObjectName("lblRecordCount")
@@ -166,11 +172,6 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
         self.horizontalSpacerButtons = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.horizontalLayoutButtons.addItem(self.horizontalSpacerButtons)
 
-        self.btnClose = QPushButton("Close", SupplierManufacturerDiscountListWidget)
-        self.btnClose.setObjectName("btnClose")
-        self.btnClose.setToolTip("Close this screen (Esc)")
-        self.horizontalLayoutButtons.addWidget(self.btnClose)
-
         self.verticalLayoutRoot.addLayout(self.horizontalLayoutButtons)
 
         SupplierManufacturerDiscountListWidget.setTabOrder(self.txtSearch, self.chkShowDeleted)
@@ -180,4 +181,4 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
         SupplierManufacturerDiscountListWidget.setTabOrder(self.btnAdd, self.btnEdit)
         SupplierManufacturerDiscountListWidget.setTabOrder(self.btnEdit, self.btnDelete)
         SupplierManufacturerDiscountListWidget.setTabOrder(self.btnDelete, self.btnRestore)
-        SupplierManufacturerDiscountListWidget.setTabOrder(self.btnRestore, self.btnClose)
+        
