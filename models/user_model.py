@@ -89,13 +89,30 @@ def create_user(username: str, plain_password: str, fullname: str, roleid: int, 
 def register_failed_attempt(username: str) -> None:
     """
     Increments failed-attempt counter. If it reaches the
-    configured maximum, locks the account for the configured
-    auto-unlock duration.
+    configured maximum, locks the account. Lock duration is
+    settings-driven (security.lock_duration_minutes, falling
+    back to ACCOUNT_AUTO_UNLOCK_MINUTES) and escalates with
+    graduated backoff: it doubles for each consecutive lockout
+    (capped at 8x base), reset only by a successful login/unlock.
+    Settings lookup NEVER raises -- any failure falls back to the
+    static config.settings constants so a login attempt can never
+    crash because of this.
     """
+    lockout_enabled = True
+    max_attempts = MAX_FAILED_LOGIN_ATTEMPTS
+    base_lock_minutes = ACCOUNT_AUTO_UNLOCK_MINUTES
+    try:
+        from engines.settings_engine import get_setting
+        lockout_enabled = bool(get_setting("security.enable_max_login_attempts", True))
+        max_attempts = int(get_setting("security.max_login_attempts", MAX_FAILED_LOGIN_ATTEMPTS))
+        base_lock_minutes = int(get_setting("security.lock_duration_minutes", ACCOUNT_AUTO_UNLOCK_MINUTES))
+    except Exception:
+        pass
+
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT failedattempts FROM users WHERE username = %s",
+                "SELECT failedattempts, lockoutcount FROM users WHERE username = %s",
                 (username,)
             )
             row = cur.fetchone()
@@ -105,11 +122,17 @@ def register_failed_attempt(username: str) -> None:
 
             new_count = row["failedattempts"] + 1
 
-            if new_count >= MAX_FAILED_LOGIN_ATTEMPTS:
-                locked_until = datetime.now() + timedelta(minutes=ACCOUNT_AUTO_UNLOCK_MINUTES)
+            if lockout_enabled and new_count >= max_attempts:
+                new_lockout_count = row["lockoutcount"] + 1
+                multiplier = min(2 ** (new_lockout_count - 1), 8)
+                locked_until = datetime.now() + timedelta(minutes=base_lock_minutes * multiplier)
                 cur.execute(
-                    "UPDATE users SET failedattempts = %s, status = %s, lockeduntil = %s WHERE username = %s",
-                    (new_count, STATUS_LOCKED, locked_until, username)
+                    """
+                    UPDATE users
+                    SET failedattempts = %s, status = %s, lockeduntil = %s, lockoutcount = %s
+                    WHERE username = %s
+                    """,
+                    (new_count, STATUS_LOCKED, locked_until, new_lockout_count, username)
                 )
             else:
                 cur.execute(
@@ -121,10 +144,13 @@ def register_failed_attempt(username: str) -> None:
 
 
 def reset_failed_attempts(username: str) -> None:
+    """Clears the failure counter AND the backoff escalation counter
+    on any successful login/unlock (so a legitimate user typing their
+    password right eventually stops the escalation)."""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE users SET failedattempts = 0 WHERE username = %s",
+                "UPDATE users SET failedattempts = 0, lockoutcount = 0 WHERE username = %s",
                 (username,)
             )
         conn.commit()
@@ -436,3 +462,21 @@ def insert_user_audit(
                 )
             )
         conn.commit()
+
+def admin_unlock_user(userid: int, unlocked_by: str) -> None:
+    """Admin-initiated unlock: clears lock state AND both lockout counters."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE users
+                    SET status = %s, failedattempts = 0, lockeduntil = NULL, lockoutcount = 0,
+                        modifieddate = %s, modifiedby = %s
+                    WHERE userid = %s
+                    """,
+                    (STATUS_ACTIVE, datetime.now(), unlocked_by, userid)
+                )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        raise UserModelError(f"Failed to unlock user {userid}: {exc}") from exc
