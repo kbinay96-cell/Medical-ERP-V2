@@ -305,10 +305,15 @@ class PurchaseOrderFormScreen(QDialog):
             QMessageBox.warning(self, "No Items", "Please check at least one item to order.")
             return
 
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             order_dto = self._engine.create_purchase_order(payload, self._current_user_id)
         except ValidationError as exc:
             QMessageBox.warning(self, "Cannot Save", str(exc))
+            return
+        except PermissionDeniedError as exc:
+            QMessageBox.warning(self, "Permission Denied", str(exc))
             return
         except Exception:
             logger.exception("Failed to create purchase order")

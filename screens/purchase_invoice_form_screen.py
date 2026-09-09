@@ -758,6 +758,8 @@ class PurchaseInvoiceFormScreen(QDialog):
         payload = self._collect_form_values()
         supplier_id = payload["supplier_id"]
 
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             invoice_dto = self._engine.create_purchase_invoice(payload, self._current_user_id)
         except DuplicateRecordError as exc:
@@ -765,6 +767,9 @@ class PurchaseInvoiceFormScreen(QDialog):
             return
         except ValidationError as exc:
             QMessageBox.warning(self, "Cannot Save", str(exc))
+            return
+        except PermissionDeniedError as exc:
+            QMessageBox.warning(self, "Permission Denied", str(exc))
             return
         except Exception:
             logger.exception("Failed to create purchase invoice")

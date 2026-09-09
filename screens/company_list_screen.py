@@ -196,9 +196,13 @@ class CompanyListScreen(QWidget):
             self, "Delete Company", f"Delete company '{dto.company_name}'?\n\nThis can be restored later."
         ):
             return
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             self._engine.delete_company(dto.company_id, current_user_id=get_current_user_id())
         except RecordNotFoundError as exc:
+            show_error(self, "Company Master", str(exc))
+        except PermissionDeniedError as exc:
             show_error(self, "Company Master", str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to delete company %s.", dto.company_id)
@@ -211,9 +215,13 @@ class CompanyListScreen(QWidget):
         dto = self._selected_dto()
         if dto is None or not dto.is_deleted:
             return
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             restored = self._engine.restore_company(dto.company_id, current_user_id=get_current_user_id())
         except RecordNotFoundError as exc:
+            show_error(self, "Company Master", str(exc))
+        except PermissionDeniedError as exc:
             show_error(self, "Company Master", str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to restore company %s.", dto.company_id)

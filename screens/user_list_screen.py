@@ -12,9 +12,11 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import QHeaderView, QWidget
+from PySide6.QtWidgets import QHeaderView, QPushButton, QWidget
 
+from config.settings import STATUS_LOCKED
 from engines.exceptions import RecordNotFoundError
+from engines.permission_enforcer import PermissionDeniedError
 from engines.user_engine import UserDTO, UserEngine
 from screens.user_form_screen import UserFormScreen
 from screens.reset_password_screen import ResetPasswordScreen
@@ -86,8 +88,8 @@ class UserListScreen(QWidget):
             ),
         )
         install_detail_splitter(self.ui.verticalLayout_root, self.ui.table_users, self._detail)
+        self._inject_unlock_button()
         self._load_filter_options()
-
         self._connect_signals()
         self._setup_shortcuts()
         self.refresh()
@@ -107,6 +109,17 @@ class UserListScreen(QWidget):
         header.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(7, 110)
         header.setStretchLastSection(False)
+
+    def _inject_unlock_button(self) -> None:
+        """Adds an Unlock button next to Reset Password without needing a
+        .ui recompile -- inserted into whatever layout already owns
+        btn_reset_password, found by widget lookup rather than a
+        hardcoded layout attribute name."""
+        self.ui.btn_unlock = QPushButton("Unlock", self)
+        actions_layout = self.ui.btn_reset_password.parentWidget().layout()
+        insert_index = actions_layout.indexOf(self.ui.btn_reset_password) + 1
+        actions_layout.insertWidget(insert_index, self.ui.btn_unlock)
+        standardize_action_buttons(self)
 
     def _load_filter_options(self) -> None:
         self.ui.filter_role.clear()
@@ -136,6 +149,7 @@ class UserListScreen(QWidget):
         self.ui.btn_restore.clicked.connect(self._on_restore_clicked)
         self.ui.btn_toggle_active.clicked.connect(self._on_toggle_active_clicked)
         self.ui.btn_reset_password.clicked.connect(self._on_reset_password_clicked)
+        self.ui.btn_unlock.clicked.connect(self._on_unlock_clicked)
         self.ui.btn_export.clicked.connect(self._on_export_clicked)
         self.ui.btn_print.clicked.connect(self._on_print_clicked)
 
@@ -213,6 +227,7 @@ class UserListScreen(QWidget):
         self.ui.btn_restore.setEnabled(has_selection and is_deleted)
         self.ui.btn_toggle_active.setEnabled(has_selection and not is_deleted)
         self.ui.btn_reset_password.setEnabled(has_selection and not is_deleted)
+        self.ui.btn_unlock.setEnabled(has_selection and not is_deleted and dto is not None and dto.status == STATUS_LOCKED)
 
         if dto is None:
             self._detail.show_placeholder()
@@ -256,9 +271,13 @@ class UserListScreen(QWidget):
             return
         if not confirm(self, "Delete User", f"Delete user '{dto.username}'?\n\nThis can be restored later."):
             return
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             self._engine.delete_user(dto.user_id, current_user_id=self._current_user_id)
         except RecordNotFoundError as exc:
+            show_error(self, "User Master", str(exc))
+        except PermissionDeniedError as exc:
             show_error(self, "User Master", str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to delete user %s.", dto.user_id)
@@ -271,9 +290,13 @@ class UserListScreen(QWidget):
         dto = self._selected_dto()
         if dto is None or not dto.is_deleted:
             return
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             restored = self._engine.restore_user(dto.user_id, current_user_id=self._current_user_id)
         except RecordNotFoundError as exc:
+            show_error(self, "User Master", str(exc))
+        except PermissionDeniedError as exc:
             show_error(self, "User Master", str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to restore user %s.", dto.user_id)
@@ -286,11 +309,15 @@ class UserListScreen(QWidget):
         dto = self._selected_dto()
         if dto is None or dto.is_deleted:
             return
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             updated = self._engine.set_active_status(
                 dto.user_id, is_active=not dto.is_active, current_user_id=self._current_user_id
             )
         except RecordNotFoundError as exc:
+            show_error(self, "User Master", str(exc))
+        except PermissionDeniedError as exc:
             show_error(self, "User Master", str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to toggle status for user %s.", dto.user_id)
@@ -355,6 +382,27 @@ class UserListScreen(QWidget):
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to print users.")
             show_error(self, "User Master", f"Failed to print: {exc}")
+
+    def _on_unlock_clicked(self) -> None:
+        dto = self._selected_dto()
+        if dto is None or dto.is_deleted:
+            return
+
+        try:
+            self._engine.unlock_user(dto.user_id, self._current_user_id)
+        except RecordNotFoundError as exc:
+            show_error(self, "User Master", str(exc))
+            return
+        except PermissionDeniedError:
+            show_error(self, "User Master", "You don't have permission to unlock users.")
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Failed to unlock user %s.", dto.user_id)
+            show_error(self, "User Master", f"Failed to unlock: {exc}")
+            return
+
+        show_success(self, "User Master", f"User '{dto.username}' has been unlocked.")
+        self.refresh()
 
 
 __all__ = ["UserListScreen"]

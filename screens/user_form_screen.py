@@ -176,6 +176,8 @@ class UserFormScreen(QDialog):
 
         data.update(self._photo_picker.get_photo_update())
 
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             if self._is_edit_mode:
                 dto = self._engine.update_user(self._user_id, data, current_user_id=self._current_user_id)
@@ -191,6 +193,9 @@ class UserFormScreen(QDialog):
             self._show_validation_message("; ".join(exc.errors))
             return
         except RecordNotFoundError as exc:
+            self._show_validation_message(str(exc))
+            return
+        except PermissionDeniedError as exc:
             self._show_validation_message(str(exc))
             return
         except Exception as exc:  # noqa: BLE001

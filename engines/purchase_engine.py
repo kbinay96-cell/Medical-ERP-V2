@@ -237,6 +237,8 @@ class PurchaseEngine:
            as SupplierEngine._now_bs()/_now_ad()
         Raises ValidationError, DuplicateRecordError."""
         from engines.date_engine import ad_to_bs, DateEngineError  # noqa: F401
+        from engines.permission_enforcer import check_permission
+        check_permission("Purchase", "can_add")
 
         # 1. validate header + lines
         is_valid, error = PurchaseValidator.validate_invoice_header(payload)
@@ -521,6 +523,9 @@ class PurchaseEngine:
         automatically reverse the stock_ledger entries — that reversal is a
         separate, explicit Purchase Return flow (Part-2, section 3), never
         an implicit side-effect of cancelling an invoice."""
+        from engines.permission_enforcer import check_permission
+        check_permission("Purchase", "can_cancel")
+
         if not reason or not reason.strip():
             raise ValidationError("A cancellation reason is required.")
 

@@ -60,6 +60,9 @@ class CompanyEngine:
     """Business logic for the Company Master. Screens call ONLY this class."""
 
     def create_company(self, data: dict, current_user_id) -> CompanyDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Company", "can_add")
+
         errors = validate_company_data(data)
         if errors:
             raise ValidationError(errors)
@@ -76,6 +79,9 @@ class CompanyEngine:
             raise RuntimeError(str(exc)) from exc
 
     def update_company(self, company_id: str, data: dict, current_user_id) -> CompanyDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Company", "can_edit")
+
         errors = validate_company_data(data)
         if errors:
             raise ValidationError(errors)
@@ -102,6 +108,9 @@ class CompanyEngine:
             raise RuntimeError(str(exc)) from exc
 
     def delete_company(self, company_id: str, current_user_id) -> None:
+        from engines.permission_enforcer import check_permission
+        check_permission("Company", "can_delete")
+
         existing = company_model.get_company_by_id(company_id)
         if not existing or existing.get("isdeleted"):
             raise RecordNotFoundError(f"Company '{company_id}' not found.")
@@ -111,6 +120,9 @@ class CompanyEngine:
             raise RuntimeError(str(exc)) from exc
 
     def restore_company(self, company_id: str, current_user_id) -> CompanyDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Company", "can_restore")
+
         existing = company_model.get_company_by_id(company_id)
         if not existing or not existing.get("isdeleted"):
             raise RecordNotFoundError(f"Company '{company_id}' not found or not deleted.")

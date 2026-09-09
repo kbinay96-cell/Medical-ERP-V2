@@ -34,6 +34,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QDialog, QLineEdit, QWidget
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
+from engines.permission_enforcer import PermissionDeniedError
 from engines.item_engine import ItemEngine
 from engines.item_lookup_registry import (
     category_engine,
@@ -611,6 +612,9 @@ class ItemFormScreen(QDialog):
           self._show_validation_message(str(exc))
           return
         except RecordNotFoundError as exc:
+          self._show_validation_message(str(exc))
+          return
+        except PermissionDeniedError as exc:
           self._show_validation_message(str(exc))
           return
         except Exception as exc:  # noqa: BLE001

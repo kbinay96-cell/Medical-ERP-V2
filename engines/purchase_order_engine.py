@@ -155,6 +155,8 @@ class PurchaseOrderEngine:
         just for audit/reporting). Does NOT touch item_batch/stock —
         a PO is a request, not a stock movement."""
         from engines.date_engine import ad_to_bs, DateEngineError  # noqa: F401
+        from engines.permission_enforcer import check_permission
+        check_permission("Purchase Order", "can_add")
 
         is_valid, error = PurchaseOrderValidator.validate_order_header(payload)
         if not is_valid:
@@ -364,6 +366,9 @@ class PurchaseOrderEngine:
         """Soft-delete only. An item on a cancelled PO reappears in
         get_low_stock_suggestions() next time (if still genuinely low),
         since that query ignores cancelled/deleted POs by design."""
+        from engines.permission_enforcer import check_permission
+        check_permission("Purchase Order", "can_cancel")
+
         order = self._model.get_order_by_id(purchase_order_id, include_deleted=False)
         if order is None:
             raise RecordNotFoundError(f"Purchase order {purchase_order_id} not found.")

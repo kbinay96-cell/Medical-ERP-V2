@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from config.settings import STATUS_ACTIVE, STATUS_DISABLED, STATUS_DELETED
+from config.settings import STATUS_ACTIVE, STATUS_DISABLED, STATUS_DELETED, STATUS_LOCKED
 from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.password_manager import verify_password
 from models import user_model
@@ -80,6 +80,9 @@ class UserEngine:
     # ---------------- CREATE ----------------
 
     def create_user(self, data: dict, current_user_id) -> UserDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("User Master", "can_add")
+
         errors = validate_user_data(data, is_update=False)
         if errors:
             raise ValidationError(errors)
@@ -104,9 +107,34 @@ class UserEngine:
         except UserModelError as exc:
             raise RuntimeError(str(exc)) from exc
 
+    def unlock_user(self, user_id: int, current_user_id) -> UserDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("User Master", "can_unlock")
+
+        existing = user_model.get_user_by_id(user_id)
+        if not existing or existing["status"] == STATUS_DELETED:
+            raise RecordNotFoundError(f"User '{user_id}' not found.")
+        if existing["status"] != STATUS_LOCKED:
+            raise ValidationError([f"User '{existing['username']}' is not locked."])
+
+        try:
+            user_model.admin_unlock_user(user_id, unlocked_by=str(current_user_id))
+            user_model.insert_user_audit(
+                userid=user_id, action="UNLOCK", performed_by=str(current_user_id),
+                old_value={"status": existing["status"], "failedattempts": existing["failedattempts"]},
+                new_value={"status": STATUS_ACTIVE}, remarks="Admin unlock",
+            )
+            row = user_model.get_user_by_id(user_id)
+            return _row_to_dto(row)
+        except UserModelError as exc:
+            raise RuntimeError(str(exc)) from exc
+
     # ---------------- UPDATE ----------------
 
     def update_user(self, user_id: int, data: dict, current_user_id) -> UserDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("User Master", "can_edit")
+
         existing = user_model.get_user_by_id(user_id)
         if not existing or existing["status"] == STATUS_DELETED:
             raise RecordNotFoundError(f"User '{user_id}' not found.")
@@ -137,6 +165,9 @@ class UserEngine:
     # ---------------- STATUS ----------------
 
     def set_active_status(self, user_id: int, is_active: bool, current_user_id) -> UserDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("User Master", "can_edit")
+
         existing = user_model.get_user_by_id(user_id)
         if not existing or existing["status"] == STATUS_DELETED:
             raise RecordNotFoundError(f"User '{user_id}' not found.")
@@ -157,6 +188,9 @@ class UserEngine:
     # ---------------- SOFT DELETE / RESTORE ----------------
 
     def delete_user(self, user_id: int, current_user_id, remarks: Optional[str] = None) -> None:
+        from engines.permission_enforcer import check_permission
+        check_permission("User Master", "can_delete")
+
         existing = user_model.get_user_by_id(user_id)
         if not existing or existing["status"] == STATUS_DELETED:
             raise RecordNotFoundError(f"User '{user_id}' not found.")
@@ -170,6 +204,9 @@ class UserEngine:
             raise RuntimeError(str(exc)) from exc
 
     def restore_user(self, user_id: int, current_user_id) -> UserDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("User Master", "can_restore")
+
         existing = user_model.get_user_by_id(user_id)
         if not existing or existing["status"] != STATUS_DELETED:
             raise RecordNotFoundError(f"User '{user_id}' not found or not deleted.")

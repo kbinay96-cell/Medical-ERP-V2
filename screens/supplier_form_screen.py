@@ -201,6 +201,8 @@ class SupplierFormScreen(QDialog):
 
         current_user_id = get_current_user_id()
 
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             if self._is_edit_mode:
                 dto = self._engine.update_supplier(self._supplier_id, payload, current_user_id)
@@ -213,6 +215,9 @@ class SupplierFormScreen(QDialog):
             self._show_validation_message(str(exc))
             return
         except RecordNotFoundError as exc:
+            self._show_validation_message(str(exc))
+            return
+        except PermissionDeniedError as exc:
             self._show_validation_message(str(exc))
             return
         except Exception as exc:  # noqa: BLE001

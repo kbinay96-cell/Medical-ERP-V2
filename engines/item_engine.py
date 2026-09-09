@@ -255,6 +255,9 @@ class ItemEngine:
     # CREATE
     # ------------------------------------------------------------------ #
     def create_item(self, payload: dict, current_user_id: int) -> ItemDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Item", "can_add")
+
         payload = dict(payload)
         data = self._clean_payload(payload)
 
@@ -296,6 +299,9 @@ class ItemEngine:
     # UPDATE
     # ------------------------------------------------------------------ #
     def update_item(self, item_id: int, payload: dict, current_user_id: int) -> ItemDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Item", "can_edit")
+
         existing = self._model.get_by_id(item_id)
         if existing is None:
             raise RecordNotFoundError(f"Item {item_id} not found or has been deleted.")
@@ -424,6 +430,9 @@ class ItemEngine:
     # SOFT DELETE / RESTORE
     # ------------------------------------------------------------------ #
     def delete_item(self, item_id: int, current_user_id: int) -> None:
+        from engines.permission_enforcer import check_permission
+        check_permission("Item", "can_delete")
+
         existing = self._model.get_by_id(item_id)
         if existing is None:
             raise RecordNotFoundError(f"Item {item_id} not found or already deleted.")
@@ -433,6 +442,9 @@ class ItemEngine:
         logger.info("Item %s soft-deleted by user %s.", item_id, current_user_id)
 
     def restore_item(self, item_id: int, current_user_id: int) -> ItemDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Item", "can_restore")
+
         ok = self._model.restore(item_id, current_user_id, self._now_ad(), self._now_bs())
         if not ok:
             raise RecordNotFoundError(f"Item {item_id} not found or was not deleted.")

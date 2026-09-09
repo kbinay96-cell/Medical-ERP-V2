@@ -302,12 +302,17 @@ class PurchaseInvoiceListScreen(QWidget):
         if not ok or not reason.strip():
             return
 
+        from engines.permission_enforcer import PermissionDeniedError
+
         try:
             self._engine.cancel_purchase_invoice(
                 purchase_invoice_id, self._current_user_id, reason.strip()
             )
         except (RecordNotFoundError, ValidationError) as exc:
             QMessageBox.warning(self, "Cannot Cancel", str(exc))
+            return
+        except PermissionDeniedError as exc:
+            QMessageBox.warning(self, "Permission Denied", str(exc))
             return
         except Exception:
             logger.exception("Failed to cancel purchase invoice %s", purchase_invoice_id)

@@ -209,6 +209,9 @@ class SupplierEngine:
     # CREATE
     # ------------------------------------------------------------------ #
     def create_supplier(self, payload: dict, current_user_id: int) -> SupplierDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Supplier", "can_add")
+
         payload = dict(payload)
         data = self._clean_payload(payload)
 
@@ -271,6 +274,9 @@ class SupplierEngine:
     # UPDATE
     # ------------------------------------------------------------------ #
     def update_supplier(self, supplier_id: int, payload: dict, current_user_id: int) -> SupplierDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Supplier", "can_edit")
+
         existing = self._model.get_by_id(supplier_id)
         if existing is None:
             raise RecordNotFoundError(f"Supplier {supplier_id} not found or has been deleted.")
@@ -397,6 +403,9 @@ class SupplierEngine:
     # SOFT DELETE / RESTORE
     # ------------------------------------------------------------------ #
     def delete_supplier(self, supplier_id: int, current_user_id: int) -> None:
+        from engines.permission_enforcer import check_permission
+        check_permission("Supplier", "can_delete")
+
         existing = self._model.get_by_id(supplier_id)
         if existing is None:
             raise RecordNotFoundError(f"Supplier {supplier_id} not found or already deleted.")
@@ -409,6 +418,9 @@ class SupplierEngine:
         logger.info("Supplier %s soft-deleted by user %s.", supplier_id, current_user_id)
 
     def restore_supplier(self, supplier_id: int, current_user_id: int) -> SupplierDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Supplier", "can_restore")
+
         now_ad = self._now_ad()
         now_bs = self._now_bs()
         ok = self._model.restore(supplier_id, current_user_id, now_ad, now_bs)
