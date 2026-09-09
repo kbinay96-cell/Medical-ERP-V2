@@ -27,28 +27,28 @@ logger = get_logger()
 
 def main():
     app = QApplication(sys.argv)
-
-    # Register bundled fonts before the theme QSS is applied — font-
-    # family resolution happens at stylesheet-apply time, so this must
-    # come first. No re-loading needed on theme toggle; QFontDatabase
-    # registrations persist for the app's lifetime.
     load_application_fonts()
-
     apply_theme("Black")
 
-    login_screen = LoginScreen()
-    login_screen.show()
-    app.exec()
+    from engines.audit_cleanup_engine import cleanup_old_audit_data
+    cleanup_old_audit_data()
 
-    if not (login_screen.login_result and login_screen.login_result.success):
-        logger.info("Application closed without a successful login.")
-        return
+    while True:
+        login_screen = LoginScreen()
+        login_screen.show()
+        app.exec()
 
-    logger.info(f"Proceeding to Dashboard for user '{login_screen.login_result.username}'.")
+        if not (login_screen.login_result and login_screen.login_result.success):
+            logger.info("Application closed without a successful login.")
+            return
 
-    dashboard_screen = DashboardScreen(login_screen.login_result)
-    dashboard_screen.show()
-    app.exec()
+        dashboard_screen = DashboardScreen(login_screen.login_result)
+        dashboard_screen.show()
+        app.exec()
+
+        # Dashboard closed (logout, timeout-logout, or window closed) -
+        # loop back to a fresh login screen instead of terminating.
+        logger.info("Returned to login screen after dashboard session ended.")
 
 
 if __name__ == "__main__":

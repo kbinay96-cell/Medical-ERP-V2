@@ -6,7 +6,7 @@ import engines.authentication_engine as ae
 FAKE_USER = {
     "userid": 1, "username": "admin", "passwordhash": "HASH", "passwordsalt": "SALT",
     "fullname": "Admin User", "roleid": 1, "status": "Active",
-    "lockeduntil": None, "failedattempts": 0,
+    "lockeduntil": None, "failedattempts": 0, "mustchangepassword": False,
 }
 
 
@@ -69,6 +69,45 @@ class TestAuthenticationEngine(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertNotIn("DB exploded", result.message)  # never leak internals
+
+
+    def test_mustchangepassword_true_is_propagated(self):
+        must_change_user = dict(FAKE_USER, mustchangepassword=True)
+
+        with patch.object(ae, "get_user_by_username", return_value=must_change_user), \
+             patch.object(ae, "auto_unlock_if_due", side_effect=lambda u: u), \
+             patch.object(ae, "verify_password", return_value=True), \
+             patch.object(ae, "reset_failed_attempts"), \
+             patch.object(ae, "validate_license", return_value=(True, "ok")), \
+             patch.object(ae, "validate_subscription", return_value=(True, "ok")), \
+             patch.object(ae, "get_accessible_menus", return_value=["Dashboard"]), \
+             patch.object(ae, "get_role_name", return_value="Administrator"), \
+             patch.object(ae, "create_session", return_value={"sessionid": "SESSXYZ"}), \
+             patch.object(ae, "write_login_history"), \
+             patch.object(ae, "write_audit_log"):
+
+            result = ae.login("admin", "correct-pass", "COM1", "FY1")
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.mustchangepassword)
+
+    def test_mustchangepassword_false_by_default(self):
+        with patch.object(ae, "get_user_by_username", return_value=FAKE_USER), \
+             patch.object(ae, "auto_unlock_if_due", side_effect=lambda u: u), \
+             patch.object(ae, "verify_password", return_value=True), \
+             patch.object(ae, "reset_failed_attempts"), \
+             patch.object(ae, "validate_license", return_value=(True, "ok")), \
+             patch.object(ae, "validate_subscription", return_value=(True, "ok")), \
+             patch.object(ae, "get_accessible_menus", return_value=["Dashboard"]), \
+             patch.object(ae, "get_role_name", return_value="Administrator"), \
+             patch.object(ae, "create_session", return_value={"sessionid": "SESSXYZ"}), \
+             patch.object(ae, "write_login_history"), \
+             patch.object(ae, "write_audit_log"):
+
+            result = ae.login("admin", "correct-pass", "COM1", "FY1")
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.mustchangepassword)
 
 
 if __name__ == "__main__":

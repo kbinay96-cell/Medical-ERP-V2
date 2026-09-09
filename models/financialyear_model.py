@@ -27,3 +27,20 @@ def get_active_financial_year() -> dict | None:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM financialyear WHERE isactive = TRUE LIMIT 1")
             return cur.fetchone()
+
+def insert_financial_year(financialyear: str, startbsdate: str, endbsdate: str,
+                          startaddate, endaddate, isactive: bool = True) -> int:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO financialyear
+                    (financialyear, startbsdate, endbsdate, startaddate, endaddate, isactive, isclosed)
+                VALUES (%s, %s, %s, %s, %s, %s, FALSE)
+                RETURNING financialyearid
+                """,
+                (financialyear, startbsdate, endbsdate, startaddate, endaddate, isactive)
+            )
+            fid = cur.fetchone()["financialyearid"]
+        conn.commit()
+        return fid

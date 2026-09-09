@@ -66,6 +66,8 @@ class LoginResult:
     login_time: datetime | None = None
     machine_name: str | None = None
     accessible_menus: list = field(default_factory=list)
+    mustchangepassword: bool = False
+    locked_until: datetime | None = None
 
 
 def login(username: str, password: str, company_id: str, financial_year: str) -> LoginResult:
@@ -107,8 +109,11 @@ def _login_workflow(username: str, password: str, company_id: str, financial_yea
     #              the password was right) ----------
     if user["status"] == STATUS_LOCKED:
         write_failed_login(username, "Account is locked.")
-        return LoginResult(success=False, message="User account is locked. Please try again later or contact the administrator.")
-
+        return LoginResult(
+            success=False,
+            message="User account is locked. Please try again later or contact the administrator.",
+            locked_until=user.get("lockeduntil"),
+        )
     if user["status"] == STATUS_DISABLED:
         write_failed_login(username, "Account is disabled.")
         return LoginResult(success=False, message="User account is disabled.")
@@ -175,6 +180,7 @@ def _login_workflow(username: str, password: str, company_id: str, financial_yea
         login_time=login_time,
         machine_name=machine_name,
         accessible_menus=accessible_menus,
+        mustchangepassword=user["mustchangepassword"],
     )
 
 

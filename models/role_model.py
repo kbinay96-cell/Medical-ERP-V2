@@ -31,3 +31,9 @@ def list_roles() -> list[dict]:
         with conn.cursor() as cur:
             cur.execute("SELECT roleid, rolename FROM roles ORDER BY rolename")
             return cur.fetchall()
+
+def get_role_by_name(rolename: str) -> dict | None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM roles WHERE rolename = %s", (rolename,))
+            return cur.fetchone()

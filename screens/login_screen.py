@@ -8,6 +8,8 @@ here - everything goes through the Authentication Engine.
 =========================================================
 """
 
+from datetime import datetime
+
 from PySide6.QtCore import Qt, QTimer, QDate, QTime, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from PySide6.QtWidgets import QMainWindow, QLineEdit
@@ -30,7 +32,7 @@ logger = get_logger()
 
 ICON_DIR = "resources/icons"
 
-FORGOT_PASSWORD_MESSAGE = "Password reset is managed by the System Administrator."
+from screens.forgot_password_dialog import ForgotPasswordDialog
 
 
 class LoginScreen(QMainWindow):
@@ -42,6 +44,9 @@ class LoginScreen(QMainWindow):
         self.ui.setupUi(self)
 
         self.login_result = None  # set on successful login, read by main.py
+        self._lockout_countdown_timer = None
+        self._lockout_end_time = None
+        self._lockout_username = None
 
         self.initialize()
 
@@ -63,6 +68,7 @@ class LoginScreen(QMainWindow):
         self.ui.btnExit.clicked.connect(self.close)
         self.ui.btnTheme.clicked.connect(self._handle_theme_toggle)
         self.ui.btnForgotPassword.clicked.connect(self._handle_forgot_password)
+        self._inject_first_time_setup_button()
         self.ui.btnChangeLanguage.clicked.connect(self._handle_change_language)
         self.ui.chkShowPassword.toggled.connect(self._toggle_password_visibility)
 
@@ -114,7 +120,7 @@ class LoginScreen(QMainWindow):
         self.ui.btnChangeLanguage.setStatusTip("English, हिन्दी, नेपाली")
 
     def _setup_shortcuts(self):
-        QShortcut(QKeySequence(Qt.Key.Key_Return), self, activated=self.handle_login)
+        self._login_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Return), self, activated=self.handle_login)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self.close)
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.ui.txtUsername.setFocus)
         QShortcut(QKeySequence("Ctrl+P"), self, activated=self.ui.txtPassword.setFocus)
@@ -125,7 +131,8 @@ class LoginScreen(QMainWindow):
         self.statusBar().showMessage(f"Theme switched to {new_theme}", 3000)
 
     def _handle_forgot_password(self):
-        show_info(FORGOT_PASSWORD_MESSAGE, "Forgot Password")
+        dialog = ForgotPasswordDialog(self)
+        dialog.exec()
 
     def _handle_change_language(self):
         dialog = LanguageDialog(self)
@@ -238,6 +245,11 @@ class LoginScreen(QMainWindow):
 
     def handle_login(self):
         username = self.ui.txtUsername.text().strip()
+
+        if self._lockout_end_time is not None:
+            if username == self._lockout_username:
+                return
+            self._end_lockout_countdown(clear_message=True)
         password = self.ui.txtPassword.text()
         company_id = self.ui.cmbCompany.currentData()
         financial_year = self.ui.cmbFinancialYear.currentData()
@@ -247,6 +259,12 @@ class LoginScreen(QMainWindow):
         result = login(username, password, company_id, financial_year)
 
         if not result.success:
+            locked_until = getattr(result, "locked_until", None)
+            if locked_until is not None:
+                self._start_lockout_countdown(locked_until, username)
+                logger.info(f"Failed login attempt for username='{username}': account locked until {locked_until}")
+                return
+
             self.ui.lblLoginMessage.setText(result.message)
             show_warning(result.message, "Login Failed")
             logger.info(f"Failed login attempt for username='{username}': {result.message}")
@@ -254,5 +272,76 @@ class LoginScreen(QMainWindow):
 
         logger.info(f"User '{username}' logged in successfully. Session={result.session_id}")
 
+        from engines import session_manager
+        session_manager.reset_activity_tracking()
+        session_manager.set_current_role(result.roleid, result.is_admin)
+
         self.login_result = result
         self.close()
+
+    def _start_lockout_countdown(self, end_time, username) -> None:
+        self._lockout_end_time = end_time
+        self._lockout_username = username
+
+        if self._lockout_countdown_timer is None:
+            self._lockout_countdown_timer = QTimer(self)
+            self._lockout_countdown_timer.timeout.connect(self._tick_lockout_countdown)
+
+        self._tick_lockout_countdown()
+        self._lockout_countdown_timer.start(1000)
+
+    def _tick_lockout_countdown(self) -> None:
+        if self._lockout_end_time is None:
+            return
+
+        remaining = self._lockout_end_time - datetime.now()
+        total_seconds = int(remaining.total_seconds())
+
+        if total_seconds <= 0:
+            self._end_lockout_countdown(clear_message=False)
+            self.ui.lblLoginMessage.setText("Account unlocked. You can try logging in again.")
+            return
+
+        if self.ui.txtUsername.text().strip() == self._lockout_username:
+            minutes, seconds = divmod(total_seconds, 60)
+            self.ui.lblLoginMessage.setText(f"Account locked. Try again in {minutes}:{seconds:02d}.")
+
+    def _end_lockout_countdown(self, clear_message: bool = True) -> None:
+        if self._lockout_countdown_timer is not None:
+            self._lockout_countdown_timer.stop()
+        self._lockout_end_time = None
+        self._lockout_username = None
+        if clear_message:
+            self.ui.lblLoginMessage.setText("")
+
+    def _inject_first_time_setup_button(self) -> None:
+        from PySide6.QtWidgets import QPushButton
+
+        self.ui.btnFirstTimeSetup = QPushButton("+ First-Time Setup", self)
+        self.ui.btnFirstTimeSetup.setFlat(True)
+        self.ui.btnFirstTimeSetup.setStyleSheet(
+            "QPushButton { font-weight: bold; font-size: 15px; color: #e67e22; border: none; padding: 4px; }"
+        )
+
+        container_layout = self.ui.lblConnectionStatus.parentWidget().layout()
+        container_layout.replaceWidget(self.ui.lblConnectionStatus, self.ui.btnFirstTimeSetup)
+        self.ui.lblConnectionStatus.hide()
+
+        self.ui.btnFirstTimeSetup.clicked.connect(self._handle_first_time_setup)
+        self._refresh_first_time_setup_visibility()
+
+    def _refresh_first_time_setup_visibility(self) -> None:
+        from engines.bootstrap_engine import is_bootstrap_needed
+        try:
+            needed = is_bootstrap_needed()
+        except Exception:
+            needed = False
+        self.ui.btnFirstTimeSetup.setVisible(needed)
+
+    def _handle_first_time_setup(self) -> None:
+        from screens.first_time_setup_dialog import FirstTimeSetupDialog
+        dialog = FirstTimeSetupDialog(self)
+        if dialog.exec():
+            self._load_companies()
+            self._load_financial_years()
+            self._refresh_first_time_setup_visibility()
