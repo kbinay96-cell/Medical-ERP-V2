@@ -76,24 +76,16 @@ def create_session(userid: int, companyid: str, financialyear: str) -> dict:
 
     return _current_session
 
-
 def destroy_session(session_id: str) -> None:
-    """
-    Ends a session (Logout).
-    """
     global _current_session
-
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE sessions SET isactive = FALSE WHERE sessionid = %s",
-                (session_id,)
-            )
+            cur.execute("UPDATE sessions SET isactive = FALSE WHERE sessionid = %s", (session_id,))
         conn.commit()
-
     if _current_session and _current_session.get("sessionid") == session_id:
         _current_session = None
-
+    reset_activity_tracking()
+    clear_current_role()
 
 def touch_session(session_id: str) -> None:
     """
@@ -125,3 +117,132 @@ def get_current_session() -> dict | None:
     is logged in for this app process).
     """
     return _current_session
+
+def get_current_session() -> dict | None:
+    """
+    Returns the current in-memory session (or None if no one
+    is logged in for this app process).
+    """
+    return _current_session
+
+
+# ---------------------------------------------------------
+# Settings-driven timeout/lock configuration (live from DB,
+# falling back to config.settings constants if unavailable)
+# ---------------------------------------------------------
+
+def _get_settings_engine():
+    """Lazy import to avoid circular import at module load time."""
+    from engines import settings_engine
+    return settings_engine
+
+
+def get_session_timeout_minutes() -> int:
+    try:
+        se = _get_settings_engine()
+        return int(se.get_setting("security.session_timeout_minutes", SESSION_TIMEOUT_MINUTES))
+    except Exception:
+        return SESSION_TIMEOUT_MINUTES
+
+
+def is_session_timeout_enabled() -> bool:
+    try:
+        se = _get_settings_engine()
+        return bool(se.get_setting("security.enable_session_timeout", True))
+    except Exception:
+        return True
+
+
+def get_auto_lock_minutes() -> int:
+    try:
+        se = _get_settings_engine()
+        return int(se.get_setting("security.auto_lock_minutes", 10))
+    except Exception:
+        return 10
+
+
+def is_auto_lock_enabled() -> bool:
+    try:
+        se = _get_settings_engine()
+        return bool(se.get_setting("security.enable_auto_lock", True))
+    except Exception:
+        return True
+
+
+# ---------------------------------------------------------
+# Idle-activity tracking (in-memory, throttled DB writes)
+# ---------------------------------------------------------
+
+_last_activity_time = None   # datetime, updated on every user interaction (in-memory only)
+_last_db_touch_time = None   # datetime, updated only when touch_session() actually writes to DB
+_DB_TOUCH_THROTTLE_SECONDS = 30
+
+
+def record_activity() -> None:
+    """
+    Call this on every detected user interaction (mouse/key event).
+    In-memory update happens every time (cheap); the DB touch_session()
+    write is throttled to at most once per _DB_TOUCH_THROTTLE_SECONDS
+    to avoid hammering the database on every mouse move.
+    """
+    global _last_activity_time, _last_db_touch_time
+
+    now = datetime.now()
+    _last_activity_time = now
+
+    if _current_session is None:
+        return
+
+    session_id = _current_session.get("sessionid")
+    if session_id is None:
+        return
+
+    if _last_db_touch_time is None or (now - _last_db_touch_time).total_seconds() >= _DB_TOUCH_THROTTLE_SECONDS:
+        touch_session(session_id)
+        _last_db_touch_time = now
+
+
+def get_last_activity_time():
+    """Returns the in-memory last-activity datetime, or None if no activity recorded yet."""
+    return _last_activity_time
+
+
+def reset_activity_tracking() -> None:
+    """Call on login, on unlock, and on logout/timeout to reset the idle clock."""
+    global _last_activity_time, _last_db_touch_time
+    _last_activity_time = datetime.now()
+    _last_db_touch_time = None
+
+
+def minutes_since_last_activity() -> float:
+    """Returns minutes elapsed since last recorded activity, or 0 if none recorded yet."""
+    if _last_activity_time is None:
+        return 0.0
+    return (datetime.now() - _last_activity_time).total_seconds() / 60.0
+
+
+# ---------------------------------------------------------
+# Current user's role (in-memory) - needed for backend
+# permission enforcement, since the DB `sessions` row and
+# the in-memory _current_session dict do NOT store roleid.
+# ---------------------------------------------------------
+
+_current_role = {"roleid": None, "is_admin": False}
+
+
+def set_current_role(roleid: int, is_admin: bool) -> None:
+    global _current_role
+    _current_role = {"roleid": roleid, "is_admin": bool(is_admin)}
+
+
+def get_current_roleid():
+    return _current_role["roleid"]
+
+
+def is_current_user_admin() -> bool:
+    return _current_role["is_admin"]
+
+
+def clear_current_role() -> None:
+    global _current_role
+    _current_role = {"roleid": None, "is_admin": False}
