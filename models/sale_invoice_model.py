@@ -97,6 +97,28 @@ class SaleInvoiceModel:
                 cur.execute(sql, (sale_invoice_id,))
                 return [dict(r) for r in cur.fetchall()]
 
+    def get_returnable_items(self, sale_invoice_id: int) -> list[dict]:
+        """
+        Returns every sale_invoice_item row for a posted invoice, joined with
+        already-returned quantity, so the Engine/Screen can compute remaining
+        returnable qty per line without a second round-trip.
+        """
+        sql = """
+            SELECT
+                sii.*,
+                COALESCE(SUM(sri.return_qty) FILTER (WHERE sr.status != 'Cancelled' AND sr.is_deleted = FALSE), 0) AS already_returned_qty
+            FROM sale_invoice_item sii
+            LEFT JOIN sale_return_item sri ON sri.sale_invoice_item_id = sii.sale_invoice_item_id
+            LEFT JOIN sale_return sr ON sr.sale_return_id = sri.sale_return_id
+            WHERE sii.sale_invoice_id = %(sale_invoice_id)s
+            GROUP BY sii.sale_invoice_item_id
+            ORDER BY sii.sale_invoice_item_id;
+        """
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, {"sale_invoice_id": sale_invoice_id})
+                return [dict(r) for r in cur.fetchall()]
+
     def get_last_invoice_sequence(self, prefix: str) -> int:
         sql = """
             SELECT COALESCE(MAX(

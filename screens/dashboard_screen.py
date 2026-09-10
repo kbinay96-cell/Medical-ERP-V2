@@ -11,7 +11,7 @@ everything goes through engines.dashboard_engine.
 from PySide6.QtCore import Qt, QTimer, QTime, QDate, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from utils.icon_utils import themed_icon
-from PySide6.QtWidgets import QMainWindow, QTreeWidgetItem
+from PySide6.QtWidgets import QMainWindow, QTreeWidgetItem, QApplication
 
 from ui.ui_dashboard import Ui_MainWindow
 from utils.message import show_info, confirm
@@ -19,9 +19,14 @@ from utils.app_logger import get_logger
 from utils.ui_standards import standardize_action_buttons, apply_action_button_style
 from engines.authentication_engine import logout
 from engines.dashboard_engine import build_dashboard, SIDEBAR_MODULES
+from screens.password_reset_requests_screen import PasswordResetRequestsScreen
+from screens.audit_log_screen import AuditLogScreen
 from engines.theme_engine import toggle_theme, get_current_theme
 from engines import settings_engine
 from engines.date_engine import ad_to_bs, DateEngineError
+from engines import session_manager
+from utils.idle_activity_filter import IdleActivityFilter
+from screens.lock_screen_dialog import LockScreenDialog, LockOverlay
 
 from screens.supplier_list_screen import SupplierListScreen
 from screens.supplier_form_screen import SupplierFormScreen
@@ -52,7 +57,6 @@ from screens.sale_invoice_form_screen import SaleInvoiceFormScreen
 from screens.sale_invoice_list_screen import SaleInvoiceListScreen
 from engines import customer_engine
 from engines.sale_item_free_scheme_engine import SaleItemFreeSchemeEngine
-from engines.sale_engine import SaleEngine
 from screens.item_free_scheme_list_screen import ItemFreeSchemeListScreen
 from screens.stock_ledger_screen import StockLedgerScreen
 from screens.stock_master_screen import StockMasterScreen
@@ -114,7 +118,14 @@ class DashboardScreen(QMainWindow):
         self.ui.statusbar.removeWidget(self.ui.lblDashboardClock)
         self.ui.statusbar.addPermanentWidget(self.ui.lblDashboardClock)
 
+        self._is_locked = False
+        self._session_ended = False
+
         self.initialize()
+
+        session_manager.reset_activity_tracking()
+        self._idle_filter = IdleActivityFilter(self)
+        QApplication.instance().installEventFilter(self._idle_filter)
 
     def _init_purchase_engines(self):
         """Initialize Purchase module engines for dashboard use.
@@ -157,7 +168,12 @@ class DashboardScreen(QMainWindow):
                 purchase_order_engine=self._purchase_order_engine,
             )
 
-            self._item_free_scheme_engine = SaleItemFreeSchemeEngine(SaleItemFreeSchemeModel())
+            self._item_free_scheme_engine = SaleItemFreeSchemeEngine(model=SaleItemFreeSchemeModel())
+
+            from models.receipt_model import ReceiptModel
+            from engines.receipt_engine import ReceiptEngine
+
+            self._receipt_engine = ReceiptEngine(model=ReceiptModel())
 
             self._sale_engine = SaleEngine(
                 model=SaleInvoiceModel(),
@@ -165,8 +181,8 @@ class DashboardScreen(QMainWindow):
                 item_free_scheme_engine=self._item_free_scheme_engine,
                 country_tax_lookup_fn=country_tax_lookup,
                 manufacturer_lookup_fn=manufacturer_lookup,
+                receipt_engine=self._receipt_engine,
             )
-            
         except Exception as e:
             from utils.app_logger import get_logger
             logger = get_logger()
@@ -176,6 +192,7 @@ class DashboardScreen(QMainWindow):
             self._sale_engine = None
             self._supplier_engine = None
             self._item_engine = None
+            self._receipt_engine = None
 
     # -----------------------------------------------------
     # SETUP
@@ -197,6 +214,12 @@ class DashboardScreen(QMainWindow):
         self._show_user_context()
         self._apply_icons()
         self._build_sidebar_menu()
+
+        if getattr(self.login_result, "mustchangepassword", False):
+            from screens.change_password_screen import ChangePasswordScreen
+            ChangePasswordScreen(self, user_id=self.login_result.userid).exec()
+
+        self._check_pending_password_resets(show_alert=True)
 
         # Restoring the saved width has to wait until AFTER the window's
         # initial layout pass finishes -- calling it immediately here
@@ -232,6 +255,10 @@ class DashboardScreen(QMainWindow):
         self.refresh_timer.timeout.connect(self.load_dashboard_data)
         self.refresh_timer.start(REFRESH_INTERVAL_MS)
 
+        self.idle_check_timer = QTimer(self)
+        self.idle_check_timer.timeout.connect(self._check_idle_timeout)
+        self.idle_check_timer.start(30_000)  # check every 30 sec
+
     def _apply_icons(self):
         icon_size = QSize(18, 18)
 
@@ -253,12 +280,14 @@ class DashboardScreen(QMainWindow):
         self.ui.btnTheme.setToolTip("Switch between Light and Dark theme (Ctrl+T)")
         self.ui.btnNotifications.setStatusTip("View current alerts.")
         self.ui.txtSearchMenu.setToolTip("Type to search the module menu.")
-        self.ui.btnNewSale.setStatusTip("Open a new Sale entry (module not yet built).")
+        self.ui.btnNewSale.setStatusTip("Open a new Sale entry.")
+        self.ui.btnNewSale.clicked.connect(self._handle_new_sale_quick_action)
         self.ui.btnNewPurchase.setStatusTip("Open a new Purchase entry (module not yet built).")
         self.ui.btnAddCustomer.setStatusTip("Add a new Customer.")
         self.ui.btnAddSupplier.setStatusTip("Add a new Supplier.")
         self.ui.btnAddItem.setStatusTip("Add a new Item (module not yet built).")
-        self.ui.btnBackupDatabase.setStatusTip("Backup the database (module not yet built).")
+        self.ui.btnBackupDatabase.setStatusTip("Backup the database.")
+        self.ui.btnBackupDatabase.clicked.connect(self._handle_backup_database)
 
     def _setup_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+Q"), self, activated=self.handle_logout)
@@ -269,6 +298,54 @@ class DashboardScreen(QMainWindow):
         new_theme = toggle_theme()
         self._apply_icons()
         self.statusBar().showMessage(f"Theme switched to {new_theme}", 3000)
+
+    def _handle_backup_database(self):
+        if not session_manager.is_current_user_admin():
+            show_error(self, "Backup Database", "Only an administrator can run a database backup.")
+            return
+
+        from engines.settings_engine import get_setting
+        folder = get_setting("backup.folder_path", "")
+
+        if not folder:
+            folder = QFileDialog.getExistingDirectory(self, "Choose Backup Folder")
+            if not folder:
+                return
+
+        from engines.backup_engine import run_backup
+        success, message = run_backup(
+            folder,
+            userid=self.login_result.userid,
+            username=self.login_result.username,
+        )
+        if success:
+            self.statusBar().showMessage(message.replace("\n", " — "), 5000)
+        else:
+            show_error(self, "Backup Database", message)
+
+    def _auto_backup_on_exit(self):
+        from engines.settings_engine import get_setting
+
+        enabled = get_setting("backup.auto_backup_enabled", False)
+        folder = get_setting("backup.folder_path", "")
+
+        if not enabled or not folder:
+            return
+
+        self.statusBar().showMessage("Running auto-backup before exit…")
+        QApplication.processEvents()
+
+        from engines.backup_engine import run_backup
+        success, message = run_backup(
+            folder,
+            userid=self.login_result.userid,
+            username=self.login_result.username,
+        )
+
+        if success:
+            self.statusBar().showMessage(message.replace("\n", " — "), 3000)
+        else:
+            logger.error(f"Auto-backup on exit failed: {message}")
 
     def _show_user_context(self):
         self.ui.lblLoggedInUser.setText(self.login_result.fullname or self.login_result.username)
@@ -291,6 +368,41 @@ class DashboardScreen(QMainWindow):
                 module_item.addChild(QTreeWidgetItem([screen_name]))
 
             self.ui.treeSidebarMenu.addTopLevelItem(module_item)
+
+    def _check_pending_password_resets(self, show_alert: bool = False) -> None:
+        if not getattr(self.login_result, "is_admin", False):
+            return
+        try:
+            from engines.password_reset_engine import get_pending_requests
+            count = len(get_pending_requests())
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to check pending password reset requests.")
+            return
+
+        from PySide6.QtGui import QColor
+        from PySide6.QtCore import Qt as _Qt
+
+        for i in range(self.ui.treeSidebarMenu.topLevelItemCount()):
+            module_item = self.ui.treeSidebarMenu.topLevelItem(i)
+            for j in range(module_item.childCount()):
+                child = module_item.child(j)
+                if child.text(0).startswith("Password Reset Requests"):
+                    if count:
+                        child.setText(0, f"Password Reset Requests ({count})")
+                        child.setForeground(0, QColor("#e74c3c"))
+                    else:
+                        child.setText(0, "Password Reset Requests")
+                        child.setData(0, _Qt.ForegroundRole, None)
+                    break
+
+        if show_alert and count:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "Pending Password Reset Requests",
+                f"There {'is' if count == 1 else 'are'} {count} pending password reset "
+                f"request{'s' if count != 1 else ''} waiting for approval.\n\n"
+                "Go to Settings → Password Reset Requests to review.",
+            )
 
         # Collapsed by default -- only module headers (Masters/Purchase/
         # Sales/...) show; user clicks a header to expand its screens.
@@ -421,6 +533,46 @@ class DashboardScreen(QMainWindow):
         if getattr(self, "item_list", None) is not None:
             self.item_list.refresh()
 
+    
+    def _open_receipt_form(self, receipt_id=None):
+        """Open the Receipt form (Add or Edit) embedded in the content-area stack."""
+        from screens.receipt_form_screen import ReceiptFormScreen
+        from engines import customer_engine
+
+        form = ReceiptFormScreen(
+            self,
+            receipt_id=receipt_id,
+            engine=self._receipt_engine,
+            current_user_id=self.login_result.userid,
+            customer_engine=customer_engine,
+            embedded=True,
+        )
+        form.saved.connect(lambda: self._on_receipt_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _view_receipt_form(self, receipt_id):
+        """Open the Receipt form in read-only View mode, embedded."""
+        from screens.receipt_form_screen import ReceiptFormScreen
+        from engines import customer_engine
+
+        form = ReceiptFormScreen(
+            self,
+            receipt_id=receipt_id,
+            engine=self._receipt_engine,
+            current_user_id=self.login_result.userid,
+            customer_engine=customer_engine,
+            embedded=True,
+            read_only=True,
+        )
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_receipt_form_saved(self, form):
+        self._navigate_back()
+        if getattr(self, "receipt_list", None) is not None:
+            self.receipt_list.refresh()
+
     def _open_manufacturer_form(self, manufacturer_id=None):
         """Open the Manufacturer form embedded in the content-area stack."""
         form = ManufacturerFormScreen(self, manufacturer_id=manufacturer_id, embedded=True)
@@ -498,6 +650,15 @@ class DashboardScreen(QMainWindow):
         # close_requested (emitted only on edit-mode save, or Back/Escape) handles navigation.
         if getattr(self, "supplier_manufacturer_discount_list", None) is not None:
             self.supplier_manufacturer_discount_list._reload_current_level()
+
+    def _handle_new_sale_quick_action(self):
+        """Handle the New Sale quick-action button -- same engine guard as
+        the sidebar's 'new sale' dispatch before opening the form."""
+        if self._sale_engine is None or self._item_engine is None:
+            from utils.integration_adapters import show_error
+            show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
+            return
+        self._open_sale_invoice_form()
 
     def _open_sale_invoice_form(self):
         """Open the Sale Invoice form embedded in the content-area stack."""
@@ -583,6 +744,20 @@ class DashboardScreen(QMainWindow):
             apply_standard_window_chrome(self.customer_list)
             self.customer_list.show()
 
+        elif module_name == "sale free scheme":
+            if self._item_free_scheme_engine is None or self._item_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
+                return
+            self.sale_free_scheme_list = ItemFreeSchemeListScreen(
+                self,
+                engine=self._item_free_scheme_engine,
+                item_engine=self._item_engine,
+                current_user_id=self.login_result.userid,
+            )
+            apply_standard_window_chrome(self.sale_free_scheme_list)
+            self.sale_free_scheme_list.show()
+
         elif module_name == "item":
             self.item_list = ItemListScreen(self, engine=self._item_engine, embedded=True)
             self.item_list.close_requested.connect(self._navigate_back)
@@ -594,6 +769,26 @@ class DashboardScreen(QMainWindow):
             apply_standard_window_chrome(self.user_list)
             self.user_list.show()
 
+        elif module_name.startswith("password reset requests"):
+            from engines.session_manager import is_current_user_admin
+            if not is_current_user_admin():
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Access Denied", "Only administrators can access this screen.")
+                return
+            self.password_reset_requests_screen = PasswordResetRequestsScreen(self, embedded=True)
+            self.password_reset_requests_screen.close_requested.connect(self._navigate_back)
+            self._navigate_to(self.password_reset_requests_screen)
+
+        elif module_name == "audit log":
+            from engines.session_manager import is_current_user_admin
+            if not is_current_user_admin():
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Access Denied", "Only administrators can access this screen.")
+                return
+            self.audit_log_screen = AuditLogScreen(self, embedded=True)
+            self.audit_log_screen.close_requested.connect(self._navigate_back)
+            self._navigate_to(self.audit_log_screen)
+
         elif module_name == "settings":
             self.settings_screen = SettingsScreen(
                 current_username=self.login_result.username or "system",
@@ -602,6 +797,10 @@ class DashboardScreen(QMainWindow):
             )
             apply_standard_window_chrome(self.settings_screen)
             self.settings_screen.show()
+
+        elif module_name == "change password":
+            from screens.change_password_screen import ChangePasswordScreen
+            ChangePasswordScreen(self, user_id=self.login_result.userid).exec()
 
         # ---- PURCHASE MODULE ----
         elif module_name == "purchase order":
@@ -711,6 +910,27 @@ class DashboardScreen(QMainWindow):
             )
             apply_standard_window_chrome(self.purchase_invoice_list)
             self.purchase_invoice_list.show()
+        
+        
+        # ---- ACCOUNTS MODULE ----
+        elif module_name == "receipt":
+            if self._receipt_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Receipt", "Receipt engine not initialized. Please restart the application.")
+                return
+
+            from screens.receipt_list_screen import ReceiptListScreen
+
+            self.receipt_list = ReceiptListScreen(
+                parent=self,
+                engine=self._receipt_engine,
+                current_user_id=self.login_result.userid,
+                embedded=True,
+            )
+            self.receipt_list.close_requested.connect(self._navigate_back)
+            self.receipt_list.form_requested.connect(self._open_receipt_form)
+            self.receipt_list.view_requested.connect(self._view_receipt_form)
+            self._navigate_to(self.receipt_list)
     # -----------------------------------------------------
     # LOGOUT
     # -----------------------------------------------------
@@ -719,6 +939,67 @@ class DashboardScreen(QMainWindow):
         if not confirm("Are you sure you want to logout?"):
             return
 
+        self._perform_logout(show_message=True)
+
+    def _perform_logout(self, show_message: bool = True):
+        if self._session_ended:
+            return
+        self._session_ended = True
+
         logout(self.login_result.userid, self.login_result.username, self.login_result.session_id)
-        show_info("You have been logged out.")
+        if show_message:
+            show_info("You have been logged out.")
         self.close()
+
+    def _check_idle_timeout(self):
+        if self._session_ended:
+            return
+
+        idle_minutes = session_manager.minutes_since_last_activity()
+
+        if not self._is_locked:
+            if session_manager.is_auto_lock_enabled() and idle_minutes >= session_manager.get_auto_lock_minutes():
+                self._show_lock_screen()
+            return
+
+        # Already locked - check the full session-timeout threshold for auto-logout
+        if session_manager.is_session_timeout_enabled() and idle_minutes >= session_manager.get_session_timeout_minutes():
+            logger.info(f"Session timed out due to inactivity: user='{self.login_result.username}'")
+            self._perform_logout(show_message=False)
+            show_info("You have been logged out due to inactivity.")
+
+    def _show_lock_screen(self):
+        self._is_locked = True
+
+        overlay = LockOverlay()
+        overlay.fade_in()
+
+        dialog = LockScreenDialog(self.login_result.username, parent=None)
+        overlay.attach_dialog(dialog)
+        overlay.start_keeping_on_top()
+
+        result = dialog.exec()
+
+        overlay.stop_keeping_on_top()
+        overlay.hide()
+        overlay.deleteLater()
+
+        if result == LockScreenDialog.Accepted:
+            self._is_locked = False
+        elif getattr(dialog, "force_logout", False):
+            self._perform_logout(show_message=False)
+            show_info("Your account has been locked due to too many failed attempts. You have been logged out.")
+        else:
+            # Dialog was force-closed some other way - treat as still locked,
+            # will be re-shown on the next idle-check tick.
+            self._is_locked = True
+
+    def closeEvent(self, event):
+        if not self._session_ended and self.login_result and self.login_result.session_id:
+            self._auto_backup_on_exit()
+            try:
+                logout(self.login_result.userid, self.login_result.username, self.login_result.session_id)
+                self._session_ended = True
+            except Exception:
+                logger.exception("Failed to invalidate session on dashboard close.")
+        super().closeEvent(event)

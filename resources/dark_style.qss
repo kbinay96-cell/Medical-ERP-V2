@@ -305,3 +305,31 @@ QTreeWidget#treeSidebarMenu {
 QTreeWidget#treeSidebarMenu::item {
     padding: 6px 4px;
 }
+/* ---------- Tabs ---------- */
+QTabWidget::pane {
+    border: 1px solid #2E3648;
+    background-color: #12161F;
+}
+QTabBar::tab {
+    background-color: #1B2130;
+    color: #E6EDF7;
+    padding: 6px 14px;
+    border: 1px solid #2E3648;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected {
+    background-color: #20263A;
+    color: #FFFFFF;
+    border-bottom: 2px solid #3B82F6;
+}
+QTabBar::tab:hover:!selected {
+    background-color: #20263A;
+    color: #E6EDF7;
+}
+QTabBar::tab:disabled {
+    background-color: #2E3648;
+    color: #6B7690;
+}

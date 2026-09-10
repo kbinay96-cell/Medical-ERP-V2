@@ -14,8 +14,18 @@ saved settings and callers.
 from PySide6.QtWidgets import QApplication
 
 from utils.app_logger import get_logger
+from utils.button_cursor_filter import ButtonCursorFilter
 
 logger = get_logger()
+
+_button_cursor_filter = None
+
+
+def _install_button_cursor_filter(app) -> None:
+    global _button_cursor_filter
+    if _button_cursor_filter is None:
+        _button_cursor_filter = ButtonCursorFilter(app)
+        app.installEventFilter(_button_cursor_filter)
 
 THEME_STYLESHEETS: dict[str, str] = {
     "Light": "resources/style.qss",
@@ -91,6 +101,7 @@ def apply_theme(theme_name: str) -> None:
             base_qss = f.read()
         app.setStyleSheet(base_qss + _build_dynamic_overrides())
         _current_theme = theme_name
+        _install_button_cursor_filter(app)
     except (FileNotFoundError, OSError) as e:
         logger.warning(f"apply_theme: stylesheet '{path}' not found: {e}")
 

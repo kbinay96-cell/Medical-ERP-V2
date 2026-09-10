@@ -107,11 +107,15 @@ class SaleItemFreeSchemeEngine:
     def get_scheme_for_item(self, item_id: int) -> Optional[tuple[float, float]]:
         """Returns (scheme_qty, scheme_free) for the item's active scheme,
         or None if no scheme is configured. Called live by SaleEngine's
-        compute_line()."""
-        row = self._model.get_active_by_item(item_id)
-        if row is None:
+        compute_line(). Must never raise -- degrades to None on any error
+        so a broken scheme lookup never blocks a Sale Invoice line."""
+        try:
+            row = self._model.get_active_by_item(item_id)
+            if row is None:
+                return None
+            return (float(row["scheme_qty"]), float(row["scheme_free"]))
+        except Exception:
             return None
-        return (float(row["scheme_qty"]), float(row["scheme_free"]))
 
     def list_schemes(
         self,

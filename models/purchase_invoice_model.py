@@ -110,6 +110,33 @@ class PurchaseInvoiceModel:
                 rows = cur.fetchall()
                 return rows
 
+    def get_returnable_items(self, purchase_invoice_id: int) -> List[dict]:
+        """
+        Returns every purchase_invoice_item row for a posted invoice, joined
+        with already-returned paid qty AND already-returned free qty, so the
+        Engine/Screen can compute both remaining returnable amounts per line
+        without a second round-trip.
+        """
+        get_connection = _get_connection()
+        factory = _dict_cursor_factory()
+        sql = """
+            SELECT
+                pii.*,
+                COALESCE(SUM(pri.return_qty) FILTER (WHERE pr.status != 'Cancelled' AND pr.is_deleted = FALSE), 0) AS already_returned_qty,
+                COALESCE(SUM(pri.return_free_qty) FILTER (WHERE pr.status != 'Cancelled' AND pr.is_deleted = FALSE), 0) AS already_returned_free_qty
+            FROM purchase_invoice_item pii
+            LEFT JOIN purchase_return_item pri ON pri.purchase_invoice_item_id = pii.purchase_invoice_item_id
+            LEFT JOIN purchase_return pr ON pr.purchase_return_id = pri.purchase_return_id
+            WHERE pii.purchase_invoice_id = %(purchase_invoice_id)s
+            GROUP BY pii.purchase_invoice_item_id
+            ORDER BY pii.purchase_invoice_item_id;
+        """
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=factory) as cur:
+                cur.execute(sql, {"purchase_invoice_id": purchase_invoice_id})
+                rows = cur.fetchall()
+                return rows
+
     def exists_by_supplier_and_billno(self, supplier_id: int, invoice_number: str, exclude_id: Optional[int] = None) -> bool:
         """Duplicate-bill safety check."""
         get_connection = _get_connection()

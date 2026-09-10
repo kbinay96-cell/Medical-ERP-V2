@@ -28,21 +28,25 @@ Responsibilities (and ONLY these -- "No SQL. No business logic."):
     - Surfaces ValidationError / RecordNotFoundError / DuplicateRecordError
       messages back to the user.
     - read_only=True opens the same layout in View mode (all inputs
-      disabled, Save hidden) -- reused by ReceiptListScreen's "View" action.
+      disabled, Save hidden).
 
 --------------------------------------------------------------------------
-EMBEDDING NOTE (changed from the earlier popup version): this is now a
-plain QWidget, not a QDialog -- it is meant to be pushed onto
-ReceiptListScreen's internal QStackedWidget rather than opened with
-.exec(). It emits two signals instead of accept()/reject():
+EMBEDDING CONVENTION (matches CompanyFormScreen / ItemFormScreen exactly,
+as confirmed against the real dashboard_screen.py during Receipt Part 3
+wiring): this is a plain QWidget, constructed with `embedded=True` and
+pushed onto Dashboard's `self.ui.stackedContentArea` via `_navigate_to()`.
+It emits:
 
-    saved            -- emitted after a successful Save (list should
-                         return to its list page and refresh()).
-    back_requested    -- emitted when the "<- Back" button is pressed
-                         without saving (list should just return to its
-                         list page, no refresh needed).
+    saved             -- after a successful Save. Dashboard's
+                          `_on_receipt_form_saved` calls `_navigate_back()`
+                          and refreshes the list.
+    close_requested    -- when "<- Back" is pressed without saving (same
+                          signal name as CompanyFormScreen/ItemFormScreen
+                          use, connected the same way to `_navigate_back`).
 
-See ReceiptListScreen for how these are connected.
+`embedded` itself doesn't change this widget's own layout -- it exists
+purely so the constructor signature matches the rest of the codebase's
+embeddable screens (Company/Manufacturer/Item all take it too).
 --------------------------------------------------------------------------
 
 REAL INTERFACES THIS FILE MATCHES (verified against the actual repo
@@ -59,20 +63,18 @@ during Receipt Part 3 wiring):
           manual_allocations: Optional[list[dict]] = None,
           status: str = "Posted",
       ) -> ReceiptDTO
-      Raises ValidationError / DuplicateRecordError on failure -- does
-      NOT return a (bool, str, id) tuple. receipt_date_bs and
-      receipt_number are computed internally by the Engine.
+      Raises ValidationError / DuplicateRecordError on failure.
 
     - ReceiptEngine.edit_receipt(receipt_id, updated_by, header_changes,
       new_allocations) -> ReceiptDTO. Raises on failure.
 
     - ReceiptEngine.get_by_id(receipt_id) -> Optional[ReceiptDTO]. Use
-      `.to_dict()` for convenient field access, or `.allocations` (a list
-      of ReceiptAllocationDTO: receipt_allocation_id, sale_invoice_id,
-      allocated_amount, is_auto_allocated, remarks, invoice_number).
+      `.to_dict()` / `.allocations` (list of ReceiptAllocationDTO:
+      receipt_allocation_id, sale_invoice_id, allocated_amount,
+      is_auto_allocated, remarks, invoice_number).
 
     - engines.exceptions.ValidationError / DuplicateRecordError /
-      RecordNotFoundError (NOT utils.exceptions -- that module doesn't exist).
+      RecordNotFoundError.
 
     - engines.date_engine.ad_to_bs(ad_date) -> str, bs_to_ad(bs_text) -> date,
       both can raise DateEngineError -- wrapped in try/except here.
@@ -81,6 +83,11 @@ during Receipt Part 3 wiring):
       get_active_customers() -> list[dict] with customer_id, customer_code,
       customer_name -- loaded once at open time; typing in the combo
       filters the already-loaded list via a QCompleter.
+
+    - Dashboard's own convention for the acting user's id is
+      `current_user_id` (matches PurchaseOrderFormScreen / SaleInvoiceFormScreen
+      / ItemFormScreen etc, all called with `current_user_id=self.login_result.userid`)
+      -- renamed from the earlier draft's `current_userid` to match.
 --------------------------------------------------------------------------
 """
 
@@ -146,36 +153,41 @@ def _safe_ad_to_bs(ad_value: Any) -> str:
 
 class ReceiptFormScreen(QWidget):
     """Add / Edit / View screen for a single Receipt -- embeddable page,
-    meant to be pushed onto ReceiptListScreen's internal QStackedWidget.
+    pushed onto Dashboard's stackedContentArea (same convention as
+    CompanyFormScreen / ItemFormScreen).
 
     Args:
-        parent: Parent widget (typically ReceiptListScreen's stack).
+        parent: Parent widget (Dashboard, per _navigate_to's usage).
         engine: The shared ReceiptEngine instance.
-        current_userid: The logged-in user's id, used as created_by/updated_by.
+        current_user_id: The logged-in user's id, used as created_by/updated_by.
         customer_engine: The engines.customer_engine MODULE (pass the module
             itself, e.g. `from engines import customer_engine` then
             `customer_engine=customer_engine`), not an instance of a class.
         receipt_id: Pass to open in Edit (or View) mode; omit for Add mode.
+        embedded: Matches the rest of the codebase's embeddable screens'
+            constructor signature (Company/Manufacturer/Item all take it).
         read_only: Opens in View mode -- all inputs disabled, no Save.
     """
 
     saved = Signal()
-    back_requested = Signal()
+    close_requested = Signal()
 
     def __init__(
         self,
         parent: Optional[QWidget],
         engine: "ReceiptEngine",
-        current_userid: int,
+        current_user_id: int,
         customer_engine=None,
         receipt_id: Optional[int] = None,
+        embedded: bool = False,
         read_only: bool = False,
     ) -> None:
         super().__init__(parent)
         self._engine = engine
-        self._current_userid = current_userid
+        self._current_user_id = current_user_id
         self._customer_engine = customer_engine
         self._receipt_id = receipt_id
+        self._embedded = embedded
         self._read_only = read_only
         self._is_edit_mode = receipt_id is not None
 
@@ -294,7 +306,7 @@ class ReceiptFormScreen(QWidget):
         root.addLayout(footer)
 
     def _connect_signals(self) -> None:
-        self.btnBack.clicked.connect(self.back_requested.emit)
+        self.btnBack.clicked.connect(self.close_requested.emit)
         self.btnSave.clicked.connect(self._on_save_clicked)
         self.cmbCustomer.currentIndexChanged.connect(self._on_customer_or_amount_changed)
         self.txtAmount.valueChanged.connect(self._on_customer_or_amount_changed)
@@ -504,17 +516,17 @@ class ReceiptFormScreen(QWidget):
             receipt_dto = self._engine.get_by_id(self._receipt_id)
         except ValidationError as exc:
             show_error(str(exc))
-            self.back_requested.emit()
+            self.close_requested.emit()
             return
         except Exception:  # noqa: BLE001
             logger.exception("Unexpected error loading receipt_id=%s", self._receipt_id)
             show_error("Could not load this receipt. Please try again.")
-            self.back_requested.emit()
+            self.close_requested.emit()
             return
 
         if receipt_dto is None:
             show_error("This receipt could not be found. It may have been removed.")
-            self.back_requested.emit()
+            self.close_requested.emit()
             return
 
         receipt = receipt_dto.to_dict()
@@ -598,7 +610,7 @@ class ReceiptFormScreen(QWidget):
                 new_allocations = self._collect_allocations() if self._allocation_grid_touched else None
                 receipt_dto = self._engine.edit_receipt(
                     receipt_id=self._receipt_id,
-                    updated_by=self._current_userid,
+                    updated_by=self._current_user_id,
                     header_changes=header_changes or None,
                     new_allocations=new_allocations,
                 )
@@ -608,7 +620,7 @@ class ReceiptFormScreen(QWidget):
                     receipt_date_ad=receipt_date_ad,
                     payment_mode=self.cmbPaymentMode.currentText(),
                     amount=self.txtAmount.value(),
-                    created_by=self._current_userid,
+                    created_by=self._current_user_id,
                     reference_no=self.txtReferenceNo.text().strip() or None,
                     bank_name=self.txtBankName.text().strip() or None,
                     remarks=self.txtRemarks.toPlainText().strip() or None,

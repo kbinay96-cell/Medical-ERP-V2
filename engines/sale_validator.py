@@ -64,9 +64,14 @@ class SaleInvoiceValidator:
         if remarks and len(str(remarks).strip()) > MAX_LEN_REMARKS:
             result.add(f"Remarks cannot exceed {MAX_LEN_REMARKS} characters.")
 
-        amount_paid_now = float(data.get("amount_paid_now", 0) or 0)
-        if amount_paid_now < 0:
-            result.add("Amount paid now cannot be negative.")
+        try:
+            amount_paid_now = float(data.get("amount_paid_now", 0) or 0)
+        except (TypeError, ValueError):
+            result.add("Amount paid now must be a valid number.")
+            amount_paid_now = 0
+        else:
+            if amount_paid_now < 0:
+                result.add("Amount paid now cannot be negative.")
 
         grand_total = float(data.get("grand_total", 0) or 0)
         if grand_total > 0 and amount_paid_now > grand_total:
@@ -96,19 +101,41 @@ class SaleInvoiceValidator:
             if entry_mode not in VALID_ENTRY_MODES:
                 result.add(f"{prefix}: Entry mode must be one of {VALID_ENTRY_MODES}.")
 
-            qty = float(line.get("qty", 0) or 0)
-            free_qty = float(line.get("free_qty", 0) or 0)
+            try:
+                qty = float(line.get("qty", 0) or 0)
+            except (TypeError, ValueError):
+                result.add(f"{prefix}: Qty must be a valid number.")
+                qty = 0
+
+            try:
+                free_qty = float(line.get("free_qty", 0) or 0)
+            except (TypeError, ValueError):
+                result.add(f"{prefix}: Free Qty must be a valid number.")
+                free_qty = 0
+            else:
+                if free_qty < 0:
+                    result.add(f"{prefix}: Free Qty cannot be negative.")
 
             if qty <= 0 and free_qty <= 0:
                 result.add(f"{prefix}: Either quantity or free quantity must be greater than zero.")
 
-            rate = float(line.get("rate", 0) or 0)
-            if rate < 0:
-                result.add(f"{prefix}: Rate cannot be negative.")
+            try:
+                rate = float(line.get("rate", 0) or 0)
+            except (TypeError, ValueError):
+                result.add(f"{prefix}: Rate must be a valid number.")
+                rate = 0
+            else:
+                if rate < 0:
+                    result.add(f"{prefix}: Rate cannot be negative.")
 
-            discount_percent = float(line.get("discount_percent", 0) or 0)
-            if discount_percent < 0 or discount_percent > 100:
-                result.add(f"{prefix}: Discount percent must be between 0 and 100.")
+            try:
+                discount_percent = float(line.get("discount_percent", 0) or 0)
+            except (TypeError, ValueError):
+                result.add(f"{prefix}: Discount percent must be a valid number.")
+                discount_percent = 0
+            else:
+                if discount_percent < 0 or discount_percent > 100:
+                    result.add(f"{prefix}: Discount percent must be between 0 and 100.")
 
             if entry_mode == "net_rate" and free_qty > 0:
                 result.add(f"{prefix}: Free Qty must be 0 in Net Rate mode.")

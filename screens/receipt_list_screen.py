@@ -11,24 +11,37 @@ Responsibility (and ONLY this -- "No SQL. No business logic."):
       Delete (Draft only), View Audit Log.
 
 --------------------------------------------------------------------------
-EMBEDDING NOTE (changed from the earlier popup version): ReceiptFormScreen
-is now a plain QWidget, not a QDialog. This Screen owns an internal
-QStackedWidget with two pages:
+EMBEDDING CONVENTION (matches CompanyListScreen / ItemListScreen exactly,
+as confirmed against the real dashboard_screen.py during Receipt Part 3
+wiring): this Screen no longer owns its own internal QStackedWidget.
+Instead it is a plain QWidget constructed with `embedded=True` and
+pushed onto Dashboard's `self.ui.stackedContentArea` via `_navigate_to()`.
+Opening the Add/Edit/View form is Dashboard's job, not this Screen's:
 
-    Page 0 ("list")  -- the table + filter bar + toolbar (this Screen's
-                         own content, built in _build_ui below).
-    Page 1 ("form")  -- created fresh each time New/View/Edit is clicked,
-                         added to the stack, and switched to. Its
-                         `back_requested` signal returns to Page 0 with
-                         no refresh; its `saved` signal returns to Page 0
-                         AND refreshes the table. The old form widget is
-                         removed from the stack and deleted each time we
-                         return to the list, so only one form instance
-                         ever exists at a time.
+    close_requested          -- emitted by this Screen's own "<- Back"
+                                 button (leaves the Receipt module
+                                 entirely). Dashboard connects this to
+                                 `_navigate_back`, same as
+                                 CompanyListScreen/ItemListScreen.
+    form_requested(object)    -- emitted for "+ New Receipt" (arg=None)
+                                 and per-row "Edit" (arg=receipt_id).
+                                 Dashboard connects this to
+                                 `_open_receipt_form(receipt_id=None)`,
+                                 which builds ReceiptFormScreen(embedded=True)
+                                 and calls `_navigate_to()`.
+    view_requested(int)       -- emitted for per-row "View". Dashboard
+                                 connects this to `_view_receipt_form`,
+                                 which builds the same form with
+                                 read_only=True. (Company/Item didn't need
+                                 a separate read-only view signal; Receipt
+                                 does, per the original blueprint's View
+                                 action -- this is a deliberate, documented
+                                 extension of the established convention,
+                                 not a guess at it.)
 
-This means Dashboard's own central content area needs NO changes beyond
-the existing RC10 sidebar wiring (one ReceiptListScreen instance is
-opened once; all List<->Form navigation happens inside it).
+After the form's `saved` signal fires, Dashboard's `_on_receipt_form_saved`
+calls `_navigate_back()` and then `self.receipt_list.refresh()` -- this
+Screen's `refresh()` is unchanged from before.
 --------------------------------------------------------------------------
 
 REAL INTERFACES THIS FILE MATCHES (verified against the actual repo
@@ -51,12 +64,17 @@ during Receipt Part 3 wiring):
       ValidationError / RecordNotFoundError on failure -- no success
       message comes back from the Engine, so a static message is shown.
 
-    - engines.exceptions.ValidationError / RecordNotFoundError (NOT
-      utils.exceptions -- that module doesn't exist in the real repo).
+    - engines.exceptions.ValidationError / RecordNotFoundError.
+
+    - Dashboard's own convention for the acting user's id is
+      `current_user_id` (matches PurchaseOrderListScreen / SaleInvoiceListScreen
+      / etc, all called with `current_user_id=self.login_result.userid`)
+      -- renamed from the earlier draft's `current_userid` to match.
 
     - screens/cancellation_reason_dialog.py did not exist in the real
       repo -- created alongside this file (kept as a genuine small popup
-      dialog -- only the main Receipt Form was asked to become inline).
+      dialog; Company/Item's embedded convention is about full-page
+      navigation, not about small confirmation-style dialogs).
 --------------------------------------------------------------------------
 """
 
@@ -65,7 +83,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -75,7 +93,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
@@ -87,7 +104,6 @@ from engines.exceptions import RecordNotFoundError, ValidationError
 from utils.message import confirm, show_error, show_info
 from screens.cancellation_reason_dialog import CancellationReasonDialog
 from screens.receipt_audit_log_dialog import ReceiptAuditLogDialog
-from screens.receipt_form_screen import ReceiptFormScreen
 
 if TYPE_CHECKING:
     from engines.receipt_engine import ReceiptEngine
@@ -109,21 +125,28 @@ _COLUMN_HEADERS = [
     "Actions",
 ]
 
-_PAGE_LIST = 0
-
 
 class ReceiptListScreen(QWidget):
-    """List/search/filter screen for Receipts, with an inline (non-popup)
-    Add/Edit/View form reachable via a "+ New Receipt" toolbar button or
-    per-row action buttons, and a "<- Back" button inside the form to
-    return here."""
+    """List/search/filter screen for Receipts. Opening Add/Edit/View is
+    delegated to Dashboard via signals (see module docstring) -- this
+    Screen never opens ReceiptFormScreen itself."""
 
-    def __init__(self, parent: Optional[QWidget], engine: "ReceiptEngine", current_userid: int) -> None:
+    close_requested = Signal()
+    form_requested = Signal(object)  # receipt_id (int) for Edit, or None for Add
+    view_requested = Signal(int)  # receipt_id, always for an existing receipt
+
+    def __init__(
+        self,
+        parent: Optional[QWidget],
+        engine: "ReceiptEngine",
+        current_user_id: int,
+        embedded: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._engine = engine
-        self._current_userid = current_userid
+        self._current_user_id = current_user_id
+        self._embedded = embedded
         self._rows_cache: list = []
-        self._active_form: Optional[ReceiptFormScreen] = None
 
         self.setObjectName("scrReceiptList")
         self._build_ui()
@@ -134,76 +157,74 @@ class ReceiptListScreen(QWidget):
     # UI construction
     # ------------------------------------------------------------------ #
     def _build_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        self.stackReceipt = QStackedWidget(self)
-        self.stackReceipt.setObjectName("stackReceipt")
-        outer.addWidget(self.stackReceipt)
-
-        # ---- Page 0: the actual list content ----------------------------- #
-        self.pageList = QWidget(self)
-        self.pageList.setObjectName("pageReceiptList")
-        root = QVBoxLayout(self.pageList)
+        root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(10)
 
-        # ---- Toolbar -------------------------------------------------- #
-        self.toolbarReceipt = QToolBar(self.pageList)
+        # ---- Top bar: Back + Toolbar ------------------------------------ #
+        top_bar = QHBoxLayout()
+        self.btnBack = QPushButton("\u2190 Back", self)
+        self.btnBack.setObjectName("btnBack")
+        self.btnBack.setCursor(Qt.CursorShape.PointingHandCursor)
+        top_bar.addWidget(self.btnBack)
+
+        self.toolbarReceipt = QToolBar(self)
         self.toolbarReceipt.setObjectName("toolbarReceipt")
-        self.btnNewReceipt = QPushButton("+ New Receipt", self.pageList)
+        self.btnNewReceipt = QPushButton("+ New Receipt", self)
         self.btnNewReceipt.setObjectName("btnNewReceipt")
         self.btnNewReceipt.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toolbarReceipt.addWidget(self.btnNewReceipt)
-        root.addWidget(self.toolbarReceipt)
+        top_bar.addWidget(self.toolbarReceipt)
+        top_bar.addStretch(1)
+        root.addLayout(top_bar)
 
         # ---- Filter bar ------------------------------------------------ #
         filter_bar = QHBoxLayout()
         filter_bar.setSpacing(8)
 
         filter_bar.addWidget(QLabel("Search:"))
-        self.txtSearchText = QLineEdit(self.pageList)
+        self.txtSearchText = QLineEdit(self)
         self.txtSearchText.setObjectName("txtSearchText")
         self.txtSearchText.setPlaceholderText("Receipt no. / customer name / reference no...")
         filter_bar.addWidget(self.txtSearchText, stretch=2)
 
         filter_bar.addWidget(QLabel("Payment Mode:"))
-        self.cmbPaymentModeFilter = QComboBox(self.pageList)
+        self.cmbPaymentModeFilter = QComboBox(self)
         self.cmbPaymentModeFilter.setObjectName("cmbPaymentModeFilter")
         self.cmbPaymentModeFilter.addItems(_PAYMENT_MODE_OPTIONS)
         filter_bar.addWidget(self.cmbPaymentModeFilter, stretch=1)
 
         filter_bar.addWidget(QLabel("Status:"))
-        self.cmbStatusFilter = QComboBox(self.pageList)
+        self.cmbStatusFilter = QComboBox(self)
         self.cmbStatusFilter.setObjectName("cmbStatusFilter")
         self.cmbStatusFilter.addItems(_STATUS_OPTIONS)
         filter_bar.addWidget(self.cmbStatusFilter, stretch=1)
 
         filter_bar.addWidget(QLabel("From:"))
-        self.dtFromDate = QDateEdit(self.pageList)
+        self.dtFromDate = QDateEdit(self)
         self.dtFromDate.setObjectName("dtFromDate")
         self.dtFromDate.setCalendarPopup(True)
         self.dtFromDate.setDate(self.dtFromDate.minimumDate())
         filter_bar.addWidget(self.dtFromDate, stretch=1)
 
         filter_bar.addWidget(QLabel("To:"))
-        self.dtToDate = QDateEdit(self.pageList)
+        self.dtToDate = QDateEdit(self)
         self.dtToDate.setObjectName("dtToDate")
         self.dtToDate.setCalendarPopup(True)
         filter_bar.addWidget(self.dtToDate, stretch=1)
 
-        self.btnApplyFilter = QPushButton("Filter", self.pageList)
+        self.btnApplyFilter = QPushButton("Filter", self)
         self.btnApplyFilter.setObjectName("btnApplyFilter")
         filter_bar.addWidget(self.btnApplyFilter)
 
-        self.btnClearFilter = QPushButton("Clear", self.pageList)
+        self.btnClearFilter = QPushButton("Clear", self)
         self.btnClearFilter.setObjectName("btnClearFilter")
         filter_bar.addWidget(self.btnClearFilter)
 
         root.addLayout(filter_bar)
 
         # ---- Table ------------------------------------------------------ #
-        self.tblReceipts = QTableWidget(0, len(_COLUMN_HEADERS), self.pageList)
+        self.tblReceipts = QTableWidget(0, len(_COLUMN_HEADERS), self)
         self.tblReceipts.setObjectName("tblReceipts")
         self.tblReceipts.setHorizontalHeaderLabels(_COLUMN_HEADERS)
         self.tblReceipts.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -215,59 +236,17 @@ class ReceiptListScreen(QWidget):
         header.setSectionResizeMode(len(_COLUMN_HEADERS) - 1, QHeaderView.ResizeMode.ResizeToContents)
         root.addWidget(self.tblReceipts, stretch=1)
 
-        self.lblEmptyState = QLabel("No receipts found for the selected filters.", self.pageList)
+        self.lblEmptyState = QLabel("No receipts found for the selected filters.", self)
         self.lblEmptyState.setObjectName("lblReceiptListEmpty")
         self.lblEmptyState.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lblEmptyState.setVisible(False)
         root.addWidget(self.lblEmptyState)
 
-        self.stackReceipt.addWidget(self.pageList)  # index 0 == _PAGE_LIST
-        self.stackReceipt.setCurrentIndex(_PAGE_LIST)
-
     def _connect_signals(self) -> None:
-        self.btnNewReceipt.clicked.connect(self._on_new_receipt_clicked)
+        self.btnBack.clicked.connect(self.close_requested.emit)
+        self.btnNewReceipt.clicked.connect(lambda: self.form_requested.emit(None))
         self.btnApplyFilter.clicked.connect(self.refresh)
         self.btnClearFilter.clicked.connect(self._on_clear_filter_clicked)
-
-    # ------------------------------------------------------------------ #
-    # Inline form navigation
-    # ------------------------------------------------------------------ #
-    def _open_form(self, receipt_id: Optional[int] = None, read_only: bool = False) -> None:
-        from engines import customer_engine  # module-level functions, not a class
-
-        if self._active_form is not None:
-            self._remove_active_form()
-
-        form = ReceiptFormScreen(
-            parent=self,
-            engine=self._engine,
-            current_userid=self._current_userid,
-            customer_engine=customer_engine,
-            receipt_id=receipt_id,
-            read_only=read_only,
-        )
-        form.saved.connect(self._on_form_saved)
-        form.back_requested.connect(self._on_form_back)
-
-        self._active_form = form
-        self.stackReceipt.addWidget(form)
-        self.stackReceipt.setCurrentWidget(form)
-
-    def _remove_active_form(self) -> None:
-        if self._active_form is None:
-            return
-        self.stackReceipt.removeWidget(self._active_form)
-        self._active_form.deleteLater()
-        self._active_form = None
-
-    def _on_form_saved(self) -> None:
-        self._remove_active_form()
-        self.stackReceipt.setCurrentIndex(_PAGE_LIST)
-        self.refresh()
-
-    def _on_form_back(self) -> None:
-        self._remove_active_form()
-        self.stackReceipt.setCurrentIndex(_PAGE_LIST)
 
     # ------------------------------------------------------------------ #
     # Data loading
@@ -275,7 +254,7 @@ class ReceiptListScreen(QWidget):
     def refresh(self) -> None:
         """Re-queries the Engine using the current filter bar values and
         repopulates the table. Called on load, after Filter/Clear, and
-        after any Save/Cancel/Delete action completes."""
+        by Dashboard's `_on_receipt_form_saved` after a Save."""
         filters = self._collect_filters()
         try:
             self._rows_cache = self._engine.search(filters)
@@ -352,7 +331,7 @@ class ReceiptListScreen(QWidget):
         btn_view = QPushButton("View", cell)
         btn_view.setObjectName("btnViewReceipt")
         btn_view.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_view.clicked.connect(lambda: self._on_view_clicked(receipt_id))
+        btn_view.clicked.connect(lambda: self.view_requested.emit(receipt_id))
         layout.addWidget(btn_view)
 
         btn_log = QPushButton("Audit Log", cell)
@@ -365,7 +344,7 @@ class ReceiptListScreen(QWidget):
             btn_edit = QPushButton("Edit", cell)
             btn_edit.setObjectName("btnEditReceipt")
             btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn_edit.clicked.connect(lambda: self._on_edit_clicked(receipt_id))
+            btn_edit.clicked.connect(lambda: self.form_requested.emit(receipt_id))
             layout.addWidget(btn_edit)
 
             btn_cancel = QPushButton("Cancel", cell)
@@ -384,17 +363,9 @@ class ReceiptListScreen(QWidget):
         return cell
 
     # ------------------------------------------------------------------ #
-    # Actions
+    # Actions that stay local to this Screen (no Dashboard navigation
+    # involved -- small popups, not full-page forms)
     # ------------------------------------------------------------------ #
-    def _on_new_receipt_clicked(self) -> None:
-        self._open_form()
-
-    def _on_view_clicked(self, receipt_id: int) -> None:
-        self._open_form(receipt_id=receipt_id, read_only=True)
-
-    def _on_edit_clicked(self, receipt_id: int) -> None:
-        self._open_form(receipt_id=receipt_id, read_only=False)
-
     def _on_cancel_clicked(self, receipt_id: int) -> None:
         dialog = CancellationReasonDialog(self)
         if not dialog.exec():
@@ -408,7 +379,7 @@ class ReceiptListScreen(QWidget):
             self._engine.cancel_receipt(
                 receipt_id=receipt_id,
                 cancellation_reason=reason,
-                updated_by=self._current_userid,
+                updated_by=self._current_user_id,
             )
         except (ValidationError, RecordNotFoundError) as exc:
             show_error(str(exc))
@@ -426,7 +397,7 @@ class ReceiptListScreen(QWidget):
             return
 
         try:
-            self._engine.delete_draft(receipt_id=receipt_id, deleted_by=self._current_userid)
+            self._engine.delete_draft(receipt_id=receipt_id, deleted_by=self._current_user_id)
         except (ValidationError, RecordNotFoundError) as exc:
             show_error(str(exc))
             return

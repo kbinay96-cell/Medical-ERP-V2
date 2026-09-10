@@ -36,45 +36,21 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
         self.verticalLayoutRoot.setSpacing(10)
         self.verticalLayoutRoot.setContentsMargins(12, 12, 12, 12)
 
+        # ---------------- Title row  ----------------
         self.lblTitle = QLabel(SupplierManufacturerDiscountListWidget)
         self.lblTitle.setObjectName("lblTitle")
         font = self.lblTitle.font()
-        font.setPointSize(14)
+        font.setPointSize(18)
         font.setBold(True)
         self.lblTitle.setFont(font)
         self.lblTitle.setText("Supplier-Manufacturer Discount")
+        self.lblTitle.setAlignment(Qt.AlignCenter)
         self.verticalLayoutRoot.addWidget(self.lblTitle)
-
-        # ---------------- Breadcrumb / Back (near title) ----------------
-        self.horizontalLayoutBreadcrumb = QHBoxLayout()
-        self.horizontalLayoutBreadcrumb.setObjectName("horizontalLayoutBreadcrumb")
-
-        self.btnBack = QPushButton("\u2190 Back", SupplierManufacturerDiscountListWidget)
-        self.btnBack.setObjectName("btnBack")
-        self.btnBack.setCursor(Qt.PointingHandCursor)
-        self.btnBack.setFlat(True)
-        self.btnBack.setStyleSheet(
-            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
-            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
-        )
-        self.horizontalLayoutBreadcrumb.addWidget(self.btnBack)
-
-        self.lblBreadcrumb = QLabel("Suppliers", SupplierManufacturerDiscountListWidget)
-        self.lblBreadcrumb.setObjectName("lblBreadcrumb")
-        font_bc = self.lblBreadcrumb.font()
-        font_bc.setBold(True)
-        self.lblBreadcrumb.setFont(font_bc)
-        self.horizontalLayoutBreadcrumb.addWidget(self.lblBreadcrumb)
-
-        self.horizontalSpacerBreadcrumb = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.horizontalLayoutBreadcrumb.addItem(self.horizontalSpacerBreadcrumb)
-
-        self.verticalLayoutRoot.addLayout(self.horizontalLayoutBreadcrumb)
 
         # ---------------- Toolbar ----------------
         self.frmToolbar = QFrame(SupplierManufacturerDiscountListWidget)
         self.frmToolbar.setObjectName("frmToolbar")
-        self.frmToolbar.setFrameShape(QFrame.StyledPanel)
+        self.frmToolbar.setFrameShape(QFrame.NoFrame)
         self.horizontalLayoutToolbar = QHBoxLayout(self.frmToolbar)
         self.horizontalLayoutToolbar.setObjectName("horizontalLayoutToolbar")
 
@@ -103,24 +79,41 @@ class Ui_SupplierManufacturerDiscountListWidget(object):
 
         self.verticalLayoutRoot.addWidget(self.frmToolbar)
 
-        # ---------------- Pagination (right below Refresh) ----------------
+        # ---------------- Back + Breadcrumb (left) / Page-info + Prev-Next (right), below Refresh ----------------
         self.horizontalLayoutPagination = QHBoxLayout()
         self.horizontalLayoutPagination.setObjectName("horizontalLayoutPagination")
 
-        self.btnPrev = QPushButton("< Prev", SupplierManufacturerDiscountListWidget)
-        self.btnPrev.setObjectName("btnPrev")
-        self.horizontalLayoutPagination.addWidget(self.btnPrev)
+        self.btnBack = QPushButton("\u2190 Back", SupplierManufacturerDiscountListWidget)
+        self.btnBack.setObjectName("btnBack")
+        self.btnBack.setCursor(Qt.PointingHandCursor)
+        self.btnBack.setFlat(True)
+        self.btnBack.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+            "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+        )
+        self.horizontalLayoutPagination.addWidget(self.btnBack)
+
+        self.lblBreadcrumb = QLabel("Suppliers", SupplierManufacturerDiscountListWidget)
+        self.lblBreadcrumb.setObjectName("lblBreadcrumb")
+        font_bc = self.lblBreadcrumb.font()
+        font_bc.setBold(True)
+        self.lblBreadcrumb.setFont(font_bc)
+        self.horizontalLayoutPagination.addWidget(self.lblBreadcrumb)
+
+        self.horizontalSpacerPagination = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.horizontalLayoutPagination.addItem(self.horizontalSpacerPagination)
 
         self.lblPageInfo = QLabel("Page 1", SupplierManufacturerDiscountListWidget)
         self.lblPageInfo.setObjectName("lblPageInfo")
         self.horizontalLayoutPagination.addWidget(self.lblPageInfo)
 
+        self.btnPrev = QPushButton("< Prev", SupplierManufacturerDiscountListWidget)
+        self.btnPrev.setObjectName("btnPrev")
+        self.horizontalLayoutPagination.addWidget(self.btnPrev)
+
         self.btnNext = QPushButton("Next >", SupplierManufacturerDiscountListWidget)
         self.btnNext.setObjectName("btnNext")
         self.horizontalLayoutPagination.addWidget(self.btnNext)
-
-        self.horizontalSpacerPagination = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.horizontalLayoutPagination.addItem(self.horizontalSpacerPagination)
 
         self.verticalLayoutRoot.addLayout(self.horizontalLayoutPagination)
 

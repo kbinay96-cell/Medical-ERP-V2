@@ -77,6 +77,7 @@ from PySide6.QtWidgets import (
 )
 
 from engines.exceptions import DuplicateRecordError, ValidationError
+from engines.permission_enforcer import PermissionDeniedError
 from engines.item_free_scheme_engine import ItemFreeSchemeEngine
 from engines.sale_engine import EngineErrorWithInvoice, SaleEngine
 from engines import settings_engine
@@ -711,6 +712,9 @@ class SaleInvoiceFormScreen(QDialog):
             return
         except ValidationError as exc:
             QMessageBox.warning(self, "Cannot Save", "\n".join(exc.errors))
+            return
+        except PermissionDeniedError as exc:
+            QMessageBox.warning(self, "Permission Denied", str(exc))
             return
         except Exception:  # noqa: BLE001
             logger.exception("Failed to create sale invoice")

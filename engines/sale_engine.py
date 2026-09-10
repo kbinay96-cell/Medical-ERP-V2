@@ -98,12 +98,14 @@ class SaleEngine:
         item_free_scheme_engine,
         country_tax_lookup_fn: Callable[[int], float],
         manufacturer_lookup_fn: Callable[[int], dict],
+        receipt_engine=None,   # NEW — optional, keeps Sale Module working standalone if Receipt isn't wired
     ) -> None:
         self._model = model
         self._item_engine = item_engine
         self._item_free_scheme_engine = item_free_scheme_engine
         self._country_tax_lookup_fn = country_tax_lookup_fn
         self._manufacturer_lookup_fn = manufacturer_lookup_fn
+        self._receipt_engine = receipt_engine   # NEW
         self._validator = SaleInvoiceValidator(
             number_exists_fn=self._model.get_by_invoice_number,
         )
@@ -113,8 +115,11 @@ class SaleEngine:
     # ------------------------------------------------------------------ #
     @staticmethod
     def _get_setting(key: str, default=None):
-        from engines.settings_engine import get_setting
-        return get_setting(key, default)
+        try:
+            from engines.settings_engine import get_setting
+            return get_setting(key, default)
+        except Exception:
+            return default
 
     def is_wholesale_mode(self) -> bool:
         """Single source of truth: reads sale.column_show_free. When ON,
@@ -244,11 +249,11 @@ class SaleEngine:
     def _resolve_cc_percent(self, manufacturer_id: int) -> float:
         try:
             manufacturer = self._manufacturer_lookup_fn(manufacturer_id) or {}
-            country_id = manufacturer.get("country_id")
-            if country_id is None:
+            country = manufacturer.get("country")
+            if not country:
                 return 0.0
-            country_tax = self._country_tax_lookup_fn(country_id) or {}
-            return float(country_tax.get("custom_percent") or 0.0)
+            _vat_percent, custom_percent = self._country_tax_lookup_fn(country)
+            return float(custom_percent or 0.0)
         except Exception:
             logger.exception("Failed to resolve CC%% for manufacturer_id=%s", manufacturer_id)
             return 0.0
@@ -257,6 +262,9 @@ class SaleEngine:
     # CREATE
     # ------------------------------------------------------------------ #
     def create_sale_invoice(self, payload: dict, current_user_id: int) -> SaleInvoiceDTO:
+        from engines.permission_enforcer import check_permission
+        check_permission("Sale", "can_add")
+
         is_wholesale = self.is_wholesale_mode()
 
         header_errors = self._validator.validate_header(payload)
@@ -284,6 +292,7 @@ class SaleEngine:
         invoice_number = self.generate_invoice_number()
         now_ad = datetime.now(timezone.utc)
         now_bs = self._now_bs(now_ad)
+        amount_paid_now_value = float(payload.get("amount_paid_now", 0) or 0)
 
         header_data = {
             "invoice_number": invoice_number,
@@ -302,7 +311,8 @@ class SaleEngine:
             "round_off": round_off,
             "grand_total": grand_total,
             "payment_type": payload.get("payment_type"),
-            "amount_paid_now": payload.get("amount_paid_now", 0) or 0,
+            "amount_paid_now": amount_paid_now_value,
+            "balance_amount": grand_total - amount_paid_now_value,
             "status": payload.get("status", "Posted"),
             "remarks": (payload.get("remarks") or "").strip() or None,
             "created_by": current_user_id,
@@ -317,6 +327,20 @@ class SaleEngine:
                 raise DuplicateRecordError("Invoice Number already exists (concurrent save detected).") from exc
             logger.exception("Unexpected error inserting sale invoice.")
             raise
+
+        if self._receipt_engine is not None:
+            try:
+                self._receipt_engine.apply_advance_to_invoice(
+                    customer_id=header_data["customer_id"],
+                    sale_invoice_id=new_id,
+                    requested_amount=header_data["grand_total"],
+                    applied_by=current_user_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Advance auto-apply failed for sale_invoice_id=%s; advance remains unapplied.",
+                    new_id,
+                )
 
         stock_errors: list[str] = []
         for line in computed_lines:
@@ -380,6 +404,9 @@ class SaleEngine:
     # CANCEL
     # ------------------------------------------------------------------ #
     def cancel_sale_invoice(self, sale_invoice_id: int, current_user_id: int, reason: str) -> None:
+        from engines.permission_enforcer import check_permission
+        check_permission("Sale", "can_cancel")
+
         if not reason or not str(reason).strip():
             raise ValidationError(["A cancellation reason is required."])
         existing = self._model.get_by_id(sale_invoice_id, include_deleted=False)

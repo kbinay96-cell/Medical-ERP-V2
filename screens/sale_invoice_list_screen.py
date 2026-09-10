@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
 )
 
 from engines.exceptions import RecordNotFoundError
+from engines.exceptions import RecordNotFoundError, ValidationError
+from engines.permission_enforcer import PermissionDeniedError
 from engines.sale_engine import SaleEngine, SaleInvoiceDTO
 from screens.sale_invoice_form_screen import SaleInvoiceFormScreen
 
@@ -284,10 +286,23 @@ class SaleInvoiceListScreen(QWidget):
         )
         if confirm != QMessageBox.Yes:
             return
+
+        from screens.cancellation_reason_dialog import CancellationReasonDialog
+        dialog = CancellationReasonDialog(self)
+        if not dialog.exec():
+            return
+        reason = dialog.get_reason()
+        if not reason:
+            QMessageBox.warning(self, "Cannot Cancel", "A cancellation reason is required.")
+            return
+
         try:
-            self._engine.cancel_sale_invoice(sale_invoice_id, self._current_user_id)
-        except RecordNotFoundError as exc:
+            self._engine.cancel_sale_invoice(sale_invoice_id, self._current_user_id, reason)
+        except (RecordNotFoundError, ValidationError) as exc:
             QMessageBox.warning(self, "Cannot Cancel", str(exc))
+            return
+        except PermissionDeniedError as exc:
+            QMessageBox.warning(self, "Permission Denied", str(exc))
             return
         self.refresh()
 

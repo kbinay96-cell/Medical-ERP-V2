@@ -50,7 +50,7 @@ class SaleItemFreeSchemeModel:
         with _get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, data)
-                new_id = cur.fetchone()[0]
+                new_id = cur.fetchone()["sale_item_free_scheme_id"]
                 conn.commit()
                 logger.info("Sale item free scheme inserted: id=%s item_id=%s %s+%s",
                             new_id, data.get("item_id"), data.get("scheme_qty"), data.get("scheme_free"))
