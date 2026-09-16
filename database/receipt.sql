@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS receipt (
     receipt_id               SERIAL PRIMARY KEY,
     receipt_number             VARCHAR(30) NOT NULL UNIQUE,     -- e.g. RCPT-0001
-    customer_id                  INTEGER NOT NULL REFERENCES customer(customer_id),
+    customer_id                  INTEGER NOT NULL REFERENCES customers(customer_id),
     receipt_date_ad                DATE NOT NULL,
     receipt_date_bs                  VARCHAR(10) NOT NULL,
     payment_mode                       VARCHAR(30) NOT NULL,      -- Cash, Bank Transfer, Cheque, Card, Other

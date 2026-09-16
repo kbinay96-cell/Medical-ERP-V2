@@ -36,7 +36,8 @@ from models.stock_transaction_model import StockTransactionModel
 from utils import image_manager
 from utils.item_validator import ItemValidator, validate_batch_entry
 
-logger = logging.getLogger(__name__)
+from utils.app_logger import get_logger
+logger = get_logger()
 
 DEFAULT_ITEM_CODE_PREFIX = "ITM-"
 DEFAULT_ITEM_CODE_PADDING = 4  # ITM-0001
@@ -112,6 +113,7 @@ class ItemDTO:
     item_custom_percent: Optional[float]
     status: str
     remarks: Optional[str]
+    packing: Optional[str]
     photo_path: Optional[str]
     is_deleted: bool
     super_discount_percent: Optional[float]
@@ -230,6 +232,7 @@ class ItemEngine:
         data["mrp"] = data.get("mrp") or 0
         data["minimum_stock"] = data.get("minimum_stock") or 0
         data["super_discount_percent"] = data.get("super_discount_percent") or 0
+        data["packing"] = (data.get("packing") or "").strip() or None
         data["status"] = data.get("status") or "Active"
         data["tax_mode"] = data.get("tax_mode") or "country_default"
         data["item_vat_checked"] = bool(data.get("item_vat_checked"))
@@ -345,9 +348,31 @@ class ItemEngine:
         with this value. Never raises; a failed remember-MRP write should
         never block a Purchase Invoice save that already succeeded."""
         try:
-          self._model.update_mrp(item_id, mrp)
+            self._model.update_mrp(item_id, mrp)
         except Exception:
-          logger.exception("Failed to remember MRP for item_id=%s.", item_id)
+            logger.exception("Failed to remember MRP for item_id=%s.", item_id)
+
+    def update_item_purchase_rate(self, item_id: int, purchase_rate: float) -> None:
+        """Remembers the latest effective Purchase Rate for an item --
+        called by Opening Stock (free-qty-diluted rate) and Purchase
+        Invoice save (landing_cost_per_unit) so Item Master always
+        reflects actual cost, accounting for free goods received. Never
+        raises; a failed remember-rate write should never block a save
+        that already succeeded."""
+        try:
+            self._model.update_purchase_rate(item_id, purchase_rate)
+        except Exception:
+            logger.exception("Failed to remember Purchase Rate for item_id=%s.", item_id)
+
+    def get_distinct_packings(self) -> list[str]:
+        """Suggestion list for the Packing combobox. Never raises -- a
+        failed lookup just means an empty suggestion list, never blocks
+        the form from opening."""
+        try:
+            return self._model.get_distinct_packings()
+        except Exception:
+            logger.exception("Failed to fetch distinct packing values.")
+            return []
 
     # ------------------------------------------------------------------ #
     # READ
@@ -483,6 +508,7 @@ class ItemEngine:
             raise RecordNotFoundError(f"Item {item_id} not found or has been deleted.")
 
         batch_no = (batch_payload.get("batch_no") or "").strip()
+        barcode = (batch_payload.get("barcode") or "").strip() or None
         expiry_year = batch_payload.get("expiry_year")
         expiry_month = batch_payload.get("expiry_month")
         batch_qty = batch_payload.get("batch_qty", 0)
@@ -503,12 +529,16 @@ class ItemEngine:
                 "with a different expiry, or edit the existing batch instead."
             )
 
+        if barcode and self._batch_model.exists_barcode(barcode, exclude_batch_id=item_batch_id):
+            raise DuplicateRecordError(f"Barcode '{barcode}' is already registered to another batch.")
+
         now_ad = self._now_ad()
         now_bs = self._now_bs()
 
         insert_data = {
             "item_id": item_id,
             "batch_no": batch_no,
+            "barcode": barcode,
             "expiry_year": int(expiry_year),
             "expiry_month": int(expiry_month),
             "batch_qty": float(batch_qty),
@@ -584,6 +614,15 @@ class ItemEngine:
         rows = self._batch_model.get_by_item(item_id)
         row = next(r for r in rows if r["item_batch_id"] == new_id)
         return ItemBatchDTO.from_row(row)
+
+    def get_item_id_by_barcode(self, barcode: str) -> Optional[int]:
+        """Looks up which item a scanned batch barcode belongs to -- used
+        by Sale/Purchase's barcode-scan-to-add-item flow."""
+        barcode = (barcode or "").strip()
+        if not barcode:
+            return None
+        batch_row = self._batch_model.get_by_barcode(barcode)
+        return batch_row["item_id"] if batch_row else None
 
     def post_stock_movement(
         self,

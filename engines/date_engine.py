@@ -240,3 +240,16 @@ def format_for_report(bs_date_text: str) -> str:
 
     year, month, day = (int(p) for p in normalized.split("-"))
     return f"{day} {get_month_name(month)} {year}"
+
+def get_bs_month_days(bs_year: int, bs_month: int) -> list[dict]:
+    """Returns all days in a BS month with weekday/holiday info for calendar rendering."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT bsdate, bsday, weekdayno, weekdayen, monthnameen,
+                       isweekend, isholiday, holidayname
+                FROM bscalendar
+                WHERE bsyear = %s AND bsmonth = %s
+                ORDER BY bsday
+            """, (bs_year, bs_month))
+            return cur.fetchall()

@@ -74,6 +74,10 @@ class ItemBatchDialog(QDialog):
         self.txtBatchNo.setPlaceholderText("e.g. B-2027-045")
         form.addRow("Batch No. *", self.txtBatchNo)
 
+        self.txtBarcode = QLineEdit()
+        self.txtBarcode.setPlaceholderText("Scan the barcode printed on this batch's packaging (optional)")
+        form.addRow("Barcode:", self.txtBarcode)
+
         from PySide6.QtCore import QDate
         current_year = QDate.currentDate().year()
 
@@ -118,6 +122,7 @@ class ItemBatchDialog(QDialog):
     def _collect_form_values(self) -> dict:
         return {
             "batch_no": self.txtBatchNo.text(),
+            "barcode": self.txtBarcode.text(),
             "expiry_month_text": str(self.cmbExpiryMonth.currentIndex() + 1),
             "expiry_year_text": self.txtExpiryYear.text(),
             "batch_qty_text": self.txtBatchQty.text(),

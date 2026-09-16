@@ -38,6 +38,7 @@ from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.permission_enforcer import PermissionDeniedError
 from engines.sale_engine import SaleEngine, SaleInvoiceDTO
 from screens.sale_invoice_form_screen import SaleInvoiceFormScreen
+from screens.sale_invoice_view_dialog import SaleInvoiceViewDialog
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class SaleInvoiceListScreen(QWidget):
     """List/search -- mirrors screens/purchase_invoice_list_screen.py."""
 
     form_requested = Signal()    # embedded: "+ New Sale Invoice" clicked
+    edit_requested = Signal(int) # embedded: "Edit" clicked on a row, carries sale_invoice_id
     close_requested = Signal()   # embedded: Back button clicked
 
     def __init__(
@@ -172,10 +174,13 @@ class SaleInvoiceListScreen(QWidget):
         self.area_filter_combo.currentIndexChanged.connect(self._reload_first_page)
         self.status_filter_combo.currentIndexChanged.connect(self._reload_first_page)
         self.sale_mode_filter_combo.currentIndexChanged.connect(self._reload_first_page)
+        self.date_from.dateChanged.connect(self._reload_first_page)
+        self.date_to.dateChanged.connect(self._reload_first_page)
         self.search_button.clicked.connect(self._reload_first_page)
         self.new_button.clicked.connect(self._on_new_clicked)
         self.prev_page_button.clicked.connect(self._on_prev_page)
         self.next_page_button.clicked.connect(self._on_next_page)
+        self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
 
     def _populate_area_filter(self) -> None:
         self.area_filter_combo.clear()
@@ -238,13 +243,15 @@ class SaleInvoiceListScreen(QWidget):
             action_layout = QHBoxLayout(action_widget)
             action_layout.setContentsMargins(2, 2, 2, 2)
             view_button = QPushButton("View")
+            view_button.setToolTip("View / print this invoice (read-only).")
             view_button.clicked.connect(lambda _, sid=dto.sale_invoice_id: self._on_view_clicked(sid))
             action_layout.addWidget(view_button)
 
-            cancel_button = QPushButton("Cancel")
-            cancel_button.setEnabled(dto.status != "Cancelled")
-            cancel_button.clicked.connect(lambda _, sid=dto.sale_invoice_id: self._on_cancel_clicked(sid))
-            action_layout.addWidget(cancel_button)
+            edit_button = QPushButton("Edit")
+            edit_button.setToolTip("Edit this invoice (stock is adjusted automatically for any changes).")
+            edit_button.setEnabled(dto.status != "Cancelled")
+            edit_button.clicked.connect(lambda _, sid=dto.sale_invoice_id: self._on_edit_clicked(sid))
+            action_layout.addWidget(edit_button)
 
             self.table.setCellWidget(row, COL_ACTIONS, action_widget)
 
@@ -269,43 +276,36 @@ class SaleInvoiceListScreen(QWidget):
         if dialog.exec():
             self._reload_first_page()
 
+    def _on_edit_clicked(self, sale_invoice_id: int) -> None:
+        if self._embedded:
+            self.edit_requested.emit(sale_invoice_id)
+            return
+        dialog = SaleInvoiceFormScreen(
+            self, self._engine, self._customer_engine, self._item_engine,
+            self._item_free_scheme_engine, self._current_user_id,
+            existing_invoice_id=sale_invoice_id,
+        )
+        if dialog.exec():
+            self._reload_first_page()
+
+    def _on_row_double_clicked(self, item) -> None:
+        row = item.row()
+        if 0 <= row < len(self._rows):
+            self._on_view_clicked(self._rows[row].sale_invoice_id)
+
     def _on_view_clicked(self, sale_invoice_id: int) -> None:
         try:
             dto = self._engine.get_sale_invoice(sale_invoice_id)
         except RecordNotFoundError as exc:
             QMessageBox.warning(self, "Not Found", str(exc))
             return
-        dialog = _SaleInvoiceViewDialog(self, dto)
+        dialog = SaleInvoiceViewDialog(
+            self, dto, self._item_engine, self._customer_engine,
+            self._engine.is_free_scheme_enabled(),
+        )
         dialog.exec()
 
-    def _on_cancel_clicked(self, sale_invoice_id: int) -> None:
-        confirm = QMessageBox.question(
-            self, "Confirm Cancel",
-            "Cancel this Sale Invoice? This does NOT automatically reverse stock "
-            "-- physical correction, if needed, goes through Sale Return.",
-        )
-        if confirm != QMessageBox.Yes:
-            return
-
-        from screens.cancellation_reason_dialog import CancellationReasonDialog
-        dialog = CancellationReasonDialog(self)
-        if not dialog.exec():
-            return
-        reason = dialog.get_reason()
-        if not reason:
-            QMessageBox.warning(self, "Cannot Cancel", "A cancellation reason is required.")
-            return
-
-        try:
-            self._engine.cancel_sale_invoice(sale_invoice_id, self._current_user_id, reason)
-        except (RecordNotFoundError, ValidationError) as exc:
-            QMessageBox.warning(self, "Cannot Cancel", str(exc))
-            return
-        except PermissionDeniedError as exc:
-            QMessageBox.warning(self, "Permission Denied", str(exc))
-            return
-        self.refresh()
-
+    
 
 class _SaleInvoiceViewDialog(QDialog):
     """Read-only detail view -- header info-panel plus a read-only line

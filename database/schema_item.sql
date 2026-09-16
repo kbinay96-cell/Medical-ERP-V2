@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS item_batch (
 
     batch_qty             NUMERIC(18, 3)  NOT NULL DEFAULT 0,
     batch_purchase_rate   NUMERIC(18, 2)  NOT NULL DEFAULT 0,
+    barcode               VARCHAR(64),
 
     remarks               TEXT,
 
@@ -175,6 +176,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_item_batch_no_per_item
 
 CREATE INDEX IF NOT EXISTS idx_item_batch_item   ON item_batch (item_id);
 CREATE INDEX IF NOT EXISTS idx_item_batch_expiry ON item_batch (expiry_year, expiry_month);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_item_batch_barcode
+    ON item_batch (barcode) WHERE barcode IS NOT NULL;
 
 COMMENT ON TABLE item_batch IS 'Batch-wise stock + expiry for Item Master - Medical ERP V2. Total item stock = SUM(batch_qty) over an item''s rows. Populated today via Opening Stock entry on the Item Form; Purchase module will insert new rows here once built.';
 COMMENT ON COLUMN item_batch.expiry_display IS 'Convenience "MM/YYYY" display string, generated from expiry_month/expiry_year -- never write to this column directly.';

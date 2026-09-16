@@ -45,7 +45,7 @@ class DashboardData:
 SIDEBAR_MODULES = {
     "Masters": ["Company", "Supplier", "Manufacturer", "Customer", "Item", "Supplier-Mfg Discount", "Country Tax"],
     "Purchase": ["Purchase", "Purchase Order", "Purchase Return"],
-    "Sales": ["New Sale", "Sale List", "Sale Free Scheme"],
+    "Sales": ["New Sale", "Sale List", "Sale Free Scheme", "Sale Return"],
     "Inventory": ["Stock Ledger", "Stock Master"],
     "Accounts": ["Payment", "Receipt"],
     "Reports": ["Reports", "Audit Log"],

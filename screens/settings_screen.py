@@ -652,8 +652,23 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
         live stylesheet). Extend this as more such settings are added."""
         if setting_key == THEME_SETTING_KEY:
             theme_engine.apply_theme(value)
+            self._refresh_dashboard_sidebar_theme()
         elif setting_key in (UI_CONTROL_HEIGHT_KEY, UI_FONT_SIZE_KEY, UI_FONT_FAMILY_KEY):
             theme_engine.apply_theme(theme_engine.get_current_theme())
+
+    def _refresh_dashboard_sidebar_theme(self) -> None:
+        """The sidebar's icons/arrow are theme-tinted pixmaps baked once
+        at build time (see DashboardScreen._build_sidebar_menu), so a
+        theme change made from here must explicitly ask the Dashboard
+        to rebuild them - otherwise they stay stuck on whatever theme
+        was active when the sidebar was first built. The dashboard is
+        reachable only as the standard Qt parent (no custom back-
+        reference exists), hence the hasattr guards below."""
+        dashboard = self.parent()
+        if dashboard is not None and hasattr(dashboard, "_build_sidebar_menu"):
+            dashboard._build_sidebar_menu()
+            if hasattr(dashboard, "_check_pending_password_resets"):
+                dashboard._check_pending_password_resets()
 
     def _on_btn_restore_default_clicked(self) -> None:
         if self._is_search_view or not self._row_widgets:

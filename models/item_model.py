@@ -55,6 +55,7 @@ ITEM_COLUMNS = (
     "category_id", "sub_category_id", "item_group_id", "manufacturer_id", "generic_id",
     "unit_id", "purchase_unit_id",
     "purchase_rate", "sale_rate", "mrp",
+    "packing",
     "minimum_stock",
     "tax_mode", "item_vat_checked", "item_vat_percent", "item_custom_checked", "item_custom_percent",
     "status", "remarks", "photo_path",
@@ -89,6 +90,41 @@ class ItemModel:
                 conn.commit()
                 logger.info("Item inserted: id=%s code=%s", new_id, data.get("item_code"))
                 return new_id
+
+    def update_purchase_rate(self, item_id: int, purchase_rate: float) -> bool:
+        """Lightweight, single-column Purchase Rate update -- keeps Item
+        Master's purchase_rate reflecting the latest actual cost (Opening
+        Stock's free-qty-diluted rate, or a Purchase Invoice line's
+        landing_cost_per_unit) without touching any other Item Master
+        field or running full update() validation."""
+        sql = """
+            UPDATE item
+            SET purchase_rate = %(purchase_rate)s
+            WHERE item_id = %(item_id)s
+              AND is_deleted = FALSE;
+        """
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, {"purchase_rate": purchase_rate, "item_id": item_id})
+                updated = cur.rowcount > 0
+                conn.commit()
+                return updated
+
+    def get_distinct_packings(self) -> list[str]:
+        """Returns every distinct non-blank packing value already saved on
+        an Item, for the Packing combobox suggestion list -- there is no
+        separate Packing master table; the list grows purely from what's
+        actually been typed and saved."""
+        sql = """
+            SELECT DISTINCT packing
+            FROM item
+            WHERE packing IS NOT NULL AND packing <> '' AND is_deleted = FALSE
+            ORDER BY packing;
+        """
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                return [row["packing"] for row in cur.fetchall()]
 
     def update_mrp(self, item_id: int, mrp: float) -> bool:
         """Lightweight, single-column MRP update -- used by Purchase Invoice
@@ -346,7 +382,7 @@ class ItemBatchModel:
         never drift apart). Left in place only as a low-level primitive.
         """
         columns = [
-            "item_id", "batch_no", "expiry_year", "expiry_month",
+            "item_id", "batch_no", "barcode", "expiry_year", "expiry_month",
             "batch_qty", "batch_purchase_rate", "remarks",
             "created_by", "created_at_ad", "created_at_bs",
         ]
@@ -384,7 +420,7 @@ class ItemBatchModel:
         Returns (new_item_batch_id, new_stock_ledger_id).
         """
         batch_columns = [
-            "item_id", "batch_no", "expiry_year", "expiry_month",
+            "item_id", "batch_no", "barcode", "expiry_year", "expiry_month",
             "batch_qty", "batch_purchase_rate", "remarks",
             "created_by", "created_at_ad", "created_at_bs",
         ]
@@ -425,6 +461,28 @@ class ItemBatchModel:
                 new_batch_id, new_ledger_id, batch_data.get("item_id"), ledger_data.get("transaction_type"),
             )
             return new_batch_id, new_ledger_id
+
+    def get_by_barcode(self, barcode: str) -> Optional[dict[str, Any]]:
+        """Looks up which batch (and therefore which item) a scanned
+        barcode belongs to -- used by Sale/Purchase's barcode-scan-to-add
+        flow and by the duplicate-barcode check in ItemEngine.add_batch()."""
+        sql = "SELECT * FROM item_batch WHERE barcode = %(barcode)s LIMIT 1;"
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, {"barcode": barcode})
+                return cur.fetchone()
+
+    def exists_barcode(self, barcode: str, exclude_batch_id: Optional[int] = None) -> bool:
+        sql = "SELECT 1 FROM item_batch WHERE barcode = %(barcode)s"
+        params: dict[str, Any] = {"barcode": barcode}
+        if exclude_batch_id is not None:
+            sql += " AND item_batch_id != %(exclude_id)s"
+            params["exclude_id"] = exclude_batch_id
+        sql += " LIMIT 1;"
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                return cur.fetchone() is not None
 
     def update_qty_with_ledger(self, item_batch_id: int, quantity_change: float, ledger_data: dict[str, Any]) -> int:
         """

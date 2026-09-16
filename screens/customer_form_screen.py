@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
 )
 
 from utils.message import show_success, show_error, confirm
+from utils.window_chrome import apply_standard_window_chrome
+from utils.icon_utils import themed_icon
 
 from engines import customer_engine
 from widgets.photo_picker import PhotoPicker

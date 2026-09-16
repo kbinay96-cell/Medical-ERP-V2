@@ -244,22 +244,27 @@ class PurchaseInvoiceListScreen(QWidget):
         self.table.setItem(row, COL_STATUS, QTableWidgetItem(invoice.status))
 
         view_button = QPushButton("View")
+        view_button.setToolTip("View / print this invoice (read-only).")
         view_button.clicked.connect(
             lambda _, pid=invoice.purchase_invoice_id: self._on_view_clicked(pid)
         )
         self.table.setCellWidget(row, COL_VIEW, view_button)
 
-        cancel_button = QPushButton("Cancel")
-        cancel_button.setEnabled(invoice.status == "Posted")
-        cancel_button.clicked.connect(
-            lambda _, pid=invoice.purchase_invoice_id: self._on_cancel_clicked(pid)
+        edit_button = QPushButton("Edit")
+        is_po_linked = getattr(invoice, "purchase_order_id", None) is not None
+        if invoice.status == "Cancelled":
+            edit_button.setEnabled(False)
+            edit_button.setToolTip("Cancelled invoices cannot be edited.")
+        elif is_po_linked:
+            edit_button.setEnabled(False)
+            edit_button.setToolTip(
+                "This invoice is linked to a Purchase Order and cannot be edited. "
+                "Use Purchase Return for corrections instead."
+            )
+        edit_button.clicked.connect(
+            lambda _, pid=invoice.purchase_invoice_id: self._on_edit_clicked(pid)
         )
-        self.table.setCellWidget(row, COL_CANCEL, cancel_button)
-
-        print_button = QPushButton("Print")
-        print_button.setEnabled(False)
-        print_button.setToolTip("Coming in a future phase")
-        self.table.setCellWidget(row, COL_PRINT, print_button)
+        self.table.setCellWidget(row, COL_CANCEL, edit_button)
 
     # -- actions ------------------------------------------------------------
 
@@ -272,6 +277,20 @@ class PurchaseInvoiceListScreen(QWidget):
             supplier_engine=self._supplier_engine,
             item_engine=self._item_engine,
             current_user_id=self._current_user_id,
+        )
+        dialog.exec()
+        self.refresh()
+
+    def _on_edit_clicked(self, purchase_invoice_id: int) -> None:
+        from screens.purchase_invoice_form_screen import PurchaseInvoiceFormScreen
+        dialog = PurchaseInvoiceFormScreen(
+            parent=self,
+            engine=self._engine,
+            purchase_order_engine=self._engine._purchase_order_engine,
+            supplier_engine=self._supplier_engine,
+            item_engine=self._item_engine,
+            current_user_id=self._current_user_id,
+            existing_invoice_id=purchase_invoice_id,
         )
         dialog.exec()
         self.refresh()
@@ -293,30 +312,4 @@ class PurchaseInvoiceListScreen(QWidget):
         )
         dialog.exec()
 
-    def _on_cancel_clicked(self, purchase_invoice_id: int) -> None:
-        """Soft-delete with reason — does NOT reverse stock_ledger entries;
-        that's a separate, explicit Purchase Return flow."""
-        reason, ok = QInputDialog.getText(
-            self, "Cancel Purchase Invoice", "Reason for cancellation:"
-        )
-        if not ok or not reason.strip():
-            return
-
-        from engines.permission_enforcer import PermissionDeniedError
-
-        try:
-            self._engine.cancel_purchase_invoice(
-                purchase_invoice_id, self._current_user_id, reason.strip()
-            )
-        except (RecordNotFoundError, ValidationError) as exc:
-            QMessageBox.warning(self, "Cannot Cancel", str(exc))
-            return
-        except PermissionDeniedError as exc:
-            QMessageBox.warning(self, "Permission Denied", str(exc))
-            return
-        except Exception:
-            logger.exception("Failed to cancel purchase invoice %s", purchase_invoice_id)
-            QMessageBox.critical(self, "Error", "Could not cancel the purchase invoice.")
-            return
-
-        self.refresh()
+    

@@ -79,6 +79,36 @@ class PurchaseInvoiceModel:
                 conn.commit()
                 return new_id
 
+    def update_invoice(self, purchase_invoice_id: int, data: dict[str, Any]) -> None:
+        """Updates purchase_invoice header columns for an existing invoice.
+        Same dict->SET pattern as insert_invoice(); caller passes only the
+        columns that should change."""
+        get_connection = _get_connection()
+        keys = list(data.keys())
+        set_clause = ", ".join([f"{k} = %s" for k in keys])
+        values = [data[k] for k in keys] + [purchase_invoice_id]
+
+        sql = f"UPDATE purchase_invoice SET {set_clause} WHERE purchase_invoice_id = %s"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, values)
+                conn.commit()
+
+    def delete_items_by_invoice(self, purchase_invoice_id: int) -> None:
+        """Hard-deletes all purchase_invoice_item rows for this invoice, so
+        Edit can re-insert a fresh set of lines via insert_invoice_item().
+        purchase_invoice_item has no soft-delete of its own -- only the
+        invoice header does -- so a real DELETE is correct here, not a flag
+        flip. Caller (Engine) must have already reversed these lines'
+        stock effects BEFORE calling this, since once deleted their
+        item_batch_id/qty values are gone."""
+        get_connection = _get_connection()
+        sql = "DELETE FROM purchase_invoice_item WHERE purchase_invoice_id = %s"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (purchase_invoice_id,))
+                conn.commit()
+
     def update_invoice_item_batch_link(self, purchase_invoice_item_id: int, item_batch_id: int) -> None:
         """After ItemEngine.add_batch() succeeds, stamp item_batch_id onto the invoice line."""
         get_connection = _get_connection()

@@ -79,6 +79,7 @@ class LoginScreen(QMainWindow):
         self._load_companies()
         self._load_financial_years()
         self._show_license_and_subscription_status()
+        self._setup_remember_me()
 
         self.ui.txtUsername.setFocus()
 
@@ -243,6 +244,38 @@ class LoginScreen(QMainWindow):
     # LOGIN
     # -----------------------------------------------------
 
+    def _setup_remember_me(self):
+        """Wire the Remember Me checkbox: username autocomplete (from
+        locally saved logins) + password/company/financial-year autofill
+        on selecting a suggestion."""
+        from PySide6.QtWidgets import QCompleter
+        from PySide6.QtCore import Qt
+        from utils.remembered_logins import get_remembered_usernames
+
+        usernames = get_remembered_usernames()
+        self._remember_me_completer = QCompleter(usernames, self)
+        self._remember_me_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._remember_me_completer.setFilterMode(Qt.MatchStartsWith)
+        self.ui.txtUsername.setCompleter(self._remember_me_completer)
+        self._remember_me_completer.activated.connect(self._on_remembered_username_selected)
+
+    def _on_remembered_username_selected(self, username):
+        from utils.remembered_logins import load_remembered_login
+
+        entry = load_remembered_login(username)
+        if entry is None:
+            return
+        self.ui.txtPassword.setText(entry.get("password", ""))
+        if entry.get("company_id") is not None:
+            idx = self.ui.cmbCompany.findData(entry["company_id"])
+            if idx >= 0:
+                self.ui.cmbCompany.setCurrentIndex(idx)
+        if entry.get("financial_year"):
+            idx = self.ui.cmbFinancialYear.findText(entry["financial_year"])
+            if idx >= 0:
+                self.ui.cmbFinancialYear.setCurrentIndex(idx)
+        self.ui.chkRememberMe.setChecked(True)
+
     def handle_login(self):
         username = self.ui.txtUsername.text().strip()
 
@@ -275,6 +308,12 @@ class LoginScreen(QMainWindow):
         from engines import session_manager
         session_manager.reset_activity_tracking()
         session_manager.set_current_role(result.roleid, result.is_admin)
+
+        from utils.remembered_logins import save_remembered_login, remove_remembered_login
+        if self.ui.chkRememberMe.isChecked():
+            save_remembered_login(username, password, company_id, financial_year)
+        else:
+            remove_remembered_login(username)
 
         self.login_result = result
         self.close()

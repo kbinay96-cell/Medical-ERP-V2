@@ -66,10 +66,14 @@ before wiring this screen.
 
 from __future__ import annotations
 
+import os
+import tempfile
+
+from screens.sale_invoice_view_dialog import SaleInvoiceViewDialog
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer, QTime, QDate
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QCompleter, QDialog,
     QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
@@ -80,6 +84,7 @@ from engines.exceptions import DuplicateRecordError, ValidationError
 from engines.permission_enforcer import PermissionDeniedError
 from engines.item_free_scheme_engine import ItemFreeSchemeEngine
 from engines.sale_engine import EngineErrorWithInvoice, SaleEngine
+from engines.exceptions import RecordNotFoundError
 from engines import settings_engine
 from utils.searchable_combo_helper import populate_searchable_combo
 from utils.window_chrome import apply_standard_window_chrome
@@ -89,9 +94,15 @@ from utils.window_chrome import apply_standard_window_chrome
 # second, possibly-drifting copy of the same BS-date-picker widget and
 # blank-until-typed spinbox factory. If these get promoted to a shared
 # utils module later, update this import accordingly.
-from screens.purchase_invoice_form_screen import _BsDatePicker, _make_blank_until_typed_spin
+from screens.purchase_invoice_form_screen import _make_blank_until_typed_spin
 
 logger = logging.getLogger(__name__)
+
+from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QGridLayout, QDialog
+from PySide6.QtCore import Signal
+from datetime import date as _date
+from widgets.bs_calendar_date_picker import BSCalendarDatePicker
 
 # ---------------------------------------------------------------------- #
 # Column layout -- Item/Qty/Rate/Amount are ALWAYS visible (never gated by
@@ -172,7 +183,9 @@ class SaleInvoiceFormScreen(QDialog):
         item_engine,
         item_free_scheme_engine: ItemFreeSchemeEngine,
         current_user_id: int,
+        current_username: str = "system",
         embedded: bool = False,
+        existing_invoice_id: Optional[int] = None,
     ) -> None:
         super().__init__(parent)
         self._embedded = embedded
@@ -183,6 +196,8 @@ class SaleInvoiceFormScreen(QDialog):
         self._item_engine = item_engine
         self._item_free_scheme_engine = item_free_scheme_engine
         self._current_user_id = current_user_id
+        self._current_username = current_username
+        self._editing_invoice_id: Optional[int] = None
 
         # Sale Mode is fixed for the whole invoice the moment the screen
         # opens -- same single-read-then-locked contract SaleEngine itself
@@ -191,6 +206,7 @@ class SaleInvoiceFormScreen(QDialog):
         # every row's preview stay consistent for this one invoice even if
         # the Setting changes elsewhere mid-session.
         self._is_wholesale = self._engine.is_wholesale_mode()
+        self._free_scheme_enabled = self._engine.is_free_scheme_enabled()
 
         # Per-row state: whether the user has manually typed into Rate /
         # Free Qty for that row (as opposed to it being auto-filled by a
@@ -198,6 +214,7 @@ class SaleInvoiceFormScreen(QDialog):
         # is never clobbered by a later preview -- confirmed rule.
         self._row_rate_overridden: dict[int, bool] = {}
         self._row_free_qty_overridden: dict[int, bool] = {}
+        self._row_forced_batch_id: dict[int, int] = {}
 
         # One-time cache, same reasoning as PurchaseInvoiceFormScreen's
         # self._all_items -- every row's item combo is populated from this
@@ -221,7 +238,10 @@ class SaleInvoiceFormScreen(QDialog):
         self._build_ui()
         self._connect_signals()
         self._populate_area_combo()
-        self._add_line_row()
+        if existing_invoice_id is not None:
+            self._load_existing_invoice(existing_invoice_id)
+        else:
+            self._add_line_row()
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -229,8 +249,36 @@ class SaleInvoiceFormScreen(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
+        # HEADER: Back button + title + Invoice No + Date (all one row now)
+        header_row = QHBoxLayout()
+        if self._embedded:
+            self.btnBack = QPushButton("← Back", self)
+            self.btnBack.setCursor(Qt.PointingHandCursor)
+            self.btnBack.setFlat(True)
+            self.btnBack.setStyleSheet(
+                "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
+                "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
+            )
+            self.btnBack.clicked.connect(self.reject)
+            header_row.addWidget(self.btnBack)
+        header_title = QLabel("New Sale Invoice")
+        header_title.setStyleSheet("font-weight: bold; font-size: 16px;")
+        header_row.addWidget(header_title)
+        header_row.addSpacing(24)
+        header_row.addWidget(QLabel("Invoice No:"))
+        self.invoice_no_label = QLabel("(auto-generated)")
+        self.invoice_no_label.setStyleSheet("color: #666; font-style: italic;")
+        header_row.addWidget(self.invoice_no_label)
+        header_row.addSpacing(24)
+        header_row.addWidget(QLabel("Date:"))
+        self.invoice_date_input = BSCalendarDatePicker()
+        header_row.addWidget(self.invoice_date_input)
+        header_row.addStretch()
+        root.addLayout(header_row)
+
         top_row = QHBoxLayout()
 
+        # LEFT: customer selection
         left_form = QFormLayout()
         self.area_combo = QComboBox()
         self.area_combo.setMinimumWidth(200)
@@ -239,48 +287,81 @@ class SaleInvoiceFormScreen(QDialog):
         self.customer_combo = QComboBox()
         self.customer_combo.setMinimumWidth(240)
         left_form.addRow("Customer:", self.customer_combo)
-        top_row.addLayout(left_form)
-
-        mid_form = QFormLayout()
-        self.invoice_date_input = _BsDatePicker()
-        mid_form.addRow("Invoice Date (BS):", self.invoice_date_input)
 
         self.payment_type_combo = QComboBox()
         for label, data in PAYMENT_TYPE_OPTIONS:
             self.payment_type_combo.addItem(label, data)
-        mid_form.addRow("Payment Type:", self.payment_type_combo)
+        left_form.addRow("Payment Type:", self.payment_type_combo)
 
-        self.amount_paid_input = _make_blank_until_typed_spin(maximum=100_000_000)
-        mid_form.addRow("Amount Paid Now:", self.amount_paid_input)
-        top_row.addLayout(mid_form)
+        top_row.addLayout(left_form)
 
-        # Read-only customer info panel -- purely displays what
-        # customer_engine.get_customer() already returns, no new business
-        # logic (per confirmed scope).
+        # Customer Info panel -- Contact No / Price Level / Credit Limit /
+        # Customer Balance (outstanding) / Sale Mode. Read-only, purely
+        # displays what customer_engine.get_customer() + SaleEngine's
+        # get_customer_outstanding() already return.
         info_form = QFormLayout()
+        self.contact_no_label = QLabel("-")
+        info_form.addRow("Contact No.:", self.contact_no_label)
         self.price_level_label = QLabel("-")
         info_form.addRow("Price Level:", self.price_level_label)
         self.credit_limit_label = QLabel("-")
         info_form.addRow("Credit Limit:", self.credit_limit_label)
+        self.outstanding_label = QLabel("-")
+        self.outstanding_label.setStyleSheet("font-weight: bold; color: #8e44ad;")
+        info_form.addRow("Customer Balance:", self.outstanding_label)
         self.mode_label = QLabel("Wholesale" if self._is_wholesale else "Retail")
         self.mode_label.setStyleSheet("font-weight: bold;")
         info_form.addRow("Sale Mode:", self.mode_label)
         top_row.addLayout(info_form)
 
-        top_row.addStretch()
+        # RIGHT: amount details panel (paid / bill discount / grand total / due)
+        amount_panel = QFormLayout()
+        self.amount_paid_input = _make_blank_until_typed_spin(maximum=100_000_000)
+        amount_panel.addRow("Amount Paid Now:", self.amount_paid_input)
 
-        button_col = QVBoxLayout()
-        self.add_line_button = QPushButton("+ Add Item")
-        button_col.addWidget(self.add_line_button)
-        top_row.addLayout(button_col)
+        self.bill_discount_mode_combo = QComboBox()
+        self.bill_discount_mode_combo.addItems(["Flat", "%"])
+        self.bill_discount_input = _make_blank_until_typed_spin(maximum=100_000_000)
+        discount_row = QHBoxLayout()
+        discount_row.addWidget(self.bill_discount_mode_combo)
+        discount_row.addWidget(self.bill_discount_input)
+        amount_panel.addRow("Bill Discount:", discount_row)
+
+        self.grand_total_label = QLabel("Grand Total (preview): 0.00")
+        self.grand_total_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        amount_panel.addRow(self.grand_total_label)
+
+        self.due_label = QLabel("Due: 0.00")
+        self.due_label.setStyleSheet("font-weight: bold; color: #c0392b;")
+        amount_panel.addRow(self.due_label)
+
+        top_row.addLayout(amount_panel)
+
+        # Equal-width 3-column split (Customer / Info / Amount panels) --
+        # replaces the old addStretch()-based layout where the amount
+        # panel only took its content width and left space unused.
+        top_row.setStretchFactor(left_form, 1)
+        top_row.setStretchFactor(info_form, 1)
+        top_row.setStretchFactor(amount_panel, 1)
 
         root.addLayout(top_row)
 
-        table_action_row = QHBoxLayout()
-        self.remove_line_button = QPushButton("Remove Selected Row")
-        table_action_row.addWidget(self.remove_line_button)
-        table_action_row.addStretch()
-        root.addLayout(table_action_row)
+        # Barcode scan row -- typing/scanning a barcode + Enter looks up
+        # the matching item_batch and selects that item on a row. Works
+        # identically with a hardware scanner or a phone scanner-app,
+        # since both just type text + Enter into whichever field has focus.
+        scan_row = QHBoxLayout()
+        scan_row.addWidget(QLabel("Scan Barcode:"))
+        self.barcode_scan_input = QLineEdit()
+        self.barcode_scan_input.setPlaceholderText("Scan or type a batch barcode, then Enter")
+        self.barcode_scan_input.setMaximumWidth(260)
+        self.barcode_scan_input.returnPressed.connect(self._on_barcode_scanned)
+        scan_row.addWidget(self.barcode_scan_input)
+        self.connect_mobile_button = QPushButton("📱 Connect Mobile")
+        self.connect_mobile_button.clicked.connect(self._on_connect_mobile_clicked)
+        scan_row.addWidget(self.connect_mobile_button)
+        scan_row.addStretch()
+        root.addLayout(scan_row)
 
         self.table = QTableWidget(0, COLUMN_COUNT)
         self.table.setHorizontalHeaderLabels(COLUMN_HEADERS)
@@ -303,25 +384,21 @@ class SaleInvoiceFormScreen(QDialog):
 
         self._apply_column_visibility()
 
-        remarks_form = QFormLayout()
-        self.remarks_input = QLineEdit()
-        self.remarks_input.setPlaceholderText("Optional notes about this invoice")
-        remarks_form.addRow("Remarks:", self.remarks_input)
-        root.addLayout(remarks_form)
-
-        totals_row = QHBoxLayout()
-        totals_row.addStretch()
-        self.total_qty_label = QLabel("Total Qty: 0")
-        totals_row.addWidget(self.total_qty_label)
-        self.total_free_qty_label = QLabel("Total Free: 0")
-        totals_row.addWidget(self.total_free_qty_label)
-        self.grand_total_label = QLabel("Grand Total (preview): 0.00")
-        self.grand_total_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-        totals_row.addWidget(self.grand_total_label)
-        root.addLayout(totals_row)
-
+        # FOOTER: Remarks (narrow) + Total Qty/Free + Remove Row + Save/Cancel -- all one row
         footer_row = QHBoxLayout()
+        footer_row.addWidget(QLabel("Remarks:"))
+        self.remarks_input = QLineEdit()
+        self.remarks_input.setPlaceholderText("Optional notes")
+        self.remarks_input.setMaximumWidth(220)
+        footer_row.addWidget(self.remarks_input)
+        footer_row.addSpacing(16)
+        self.total_qty_label = QLabel("Total Qty: 0")
+        footer_row.addWidget(self.total_qty_label)
+        self.total_free_qty_label = QLabel("Total Free: 0")
+        footer_row.addWidget(self.total_free_qty_label)
         footer_row.addStretch()
+        self.remove_line_button = QPushButton("Remove Selected Row")
+        footer_row.addWidget(self.remove_line_button)
         self.save_button = QPushButton("Save")
         self.cancel_button = QPushButton("Cancel")
         footer_row.addWidget(self.save_button)
@@ -348,7 +425,7 @@ class SaleInvoiceFormScreen(QDialog):
         # setting SaleEngine.is_wholesale_mode() reads) -- never an
         # independent toggle, per confirmed rule #7 ("Free column hidden =
         # Retail, free-scheme never applies").
-        show_free = self._is_wholesale
+        show_free = self._free_scheme_enabled
         return {
             COL_ITEM: True,
             COL_BATCH_NO: show_batch,
@@ -357,7 +434,7 @@ class SaleInvoiceFormScreen(QDialog):
             COL_ENTRY_MODE: show_free,
             COL_QTY: True,
             COL_FREE_QTY: show_free,
-            COL_RATE: True,
+            COL_RATE: self._is_wholesale,
             COL_DISCOUNT_PCT: show_discount,
             COL_MRP: show_mrp,
             COL_TAX_PCT: show_tax,
@@ -366,7 +443,6 @@ class SaleInvoiceFormScreen(QDialog):
         }
 
     def _connect_signals(self) -> None:
-        self.add_line_button.clicked.connect(lambda: self._add_line_row())
         self.remove_line_button.clicked.connect(self._on_remove_selected_row)
         self.save_button.clicked.connect(self._on_save_clicked)
         self.cancel_button.clicked.connect(self.reject)
@@ -376,6 +452,9 @@ class SaleInvoiceFormScreen(QDialog):
         self.customer_combo.currentIndexChanged.connect(
             lambda _: self._on_customer_changed(self.customer_combo.currentData())
         )
+        self.bill_discount_input.valueChanged.connect(lambda _: self._update_totals_preview())
+        self.bill_discount_mode_combo.currentIndexChanged.connect(lambda _: self._update_totals_preview())
+        self.amount_paid_input.valueChanged.connect(lambda _: self._update_totals_preview())
 
     # ------------------------------------------------------------------ #
     # Header: Area -> Customer two-combo cascade
@@ -405,18 +484,26 @@ class SaleInvoiceFormScreen(QDialog):
             self._selected_price_level_id = None
             self.price_level_label.setText("-")
             self.credit_limit_label.setText("-")
+            self.contact_no_label.setText("-")
+            self.outstanding_label.setText("-")
             return
         customer = self._customer_engine.get_customer(customer_id)
         if customer is None:
             self._selected_price_level_id = None
             self.price_level_label.setText("-")
             self.credit_limit_label.setText("-")
+            self.contact_no_label.setText("-")
+            self.outstanding_label.setText("-")
             return
         self._selected_price_level_id = customer.get("price_level_id")
         price_level_name = self._price_levels_by_id.get(self._selected_price_level_id, "-")
         self.price_level_label.setText(price_level_name or "-")
         credit_limit = customer.get("credit_limit")
         self.credit_limit_label.setText(f"{credit_limit:,.2f}" if credit_limit is not None else "-")
+        contact_no = customer.get("mobile") or customer.get("phone") or customer.get("alternate_mobile")
+        self.contact_no_label.setText(contact_no or "-")
+        outstanding = self._engine.get_customer_outstanding(customer_id)
+        self.outstanding_label.setText(f"{outstanding:,.2f}")
 
     # ------------------------------------------------------------------ #
     # Grid
@@ -467,6 +554,91 @@ class SaleInvoiceFormScreen(QDialog):
 
         self._apply_column_visibility()
 
+    def _load_existing_invoice(self, invoice_id: int) -> None:
+        try:
+            dto = self._engine.get_sale_invoice(invoice_id)
+        except RecordNotFoundError as exc:
+            QMessageBox.critical(self, "Not Found", str(exc))
+            self._add_line_row()
+            return
+
+        self._editing_invoice_id = invoice_id
+        self.setWindowTitle(f"Edit Sale Invoice — {dto.invoice_number}")
+        self.invoice_no_label.setText(dto.invoice_number)
+
+        area_idx = self.area_combo.findData(dto.area_id)
+        if area_idx >= 0:
+            self.area_combo.setCurrentIndex(area_idx)
+
+        customer_idx = self.customer_combo.findData(dto.customer_id)
+        if customer_idx >= 0:
+            self.customer_combo.setCurrentIndex(customer_idx)
+
+        self.invoice_date_input._set_bs_date(dto.invoice_date_bs)
+
+        payment_idx = self.payment_type_combo.findData(dto.payment_type)
+        if payment_idx >= 0:
+            self.payment_type_combo.setCurrentIndex(payment_idx)
+
+        self._set_spin_value_silently(self.amount_paid_input, dto.amount_paid_now)
+
+        if dto.bill_discount_percent > 0:
+            self.bill_discount_mode_combo.setCurrentText("%")
+            self._set_spin_value_silently(self.bill_discount_input, dto.bill_discount_percent)
+        else:
+            self.bill_discount_mode_combo.setCurrentText("Flat")
+            self._set_spin_value_silently(self.bill_discount_input, dto.bill_discount_amount)
+
+        self.remarks_input.setText(dto.remarks or "")
+
+        for line in dto.lines:
+            self._load_line_into_row(line)
+
+        self._add_line_row()
+        self._update_totals_preview()
+
+    def _load_line_into_row(self, line) -> None:
+        self._add_line_row()
+        row = self.table.rowCount() - 1
+
+        item_combo = self.table.cellWidget(row, COL_ITEM)
+        item_combo.blockSignals(True)
+        item_idx = item_combo.findData(line.item_id)
+        if item_idx >= 0:
+            item_combo.setCurrentIndex(item_idx)
+        item_combo.blockSignals(False)
+
+        entry_mode_combo = self.table.cellWidget(row, COL_ENTRY_MODE)
+        entry_mode_combo.blockSignals(True)
+        entry_idx = entry_mode_combo.findData(line.entry_mode)
+        if entry_idx >= 0:
+            entry_mode_combo.setCurrentIndex(entry_idx)
+        entry_mode_combo.blockSignals(False)
+
+        self._set_spin_value_silently(self.table.cellWidget(row, COL_QTY), line.qty)
+        self._set_spin_value_silently(self.table.cellWidget(row, COL_DISCOUNT_PCT), line.discount_percent)
+
+        self._row_rate_overridden[row] = True
+        self._row_free_qty_overridden[row] = True
+        self._row_forced_batch_id[row] = line.item_batch_id
+        self._set_spin_value_silently(self.table.cellWidget(row, COL_RATE), line.rate)
+        self._set_spin_value_silently(self.table.cellWidget(row, COL_FREE_QTY), line.free_qty)
+
+        line_input = {
+            "item_id": line.item_id,
+            "item_batch_id": line.item_batch_id,
+            "entry_mode": line.entry_mode,
+            "qty": line.qty,
+            "rate": line.rate,
+            "free_qty": line.free_qty,
+            "discount_percent": line.discount_percent,
+        }
+        try:
+            computed = self._engine.compute_line(line_input, self._is_wholesale)
+            self._apply_computed_line_to_row(row, computed)
+        except Exception:
+            logger.exception("Failed to recompute preview for existing line item_id=%s", line.item_id)
+
     def _remove_row(self, row: int) -> None:
         if self.table.rowCount() <= 1:
             return  # always keep at least one (possibly blank) row
@@ -493,9 +665,51 @@ class SaleInvoiceFormScreen(QDialog):
         spin.setValue(value)
         spin.blockSignals(False)
 
+    def _on_barcode_scanned(self) -> None:
+        barcode = self.barcode_scan_input.text().strip()
+        self.barcode_scan_input.clear()
+        self._process_scanned_barcode(barcode)
+
+    def _on_connect_mobile_clicked(self) -> None:
+        from screens.mobile_connect_dialog import MobileConnectDialog
+
+        dialog = MobileConnectDialog(self, item_lookup_fn=self._item_engine.get_item_id_by_barcode)
+        dialog.barcode_scanned.connect(self._process_scanned_barcode)
+        dialog.exec()
+
+    def _process_scanned_barcode(self, barcode: str) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        barcode = (barcode or "").strip()
+        if not barcode:
+            return
+        item_id = self._item_engine.get_item_id_by_barcode(barcode)
+        if item_id is None:
+            QMessageBox.warning(self, "Barcode Not Found", f"No batch is registered with barcode '{barcode}'.")
+            return
+
+        # Reuse the existing blank last row (Excel-style continuous entry
+        # already keeps one empty row at the bottom) instead of always
+        # inserting a new one.
+        last_row = self.table.rowCount() - 1
+        item_combo = self.table.cellWidget(last_row, COL_ITEM) if last_row >= 0 else None
+        if item_combo is None or item_combo.currentData() is not None:
+            last_row = self._add_row()
+            item_combo = self.table.cellWidget(last_row, COL_ITEM)
+
+        idx = item_combo.findData(item_id)
+        if idx >= 0:
+            item_combo.setCurrentIndex(idx)
+
     def _on_row_item_selected(self, row: int, item_id) -> None:
         if item_id is None:
             return
+
+        # Any manual (re-)selection of the item for this row invalidates
+        # any batch that was previously locked in from an edit-mode load --
+        # a freshly picked item must go through normal nearest-expiry
+        # batch selection, not the old item's batch.
+        self._row_forced_batch_id.pop(row, None)
 
         qty_spin = self.table.cellWidget(row, COL_QTY)
         entry_mode_combo = self.table.cellWidget(row, COL_ENTRY_MODE)
@@ -536,6 +750,7 @@ class SaleInvoiceFormScreen(QDialog):
         expiry_year = computed.get("expiry_year")
         expiry_text = f"{expiry_month:02d}/{expiry_year}" if expiry_month and expiry_year else ""
         self.table.item(row, COL_EXPIRY).setText(expiry_text)
+        self.table.item(row, COL_PACKING).setText(str(computed.get("packing") or ""))
         self.table.item(row, COL_MRP).setText(f"{computed.get('mrp', 0):.2f}")
         self.table.item(row, COL_TAX_PCT).setText(f"{computed.get('tax_percent', 0):.2f}")
         self.table.item(row, COL_TAX_AMOUNT).setText(f"{computed.get('tax_amount', 0):.2f}")
@@ -547,7 +762,7 @@ class SaleInvoiceFormScreen(QDialog):
             self._set_spin_value_silently(self.table.cellWidget(row, COL_FREE_QTY), computed.get("free_qty", 0))
 
         free_qty_spin = self.table.cellWidget(row, COL_FREE_QTY)
-        if self._is_wholesale:
+        if self._free_scheme_enabled:
             item_id = self.table.cellWidget(row, COL_ITEM).currentData()
             scheme = self._item_free_scheme_engine.get_scheme_for_item(item_id) if item_id else None
             if scheme is not None:
@@ -632,9 +847,20 @@ class SaleInvoiceFormScreen(QDialog):
             except ValueError:
                 pass
 
+        bill_discount_value = self.bill_discount_input.value() if self.bill_discount_input.text().strip() else 0.0
+        if self.bill_discount_mode_combo.currentText() == "%":
+            bill_discount_amount = round(total_amount * bill_discount_value / 100, 2)
+        else:
+            bill_discount_amount = bill_discount_value
+
+        grand_total_after_discount = total_amount - bill_discount_amount
+
         self.total_qty_label.setText(f"Total Qty: {total_qty:g}")
         self.total_free_qty_label.setText(f"Total Free: {total_free_qty:g}")
-        self.grand_total_label.setText(f"Grand Total (preview): {total_amount:,.2f}")
+        self.grand_total_label.setText(f"Grand Total (preview): {grand_total_after_discount:,.2f}")
+        paid = self.amount_paid_input.value() if self.amount_paid_input.text().strip() else 0.0
+        due = grand_total_after_discount - paid
+        self.due_label.setText(f"Due: {due:,.2f}")
 
     # ------------------------------------------------------------------ #
     # Save
@@ -661,12 +887,17 @@ class SaleInvoiceFormScreen(QDialog):
                 "qty": qty,
                 "discount_percent": self.table.cellWidget(row, COL_DISCOUNT_PCT).value(),
             }
+            if row in self._row_forced_batch_id:
+                line["item_batch_id"] = self._row_forced_batch_id[row]
             if self._row_rate_overridden.get(row):
                 line["rate"] = self.table.cellWidget(row, COL_RATE).value()
             if self._row_free_qty_overridden.get(row):
                 line["free_qty"] = self.table.cellWidget(row, COL_FREE_QTY).value()
 
             lines.append(line)
+
+        _bill_discount_value = self.bill_discount_input.value()
+        _bill_discount_is_percent = self.bill_discount_mode_combo.currentText() == "%"
 
         return {
             "customer_id": self.customer_combo.currentData(),
@@ -675,6 +906,8 @@ class SaleInvoiceFormScreen(QDialog):
             "invoice_date_bs": self.invoice_date_input.get_bs_date_string(),
             "payment_type": self.payment_type_combo.currentData(),
             "amount_paid_now": self.amount_paid_input.value(),
+            "bill_discount_percent": _bill_discount_value if _bill_discount_is_percent else 0.0,
+            "bill_discount_amount": _bill_discount_value if not _bill_discount_is_percent else 0.0,
             "remarks": self.remarks_input.text().strip(),
             "lines": lines,
         }
@@ -690,17 +923,20 @@ class SaleInvoiceFormScreen(QDialog):
             return
 
         try:
-            invoice_dto = self._engine.create_sale_invoice(payload, self._current_user_id)
+            if self._editing_invoice_id is not None:
+                invoice_dto = self._engine.update_sale_invoice(
+                    self._editing_invoice_id, payload, self._current_user_id
+                )
+            else:
+                invoice_dto = self._engine.create_sale_invoice(payload, self._current_user_id)
         except EngineErrorWithInvoice as exc:
-            # Invoice IS saved -- only stock reconciliation failed on one or
-            # more lines. Distinct message, NOT treated as a hard failure,
-            # mirrors PurchaseInvoiceFormScreen/ItemFormScreen's existing
-            # partial-success pattern.
             QMessageBox.warning(
                 self, "Saved With Stock Warning",
                 f"Invoice {exc.dto.invoice_number} was created, but stock could not "
                 f"be reduced for:\n" + "\n".join(exc.stock_errors),
             )
+            self.invoice_no_label.setText(exc.dto.invoice_number)
+            self._open_print_preview(exc.dto)
             if self._embedded:
                 self.saved.emit()
                 self.close_requested.emit()
@@ -716,17 +952,38 @@ class SaleInvoiceFormScreen(QDialog):
         except PermissionDeniedError as exc:
             QMessageBox.warning(self, "Permission Denied", str(exc))
             return
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Failed to create sale invoice")
-            QMessageBox.critical(self, "Error", "Could not save the sale invoice. Please try again.")
+            QMessageBox.critical(self, "Error", "Could not save the invoice. Please try again.")
             return
 
         QMessageBox.information(self, "Saved", f"Sale invoice {invoice_dto.invoice_number} saved successfully.")
+        self.invoice_no_label.setText(invoice_dto.invoice_number)
+        self._open_print_preview(invoice_dto)
         if self._embedded:
             self.saved.emit()
             self.close_requested.emit()
         else:
             self.accept()
+
+
+    def _open_print_preview(self, invoice_dto) -> None:
+        """Opens the Print Preview dialog automatically after a successful
+        save (both clean success and stock-warning success paths -- the
+        invoice IS persisted in both). Runs modally before the form closes,
+        so the user sees/prints the bill before returning to the list."""
+        try:
+            dialog = SaleInvoiceViewDialog(
+                self, invoice_dto, self._item_engine, self._customer_engine,
+                self._free_scheme_enabled,
+            )
+            dialog.exec()
+        except Exception:
+            logger.exception("Failed to open Sale Invoice print preview.")
+            QMessageBox.warning(
+                self, "Print Preview",
+                "The invoice was saved, but the print preview could not be opened.",
+            )
 
     def reject(self) -> None:
         if self._embedded:

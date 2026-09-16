@@ -108,7 +108,7 @@ class ItemFreeSchemeListScreen(QWidget):
     def refresh(self) -> None:
         search_text = self.search_input.text().strip() or None
         include_deleted = self.show_deleted_checkbox.isChecked()
-        self._rows = self._engine.list_schemes(search_text=search_text, include_deleted=include_deleted)
+        self._rows, _total = self._engine.list_schemes(search_text=search_text, include_deleted=include_deleted)
         self._populate_table()
 
     def _populate_table(self) -> None:

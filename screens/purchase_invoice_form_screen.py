@@ -155,6 +155,7 @@ class PurchaseInvoiceFormScreen(QDialog):
         item_engine,
         current_user_id: int,
         item_free_scheme_engine: ItemFreeSchemeEngine | None = None,
+        existing_invoice_id: int | None = None,
     ):
         super().__init__(parent)
         apply_standard_window_chrome(self, width=1200, height=800, start_maximized=True)
@@ -169,6 +170,7 @@ class PurchaseInvoiceFormScreen(QDialog):
         self._row_landing_costs: dict[int, float] = {}
         self._row_pricing_meta: dict[int, tuple[float, float]] = {}
         self._row_last_item_id: dict[int, int] = {}
+        self._existing_invoice_id = existing_invoice_id
 
         # Cached once — reused to populate every row's item combo without
         # re-querying the DB per row. NOTE: assumes ItemEngine.search_items()
@@ -177,12 +179,15 @@ class PurchaseInvoiceFormScreen(QDialog):
         # if ItemEngine's real signature differs.
         self._all_items, _ = self._item_engine.search_items(page=1, page_size=5000)
 
-        self.setWindowTitle("New Purchase Invoice")
+        self.setWindowTitle("Edit Purchase Invoice" if existing_invoice_id else "New Purchase Invoice")
         self.setMinimumSize(1300, 720)
 
         self._build_ui()
         self._connect_signals()
         self._populate_supplier_combo()
+
+        if existing_invoice_id is not None:
+            self._load_existing_invoice(existing_invoice_id)
 
     # -- UI construction ------------------------------------------------
 
@@ -238,6 +243,16 @@ class PurchaseInvoiceFormScreen(QDialog):
         table_action_row = QHBoxLayout()
         self.remove_line_button = QPushButton("Remove Selected Row")
         table_action_row.addWidget(self.remove_line_button)
+        table_action_row.addSpacing(16)
+        table_action_row.addWidget(QLabel("Scan Barcode:"))
+        self.barcode_scan_input = QLineEdit()
+        self.barcode_scan_input.setPlaceholderText("Scan or type a batch barcode, then Enter")
+        self.barcode_scan_input.setMaximumWidth(260)
+        self.barcode_scan_input.returnPressed.connect(self._on_barcode_scanned)
+        table_action_row.addWidget(self.barcode_scan_input)
+        self.connect_mobile_button = QPushButton("📱 Connect Mobile")
+        self.connect_mobile_button.clicked.connect(self._on_connect_mobile_clicked)
+        table_action_row.addWidget(self.connect_mobile_button)
         table_action_row.addStretch()
         root.addLayout(table_action_row)
 
@@ -325,6 +340,71 @@ class PurchaseInvoiceFormScreen(QDialog):
             data_attr="supplier_id",
         )
 
+    def _load_existing_invoice(self, purchase_invoice_id: int) -> None:
+        """Prefills the form from an existing invoice for Edit. PO-linked
+        invoices are never reachable here (List screen disables Edit for
+        them, Engine rejects them too as defense-in-depth), so the
+        Link-to-PO combo is simply disabled outright in edit mode rather
+        than trying to reselect a PO."""
+        invoice = self._engine.get_purchase_invoice(purchase_invoice_id)
+
+        supplier_idx = self.supplier_combo.findData(invoice.supplier_id)
+        if supplier_idx >= 0:
+            self.supplier_combo.setCurrentIndex(supplier_idx)
+
+        self.invoice_number_input.setText(invoice.invoice_number)
+        self.invoice_date_input.set_bs_date_string(invoice.invoice_date_bs)
+
+        self.link_po_combo.setEnabled(False)
+        self.link_po_combo.setToolTip("Editing is not available for Purchase-Order-linked invoices.")
+
+        self.freight_input.setValue(invoice.total_freight)
+        self.other_charges_input.setValue(invoice.total_other_charges)
+        self.bill_discount_input.setValue(invoice.bill_discount_amount)
+        self.remarks_input.setText(invoice.remarks or "")
+
+        for line in invoice.lines:
+            # purchase_rate was saved as (amount / qty) with no discount
+            # applied (see known Super-Disc%-ignored issue), so Amount
+            # reconstructs exactly as purchase_rate * qty.
+            amount = round(line.purchase_rate * line.qty, 4) if line.qty else 0.0
+            self._add_line_row(item_id=line.item_id, qty=line.qty, amount=amount)
+            row = self.table.rowCount() - 1
+
+            batch_item = self.table.item(row, COL_BATCH_NO)
+            if batch_item is not None:
+                batch_item.setText(line.batch_no)
+
+            expiry_widget = self.table.cellWidget(row, COL_EXPIRY)
+            if expiry_widget is not None:
+                expiry_widget.setDate(QDate(line.expiry_year, line.expiry_month, 1))
+
+            free_qty_widget = self.table.cellWidget(row, COL_FREE_QTY)
+            if free_qty_widget is not None:
+                free_qty_widget.blockSignals(True)
+                free_qty_widget.setValue(line.free_qty)
+                free_qty_widget.blockSignals(False)
+
+            discount_widget = self.table.cellWidget(row, COL_DISCOUNT_PCT)
+            if discount_widget is not None:
+                discount_widget.blockSignals(True)
+                discount_widget.setValue(line.discount_percent)
+                discount_widget.blockSignals(False)
+
+            mrp_widget = self.table.cellWidget(row, COL_MRP)
+            if mrp_widget is not None:
+                mrp_widget.blockSignals(True)
+                mrp_widget.setValue(line.mrp)
+                mrp_widget.blockSignals(False)
+
+            sale_rate_widget = self.table.cellWidget(row, COL_SALE_RATE)
+            if sale_rate_widget is not None:
+                sale_rate_widget.blockSignals(True)
+                sale_rate_widget.setValue(line.sale_rate)
+                sale_rate_widget.blockSignals(False)
+
+        self._recalculate_all_line_previews()
+
     # -- Bill attachment (external file only — never persisted in DB) -------
 
     def _on_attach_bill_clicked(self) -> None:
@@ -404,6 +484,29 @@ class PurchaseInvoiceFormScreen(QDialog):
             self._add_line_row(item_id=line.item_id, qty=line.ordered_qty, amount=line.ordered_qty * line.rate)
 
     # -- line-item grid --------------------------------------------------------
+    def _on_barcode_scanned(self) -> None:
+        barcode = self.barcode_scan_input.text().strip()
+        self.barcode_scan_input.clear()
+        self._process_scanned_barcode(barcode)
+
+    def _on_connect_mobile_clicked(self) -> None:
+        from screens.mobile_connect_dialog import MobileConnectDialog
+
+        dialog = MobileConnectDialog(self, item_lookup_fn=self._item_engine.get_item_id_by_barcode)
+        dialog.barcode_scanned.connect(self._process_scanned_barcode)
+        dialog.exec()
+
+    def _process_scanned_barcode(self, barcode: str) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        barcode = (barcode or "").strip()
+        if not barcode:
+            return
+        item_id = self._item_engine.get_item_id_by_barcode(barcode)
+        if item_id is None:
+            QMessageBox.warning(self, "Barcode Not Found", f"No batch is registered with barcode '{barcode}'.")
+            return
+        self._add_line_row(item_id=item_id)
 
     def _add_line_row(
         self,
@@ -506,13 +609,13 @@ class PurchaseInvoiceFormScreen(QDialog):
     def _get_business_type(self) -> str:
         """Reads the global Retailer/Wholesaler pricing-mode setting."""
         try:
-          return settings_engine.get_setting('general.business_type', 'Retailer')
+          return settings_engine.get_setting('general.business_type', 'Retail')
         except Exception:
           logger.exception("Failed to load business type setting.")
-          return 'Retailer'
+          return 'Retail'
 
     def _is_wholesaler(self) -> bool:
-        return self._get_business_type() == 'Wholesaler'
+        return self._get_business_type() == 'Wholesale'
 
     def _on_item_or_qty_changed(self, row_index: int) -> None:
         """Fires when the item combo OR qty changes on a row. Enables the
@@ -761,7 +864,12 @@ class PurchaseInvoiceFormScreen(QDialog):
         from engines.permission_enforcer import PermissionDeniedError
 
         try:
-            invoice_dto = self._engine.create_purchase_invoice(payload, self._current_user_id)
+            if self._existing_invoice_id is not None:
+                invoice_dto = self._engine.update_purchase_invoice(
+                    self._existing_invoice_id, payload, self._current_user_id
+                )
+            else:
+                invoice_dto = self._engine.create_purchase_invoice(payload, self._current_user_id)
         except DuplicateRecordError as exc:
             QMessageBox.warning(self, "Duplicate Invoice", str(exc))
             return
@@ -786,7 +894,17 @@ class PurchaseInvoiceFormScreen(QDialog):
             if line["item_id"] and line.get("mrp"):
                 self._item_engine.update_item_mrp(line["item_id"], line["mrp"])
 
+        # Keep Item Master's purchase_rate reflecting the latest actual
+        # (free-qty + discount + CC + freight aware) landing cost --
+        # payload["lines"] has no landing cost, only invoice_dto.lines does.
+        for dto_line in invoice_dto.lines:
+            if dto_line.item_id and dto_line.landing_cost_per_unit:
+                self._item_engine.update_item_purchase_rate(
+                    dto_line.item_id, dto_line.landing_cost_per_unit
+                )
+
+        action_word = "updated" if self._existing_invoice_id is not None else "saved"
         QMessageBox.information(
-            self, "Saved", f"Purchase invoice {invoice_dto.internal_ref_number} saved successfully."
+            self, "Saved", f"Purchase invoice {invoice_dto.internal_ref_number} {action_word} successfully."
         )
         self.accept()

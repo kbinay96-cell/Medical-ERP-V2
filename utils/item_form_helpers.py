@@ -78,6 +78,7 @@ def build_item_payload(form_values: dict[str, Any]) -> dict[str, Any]:
         "status": form_values.get("status") or "Active",
          "super_discount_percent": parse_decimal(form_values.get("super_discount_percent_text"), "Super Discount %"),
         "remarks": (form_values.get("remarks") or "").strip(),
+        "packing": (form_values.get("packing") or "").strip() or None,
     }
 
 
@@ -86,6 +87,7 @@ def build_batch_payload(form_values: dict[str, Any]) -> dict[str, Any]:
     expected payload shape."""
     return {
         "batch_no": (form_values.get("batch_no") or "").strip(),
+        "barcode": (form_values.get("barcode") or "").strip() or None,
         "expiry_year": parse_int(form_values.get("expiry_year_text"), "Expiry Year"),
         "expiry_month": parse_int(form_values.get("expiry_month_text"), "Expiry Month"),
         "batch_qty": parse_decimal(form_values.get("batch_qty_text"), "Batch Quantity"),

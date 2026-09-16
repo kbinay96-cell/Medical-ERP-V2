@@ -9,9 +9,9 @@ everything goes through engines.dashboard_engine.
 """
 
 from PySide6.QtCore import Qt, QTimer, QTime, QDate, QSize
-from PySide6.QtGui import QShortcut, QKeySequence, QIcon
+from PySide6.QtGui import QShortcut, QKeySequence, QIcon, QFont
 from utils.icon_utils import themed_icon
-from PySide6.QtWidgets import QMainWindow, QTreeWidgetItem, QApplication
+from PySide6.QtWidgets import QMainWindow, QTreeWidgetItem, QApplication, QHeaderView
 
 from ui.ui_dashboard import Ui_MainWindow
 from utils.message import show_info, confirm
@@ -94,6 +94,37 @@ MODULE_ICONS = {
     "Settings": "settings",
 }
 
+SCREEN_ICONS = {
+    "Company": "building",
+    "Supplier": "truck",
+    "Manufacturer": "building",
+    "Customer": "customer",
+    "Item": "box",
+    "Supplier-Mfg Discount": "money",
+    "Country Tax": "globe",
+    "Purchase": "cart",
+    "Purchase Order": "cart",
+    "Purchase Return": "refresh",
+    "New Sale": "money",
+    "Sale List": "list",
+    "Sale Free Scheme": "star",
+    "Stock Ledger": "report",
+    "Stock Master": "box",
+    "Payment": "money",
+    "Receipt": "money",
+    "Reports": "report",
+    "Audit Log": "list",
+    "Settings": "settings",
+    "User Master": "user",
+    "Password Reset Requests": "reset_password",
+    "Change Password": "key",
+}
+
+SIDEBAR_MODULE_FONT_SIZE = 11.5
+SIDEBAR_SCREEN_FONT_SIZE = 10.0
+SIDEBAR_ARROW_COLUMN_WIDTH = 28
+SIDEBAR_ICON_SIZE = 18
+
 
 class DashboardScreen(QMainWindow):
 
@@ -175,13 +206,23 @@ class DashboardScreen(QMainWindow):
 
             self._receipt_engine = ReceiptEngine(model=ReceiptModel())
 
+            sale_invoice_model = SaleInvoiceModel()
             self._sale_engine = SaleEngine(
-                model=SaleInvoiceModel(),
+                model=sale_invoice_model,
                 item_engine=self._item_engine,
                 item_free_scheme_engine=self._item_free_scheme_engine,
                 country_tax_lookup_fn=country_tax_lookup,
                 manufacturer_lookup_fn=manufacturer_lookup,
                 receipt_engine=self._receipt_engine,
+            )
+
+            from models.sale_return_model import SaleReturnModel
+            from engines.sale_return_engine import SaleReturnEngine
+
+            self._sale_return_engine = SaleReturnEngine(
+                model=SaleReturnModel(),
+                sale_invoice_model=sale_invoice_model,
+                item_engine=self._item_engine,
             )
         except Exception as e:
             from utils.app_logger import get_logger
@@ -193,6 +234,7 @@ class DashboardScreen(QMainWindow):
             self._supplier_engine = None
             self._item_engine = None
             self._receipt_engine = None
+            self._sale_return_engine = None
 
     # -----------------------------------------------------
     # SETUP
@@ -297,6 +339,8 @@ class DashboardScreen(QMainWindow):
     def _handle_theme_toggle(self):
         new_theme = toggle_theme()
         self._apply_icons()
+        self._build_sidebar_menu()
+        self._check_pending_password_resets()
         self.statusBar().showMessage(f"Theme switched to {new_theme}", 3000)
 
     def _handle_backup_database(self):
@@ -357,17 +401,52 @@ class DashboardScreen(QMainWindow):
         )
 
     def _build_sidebar_menu(self):
-        self.ui.treeSidebarMenu.clear()
+        tree = self.ui.treeSidebarMenu
+        tree.clear()
+
+        # Two columns: column 0 = icon + label (stretches to fill the
+        # sidebar width), column 1 = a narrow fixed-width column that
+        # holds a down-arrow, module rows only. Native branch decoration
+        # is turned off because Qt's built-in expand arrow cannot be
+        # repositioned or theme-tinted via QSS (no ::branch/::down-arrow
+        # rule exists anywhere in this project) - so it's replaced with
+        # our own themed icon instead.
+        tree.setColumnCount(2)
+        tree.setHeaderHidden(True)
+        tree.setRootIsDecorated(False)
+        tree.setIconSize(QSize(SIDEBAR_ICON_SIZE, SIDEBAR_ICON_SIZE))
+        tree.header().setStretchLastSection(False)
+        tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        tree.header().setSectionResizeMode(1, QHeaderView.Fixed)
+        tree.header().resizeSection(1, SIDEBAR_ARROW_COLUMN_WIDTH)
+
+        # Font weight/size hierarchy is set per-row here rather than in
+        # QSS, since QTreeWidgetItem has no depth-based CSS selector -
+        # module (parent) rows are bold, child rows regular + smaller.
+        module_font = QFont()
+        module_font.setBold(True)
+        module_font.setPointSizeF(SIDEBAR_MODULE_FONT_SIZE)
+
+        screen_font = QFont()
+        screen_font.setBold(False)
+        screen_font.setPointSizeF(SIDEBAR_SCREEN_FONT_SIZE)
 
         for module_name, screen_names in SIDEBAR_MODULES.items():
-            module_item = QTreeWidgetItem([module_name])
+            module_item = QTreeWidgetItem([module_name, ""])
             icon_name = MODULE_ICONS.get(module_name, "list")
             module_item.setIcon(0, themed_icon(icon_name))
+            module_item.setIcon(1, themed_icon("chevron_down"))
+            module_item.setTextAlignment(1, Qt.AlignCenter)
+            module_item.setFont(0, module_font)
 
             for screen_name in screen_names:
-                module_item.addChild(QTreeWidgetItem([screen_name]))
+                child_item = QTreeWidgetItem([screen_name, ""])
+                child_icon_name = SCREEN_ICONS.get(screen_name, "list")
+                child_item.setIcon(0, themed_icon(child_icon_name))
+                child_item.setFont(0, screen_font)
+                module_item.addChild(child_item)
 
-            self.ui.treeSidebarMenu.addTopLevelItem(module_item)
+            tree.addTopLevelItem(module_item)
 
     def _check_pending_password_resets(self, show_alert: bool = False) -> None:
         if not getattr(self.login_result, "is_admin", False):
@@ -506,6 +585,15 @@ class DashboardScreen(QMainWindow):
 
     def _navigate_to(self, widget):
         """Push `widget` onto the content-area stack and show it."""
+        if widget is self.ui.stackedContentArea.currentWidget():
+            # Already the visible page (e.g. a repeat sidebar click on the
+            # same already-open embedded module, reused via
+            # _get_or_create_screen's alive branch) - nothing to do. Without
+            # this guard we'd push a self-referential entry onto
+            # _nav_history on every repeat click, so leaving the screen
+            # would require pressing Back once per extra click before it
+            # actually returned to the real previous screen.
+            return
         self._nav_history.append(self.ui.stackedContentArea.currentWidget())
         self.ui.stackedContentArea.addWidget(widget)
         self.ui.stackedContentArea.setCurrentWidget(widget)
@@ -520,6 +608,10 @@ class DashboardScreen(QMainWindow):
         if leaving is not previous:
             self.ui.stackedContentArea.removeWidget(leaving)
             leaving.deleteLater()
+            if leaving is getattr(self, "sale_return_list", None):
+                self.sale_return_list = None
+            if leaving is getattr(self, "sale_return_form", None):
+                self.sale_return_form = None
 
     def _open_item_form(self, item_id=None):
         """Open the Item form embedded in the content-area stack."""
@@ -533,7 +625,59 @@ class DashboardScreen(QMainWindow):
         if getattr(self, "item_list", None) is not None:
             self.item_list.refresh()
 
-    
+    def _open_sale_return_list(self):
+        from screens.sale_return_list_screen import SaleReturnListScreen
+
+        def factory():
+            screen = SaleReturnListScreen(
+                sale_return_engine=self._sale_return_engine,
+                current_user_id=self.login_result.userid,
+                embedded=True,
+                parent=self,
+            )
+            screen.close_requested.connect(self._navigate_back)
+            screen.form_requested.connect(self._open_sale_return_form)
+            screen.view_requested.connect(self._view_sale_return_form)
+            return screen
+
+        self._get_or_create_screen("sale_return_list", factory, mode="navigate")
+
+    def _open_sale_return_form(self, _unused=None):
+        """Always opens in CREATE mode — sale_return_list only emits form_requested(None)."""
+        from screens.sale_return_form_screen import SaleReturnFormScreen
+
+        self.sale_return_form = SaleReturnFormScreen(
+            sale_return_engine=self._sale_return_engine,
+            sale_engine=self._sale_engine,
+            current_user_id=self.login_result.userid,
+            sale_return_id=None,
+            embedded=True,
+            parent=self,
+        )
+        self.sale_return_form.saved.connect(self._on_sale_return_form_saved)
+        self.sale_return_form.close_requested.connect(self._navigate_back)
+        self._navigate_to(self.sale_return_form)
+
+    def _view_sale_return_form(self, sale_return_id: int):
+        from screens.sale_return_form_screen import SaleReturnFormScreen
+
+        self.sale_return_form = SaleReturnFormScreen(
+            sale_return_engine=self._sale_return_engine,
+            sale_engine=self._sale_engine,
+            current_user_id=self.login_result.userid,
+            sale_return_id=sale_return_id,
+            embedded=True,
+            parent=self,
+        )
+        self.sale_return_form.saved.connect(self._on_sale_return_form_saved)
+        self.sale_return_form.close_requested.connect(self._navigate_back)
+        self._navigate_to(self.sale_return_form)
+
+    def _on_sale_return_form_saved(self):
+        self._navigate_back()
+        if getattr(self, "sale_return_list", None) is not None:
+            self.sale_return_list._refresh()
+
     def _open_receipt_form(self, receipt_id=None):
         """Open the Receipt form (Add or Edit) embedded in the content-area stack."""
         from screens.receipt_form_screen import ReceiptFormScreen
@@ -660,20 +804,41 @@ class DashboardScreen(QMainWindow):
             return
         self._open_sale_invoice_form()
 
-    def _open_sale_invoice_form(self):
-        """Open the Sale Invoice form embedded in the content-area stack."""
-        form = SaleInvoiceFormScreen(
-            self,
-            self._sale_engine,
-            customer_engine,
-            self._item_engine,
-            self._item_free_scheme_engine,
-            self.login_result.userid,
-            embedded=True,
-        )
-        form.saved.connect(lambda: self._on_sale_invoice_form_saved(form))
-        form.close_requested.connect(self._navigate_back)
-        self._navigate_to(form)
+    def _open_sale_invoice_form(self, existing_invoice_id=None):
+        """Open the Sale Invoice form embedded in the content-area stack.
+        Sale Invoice is full-screen -- it also reclaims the sidebar's screen
+        area, restored again when the form closes or saves."""
+
+        def factory():
+            form = SaleInvoiceFormScreen(
+                self,
+                self._sale_engine,
+                customer_engine,
+                self._item_engine,
+                self._item_free_scheme_engine,
+                self.login_result.userid,
+                current_username=self.login_result.username or "system",
+                embedded=True,
+                existing_invoice_id=existing_invoice_id,
+            )
+            form.saved.connect(lambda: self._on_sale_invoice_form_saved(form))
+            form.close_requested.connect(self._navigate_back)
+            form.close_requested.connect(self._restore_sidebar_width)
+            form.saved.connect(self._restore_sidebar_width)
+            return form
+
+        if existing_invoice_id is None:
+            # Blank "New Sale" - reuse-guarded like other sidebar screens.
+            self._get_or_create_screen("sale_invoice_form", factory, mode="navigate")
+        else:
+            # Editing a specific invoice must always get its own fresh form -
+            # reuse-guard here would risk showing a different invoice's data,
+            # and must not overwrite the tracked blank "New Sale" instance.
+            form = factory()
+            self._navigate_to(form)
+
+        total = self.ui.bodySplitter.width() or 1200
+        self.ui.bodySplitter.setSizes([0, total])
 
     def _on_sale_invoice_form_saved(self, form):
         self._navigate_back()
@@ -695,79 +860,157 @@ class DashboardScreen(QMainWindow):
         self.customer_form = CustomerFormScreen(self.login_result, parent=self)
         self.customer_form.show()
 
+    def _get_or_create_screen(self, attr_name, factory, mode="navigate"):
+        """
+        Reuse-guard for sidebar-launched screens (see open_module_from_sidebar).
+        Without this, every sidebar click unconditionally built a brand new
+        screen instance and stacked/opened it on top of any previous one -
+        repeated clicks without using Back (embedded screens) or closing the
+        window (top-level windows) piled up duplicate instances indefinitely.
+
+        mode="navigate": screen lives in the embedded navigation stack and
+        is (re)shown via self._navigate_to(...).
+        mode="window": screen is an independent top-level window shown via
+        apply_standard_window_chrome(...) + .show() (chrome is applied only
+        once, at creation - not on every re-show).
+
+        `factory` is a zero-argument callable that constructs and fully
+        wires (signal connections, etc.) a new screen instance, but does
+        NOT navigate to it / show it / apply chrome - this method owns that
+        last step so it can be skipped on reuse.
+        """
+        existing = getattr(self, attr_name, None)
+        alive = False
+        if existing is not None:
+            try:
+                if mode == "navigate":
+                    # QStackedWidget hides every page except the one
+                    # currently shown, so a widget we navigated away
+                    # from reports isVisible() == False even though it
+                    # is still perfectly alive - checking isVisible()
+                    # here would wrongly treat "not the current page"
+                    # as "destroyed" and rebuild a duplicate. Checking
+                    # membership in the stack (indexOf != -1) correctly
+                    # distinguishes "still alive, just not the current
+                    # page" from "underlying Qt object was destroyed"
+                    # (which raises RuntimeError below, same as before).
+                    alive = self.ui.stackedContentArea.indexOf(existing) != -1
+                else:
+                    # Cheap call that raises RuntimeError if the underlying
+                    # Qt C++ object was already destroyed - e.g. the user
+                    # closed a top-level window via its title-bar X button,
+                    # leaving a dangling Python reference on self.<attr_name>.
+                    existing.isVisible()
+                    alive = True
+            except RuntimeError:
+                alive = False
+
+        if alive:
+            if mode == "navigate":
+                self._navigate_to(existing)
+            else:
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+            return
+
+        screen = factory()
+        setattr(self, attr_name, screen)
+        if mode == "navigate":
+            self._navigate_to(screen)
+        else:
+            apply_standard_window_chrome(screen)
+            screen.show()
+
     def open_module_from_sidebar(self, item, column):
         """
         Opens modules from Sidebar.
         Currently Supplier and Company are enabled.
         """
         if item.parent() is None:
+            # Native branch decoration is disabled (see
+            # _build_sidebar_menu), so clicking a module row no longer
+            # auto-expands/collapses it - toggle it manually here.
+            item.setExpanded(not item.isExpanded())
             return
 
         module_name = item.text(0).strip().lower()
 
         if module_name == "supplier":
-            self.supplier_list = SupplierListScreen(self, engine=self._supplier_engine, embedded=True)
-            self.supplier_list.close_requested.connect(self._navigate_back)
-            self.supplier_list.form_requested.connect(self._open_supplier_form)
-            self._navigate_to(self.supplier_list)
+            def _make_screen():
+                screen = SupplierListScreen(self, engine=self._supplier_engine, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(self._open_supplier_form)
+                return screen
+            self._get_or_create_screen("supplier_list", _make_screen, mode="navigate")
 
         elif module_name == "company":
-            self.company_list = CompanyListScreen(self, embedded=True)
-            self.company_list.close_requested.connect(self._navigate_back)
-            self.company_list.form_requested.connect(self._open_company_form)
-            self._navigate_to(self.company_list)
+            def _make_screen():
+                screen = CompanyListScreen(self, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(self._open_company_form)
+                return screen
+            self._get_or_create_screen("company_list", _make_screen, mode="navigate")
 
         elif module_name == "manufacturer":
-            self.manufacturer_list = ManufacturerListScreen(self, embedded=True)
-            self.manufacturer_list.close_requested.connect(self._navigate_back)
-            self.manufacturer_list.form_requested.connect(self._open_manufacturer_form)
-            self._navigate_to(self.manufacturer_list)
+            def _make_screen():
+                screen = ManufacturerListScreen(self, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(self._open_manufacturer_form)
+                return screen
+            self._get_or_create_screen("manufacturer_list", _make_screen, mode="navigate")
 
         elif module_name == "supplier-mfg discount":
-            self.supplier_manufacturer_discount_list = SupplierManufacturerDiscountListScreen(
-                self, supplier_engine=self._supplier_engine, item_engine=self._item_engine, embedded=True,
-            )
-            self.supplier_manufacturer_discount_list.close_requested.connect(self._navigate_back)
-            self.supplier_manufacturer_discount_list.form_requested.connect(
-                self._open_supplier_manufacturer_discount_form
-            )
-            self._navigate_to(self.supplier_manufacturer_discount_list)
+            def _make_screen():
+                screen = SupplierManufacturerDiscountListScreen(
+                    self, supplier_engine=self._supplier_engine, item_engine=self._item_engine, embedded=True,
+                )
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(
+                    self._open_supplier_manufacturer_discount_form
+                )
+                return screen
+            self._get_or_create_screen("supplier_manufacturer_discount_list", _make_screen, mode="navigate")
 
         elif module_name == "country tax":
-            self.country_tax_list = CountryTaxListScreen(self, embedded=True)
-            self.country_tax_list.close_requested.connect(self._navigate_back)
-            self.country_tax_list.form_requested.connect(self._open_country_tax_form)
-            self._navigate_to(self.country_tax_list)
+            def _make_screen():
+                screen = CountryTaxListScreen(self, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(self._open_country_tax_form)
+                return screen
+            self._get_or_create_screen("country_tax_list", _make_screen, mode="navigate")
 
         elif module_name == "customer":
-            self.customer_list = CustomerListScreen(self.login_result, parent=self)
-            apply_standard_window_chrome(self.customer_list)
-            self.customer_list.show()
+            def _make_screen():
+                return CustomerListScreen(self.login_result, parent=self)
+            self._get_or_create_screen("customer_list", _make_screen, mode="window")
 
         elif module_name == "sale free scheme":
             if self._item_free_scheme_engine is None or self._item_engine is None:
                 from utils.integration_adapters import show_error
                 show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
                 return
-            self.sale_free_scheme_list = ItemFreeSchemeListScreen(
-                self,
-                engine=self._item_free_scheme_engine,
-                item_engine=self._item_engine,
-                current_user_id=self.login_result.userid,
-            )
-            apply_standard_window_chrome(self.sale_free_scheme_list)
-            self.sale_free_scheme_list.show()
+            def _make_screen():
+                return ItemFreeSchemeListScreen(
+                    self,
+                    engine=self._item_free_scheme_engine,
+                    item_engine=self._item_engine,
+                    current_user_id=self.login_result.userid,
+                )
+            self._get_or_create_screen("sale_free_scheme_list", _make_screen, mode="window")
 
         elif module_name == "item":
-            self.item_list = ItemListScreen(self, engine=self._item_engine, embedded=True)
-            self.item_list.close_requested.connect(self._navigate_back)
-            self.item_list.form_requested.connect(self._open_item_form)
-            self._navigate_to(self.item_list)
+            def _make_screen():
+                screen = ItemListScreen(self, engine=self._item_engine, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(self._open_item_form)
+                return screen
+            self._get_or_create_screen("item_list", _make_screen, mode="navigate")
 
         elif module_name == "user master":
-            self.user_list = UserListScreen(self, current_user_id=self.login_result.userid)
-            apply_standard_window_chrome(self.user_list)
-            self.user_list.show()
+            def _make_screen():
+                return UserListScreen(self, current_user_id=self.login_result.userid)
+            self._get_or_create_screen("user_list", _make_screen, mode="window")
 
         elif module_name.startswith("password reset requests"):
             from engines.session_manager import is_current_user_admin
@@ -775,9 +1018,11 @@ class DashboardScreen(QMainWindow):
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "Access Denied", "Only administrators can access this screen.")
                 return
-            self.password_reset_requests_screen = PasswordResetRequestsScreen(self, embedded=True)
-            self.password_reset_requests_screen.close_requested.connect(self._navigate_back)
-            self._navigate_to(self.password_reset_requests_screen)
+            def _make_screen():
+                screen = PasswordResetRequestsScreen(self, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("password_reset_requests_screen", _make_screen, mode="navigate")
 
         elif module_name == "audit log":
             from engines.session_manager import is_current_user_admin
@@ -785,18 +1030,20 @@ class DashboardScreen(QMainWindow):
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "Access Denied", "Only administrators can access this screen.")
                 return
-            self.audit_log_screen = AuditLogScreen(self, embedded=True)
-            self.audit_log_screen.close_requested.connect(self._navigate_back)
-            self._navigate_to(self.audit_log_screen)
+            def _make_screen():
+                screen = AuditLogScreen(self, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("audit_log_screen", _make_screen, mode="navigate")
 
         elif module_name == "settings":
-            self.settings_screen = SettingsScreen(
-                current_username=self.login_result.username or "system",
-                is_admin=self.login_result.is_admin,
-                parent=self,
-            )
-            apply_standard_window_chrome(self.settings_screen)
-            self.settings_screen.show()
+            def _make_screen():
+                return SettingsScreen(
+                    current_username=self.login_result.username or "system",
+                    is_admin=self.login_result.is_admin,
+                    parent=self,
+                )
+            self._get_or_create_screen("settings_screen", _make_screen, mode="window")
 
         elif module_name == "change password":
             from screens.change_password_screen import ChangePasswordScreen
@@ -808,49 +1055,46 @@ class DashboardScreen(QMainWindow):
                 from utils.integration_adapters import show_error
                 show_error(self, "Purchase Order", "Purchase engines not initialized. Please restart the application.")
                 return
-
-            self.purchase_order_form = PurchaseOrderFormScreen(
-                parent=self,
-                engine=self._purchase_order_engine,
-                supplier_engine=self._supplier_engine,
-                item_engine=self._item_engine,
-                current_user_id=self.login_result.userid,
-            )
-            apply_standard_window_chrome(self.purchase_order_form)
-            self.purchase_order_form.show()
+            def _make_screen():
+                return PurchaseOrderFormScreen(
+                    parent=self,
+                    engine=self._purchase_order_engine,
+                    supplier_engine=self._supplier_engine,
+                    item_engine=self._item_engine,
+                    current_user_id=self.login_result.userid,
+                )
+            self._get_or_create_screen("purchase_order_form", _make_screen, mode="window")
 
         elif module_name == "purchase":
             if self._purchase_engine is None or self._purchase_order_engine is None or self._supplier_engine is None:
                 from utils.integration_adapters import show_error
                 show_error(self, "Purchase Invoice", "Purchase engines not initialized. Please restart the application.")
                 return
-
-            self.purchase_invoice_form = PurchaseInvoiceFormScreen(
-                parent=self,
-                engine=self._purchase_engine,
-                purchase_order_engine=self._purchase_order_engine,
-                supplier_engine=self._supplier_engine,
-                item_engine=self._item_engine,
-                current_user_id=self.login_result.userid,
-            )
-            apply_standard_window_chrome(self.purchase_invoice_form)
-            self.purchase_invoice_form.show()
+            def _make_screen():
+                return PurchaseInvoiceFormScreen(
+                    parent=self,
+                    engine=self._purchase_engine,
+                    purchase_order_engine=self._purchase_order_engine,
+                    supplier_engine=self._supplier_engine,
+                    item_engine=self._item_engine,
+                    current_user_id=self.login_result.userid,
+                )
+            self._get_or_create_screen("purchase_invoice_form", _make_screen, mode="window")
 
         elif module_name == "purchase list":
             if self._purchase_order_engine is None or self._supplier_engine is None:
                 from utils.integration_adapters import show_error
                 show_error(self, "Purchase Order", "Purchase engines not initialized. Please restart the application.")
                 return
-
-            self.purchase_order_list = PurchaseOrderListScreen(
-                parent=self,
-                engine=self._purchase_order_engine,
-                supplier_engine=self._supplier_engine,
-                item_engine=self._item_engine,
-                current_user_id=self.login_result.userid,
-            )
-            apply_standard_window_chrome(self.purchase_order_list)
-            self.purchase_order_list.show()
+            def _make_screen():
+                return PurchaseOrderListScreen(
+                    parent=self,
+                    engine=self._purchase_order_engine,
+                    supplier_engine=self._supplier_engine,
+                    item_engine=self._item_engine,
+                    current_user_id=self.login_result.userid,
+                )
+            self._get_or_create_screen("purchase_order_list", _make_screen, mode="window")
 
         elif module_name == "new sale":
             if self._sale_engine is None or self._item_engine is None:
@@ -864,73 +1108,81 @@ class DashboardScreen(QMainWindow):
                 from utils.integration_adapters import show_error
                 show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
                 return
-            self.sale_invoice_list = SaleInvoiceListScreen(
-                self,
-                self._sale_engine,
-                customer_engine,
-                self._item_engine,
-                self._item_free_scheme_engine,
-                self.login_result.userid,
-                embedded=True,
-            )
-            self.sale_invoice_list.close_requested.connect(self._navigate_back)
-            self.sale_invoice_list.form_requested.connect(self._open_sale_invoice_form)
-            self._navigate_to(self.sale_invoice_list)
+            def _make_screen():
+                screen = SaleInvoiceListScreen(
+                    self,
+                    self._sale_engine,
+                    customer_engine,
+                    self._item_engine,
+                    self._item_free_scheme_engine,
+                    self.login_result.userid,
+                    embedded=True,
+                )
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(self._open_sale_invoice_form)
+                screen.edit_requested.connect(self._open_sale_invoice_form)
+                return screen
+            self._get_or_create_screen("sale_invoice_list", _make_screen, mode="navigate")
 
         elif module_name == "stock ledger":
             if self._item_engine is None:
                 from utils.integration_adapters import show_error
                 show_error(self, "Inventory", "Item engine not initialized. Please restart the application.")
                 return
-            self.stock_ledger_screen = StockLedgerScreen(self, self._item_engine)
-            apply_standard_window_chrome(self.stock_ledger_screen)
-            self.stock_ledger_screen.show()
+            def _make_screen():
+                return StockLedgerScreen(self, self._item_engine)
+            self._get_or_create_screen("stock_ledger_screen", _make_screen, mode="window")
 
         elif module_name == "stock master":
             if self._item_engine is None:
                 from utils.integration_adapters import show_error
                 show_error(self, "Inventory", "Item engine not initialized. Please restart the application.")
                 return
-            self.stock_master_screen = StockMasterScreen(self, self._item_engine)
-            apply_standard_window_chrome(self.stock_master_screen)
-            self.stock_master_screen.show()
+            def _make_screen():
+                return StockMasterScreen(self, self._item_engine)
+            self._get_or_create_screen("stock_master_screen", _make_screen, mode="window")
 
         elif module_name == "purchase invoice list":
             if self._purchase_engine is None or self._supplier_engine is None:
                 from utils.integration_adapters import show_error
                 show_error(self, "Purchase Invoice", "Purchase engines not initialized. Please restart the application.")
                 return
+            def _make_screen():
+                return PurchaseInvoiceListScreen(
+                    parent=self,
+                    engine=self._purchase_engine,
+                    supplier_engine=self._supplier_engine,
+                    item_engine=self._item_engine,
+                    current_user_id=self.login_result.userid,
+                )
+            self._get_or_create_screen("purchase_invoice_list", _make_screen, mode="window")
 
-            self.purchase_invoice_list = PurchaseInvoiceListScreen(
-                parent=self,
-                engine=self._purchase_engine,
-                supplier_engine=self._supplier_engine,
-                item_engine=self._item_engine,
-                current_user_id=self.login_result.userid,
-            )
-            apply_standard_window_chrome(self.purchase_invoice_list)
-            self.purchase_invoice_list.show()
-        
-        
         # ---- ACCOUNTS MODULE ----
         elif module_name == "receipt":
             if self._receipt_engine is None:
                 from utils.integration_adapters import show_error
                 show_error(self, "Receipt", "Receipt engine not initialized. Please restart the application.")
                 return
+            def _make_screen():
+                from screens.receipt_list_screen import ReceiptListScreen
+                screen = ReceiptListScreen(
+                    parent=self,
+                    engine=self._receipt_engine,
+                    current_user_id=self.login_result.userid,
+                    embedded=True,
+                )
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(self._open_receipt_form)
+                screen.view_requested.connect(self._view_receipt_form)
+                return screen
+            self._get_or_create_screen("receipt_list", _make_screen, mode="navigate")
 
-            from screens.receipt_list_screen import ReceiptListScreen
-
-            self.receipt_list = ReceiptListScreen(
-                parent=self,
-                engine=self._receipt_engine,
-                current_user_id=self.login_result.userid,
-                embedded=True,
-            )
-            self.receipt_list.close_requested.connect(self._navigate_back)
-            self.receipt_list.form_requested.connect(self._open_receipt_form)
-            self.receipt_list.view_requested.connect(self._view_receipt_form)
-            self._navigate_to(self.receipt_list)
+        elif module_name == "sale return":
+            if self._sale_return_engine is None or self._sale_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Sale Return", "Sale Return engines not initialized. Please restart the application.")
+                return
+            self._open_sale_return_list()
     # -----------------------------------------------------
     # LOGOUT
     # -----------------------------------------------------

@@ -51,7 +51,12 @@ class SaleInvoiceDTO:
     balance_amount: float
     status: str
     area_id: Optional[int] = None
+    area_name: Optional[str] = None
     price_level_id: Optional[int] = None
+    bill_discount_percent: float = 0.0
+    bill_discount_amount: float = 0.0
+    round_off: float = 0.0
+    remarks: str = ""
     lines: list[SaleInvoiceLineDTO] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -122,10 +127,16 @@ class SaleEngine:
             return default
 
     def is_wholesale_mode(self) -> bool:
-        """Single source of truth: reads sale.column_show_free. When ON,
-        the Free column is visible and free-scheme + CC logic run (Wholesale).
-        When OFF, free-scheme logic does not run at all (Retail)."""
-        return bool(self._get_setting("sale.column_show_free", False))
+        """Single source of truth for general Wholesale/Retail mode -- reads
+        general.business_type (shared with Item Master and Purchase Invoice)."""
+        return self._get_setting("general.business_type", "Retail") == "Wholesale"
+
+    def is_free_scheme_enabled(self) -> bool:
+        """Free-Qty column + free-scheme/CC logic. Only meaningful in Wholesale
+        mode, and independently toggleable within it via sale.column_show_free
+        -- e.g. a Wholesale shop that doesn't run free schemes (a general
+        store) can turn just this off without switching back to Retail."""
+        return self.is_wholesale_mode() and bool(self._get_setting("sale.column_show_free", True))
 
     # ------------------------------------------------------------------ #
     # NUMBER GENERATION
@@ -134,6 +145,13 @@ class SaleEngine:
         prefix = self._get_setting("sale.invoice_prefix", "SINV-")
         next_seq = self._model.get_last_invoice_sequence(prefix) + 1
         return f"{prefix}{next_seq:04d}"
+
+    # ------------------------------------------------------------------ #
+    # CUSTOMER QUERIES
+    # ------------------------------------------------------------------ #
+    def get_customer_outstanding(self, customer_id: int, exclude_invoice_id=None) -> float:
+        """Thin wrapper -- delegates to SaleInvoiceModel.get_customer_outstanding()."""
+        return self._model.get_customer_outstanding(customer_id, exclude_invoice_id)
 
     # ------------------------------------------------------------------ #
     # LINE COMPUTATION (preview + save both use this)
@@ -149,11 +167,25 @@ class SaleEngine:
         qty = float(line_input["qty"])
 
         item_dto = self._item_engine.get_item(item_id)
-        batch = self._pick_nearest_expiry_batch(item_id)
+
+        forced_batch_id = line_input.get("item_batch_id")
+        if forced_batch_id is not None:
+            # Edit-mode path: keep the SAME batch this line was originally
+            # saved against, instead of re-picking nearest-expiry (which
+            # could silently pick a different batch if item_id repeats
+            # across multiple batches -- would cause the wrong batch's
+            # stock to be reversed/re-deducted on Save).
+            batch_dto = self._item_engine.get_batch(forced_batch_id)
+            batch = batch_dto.to_dict() if hasattr(batch_dto, "to_dict") else vars(batch_dto) if batch_dto else None
+        else:
+            batch = self._pick_nearest_expiry_batch(item_id)
         if batch is None:
             raise ValidationError([f"Item '{item_dto.item_name}' has no available stock to sell."])
 
-        current_rate = float(item_dto.sale_rate or 0)
+        if is_wholesale:
+            current_rate = float(item_dto.sale_rate or 0)
+        else:
+            current_rate = float(item_dto.mrp or 0)  # Retail: MRP itself is the sale rate
         rate = float(line_input.get("rate") if line_input.get("rate") is not None else current_rate)
 
         free_qty = 0.0
@@ -196,6 +228,8 @@ class SaleEngine:
             "batch_no": batch["batch_no"],
             "expiry_month": batch["expiry_month"],
             "expiry_year": batch["expiry_year"],
+            "packing": item_dto.packing or "",
+            "mrp": float(item_dto.mrp or 0),
             "entry_mode": entry_mode,
             "qty": qty,
             "free_qty": free_qty,
@@ -266,6 +300,7 @@ class SaleEngine:
         check_permission("Sale", "can_add")
 
         is_wholesale = self.is_wholesale_mode()
+        free_scheme_enabled = self.is_free_scheme_enabled()
 
         header_errors = self._validator.validate_header(payload)
         if not header_errors.is_valid:
@@ -285,7 +320,15 @@ class SaleEngine:
         total_cc_amount = sum(l["cc_amount"] for l in computed_lines)
         total_tax_amount = sum(l["tax_amount"] for l in computed_lines)
         subtotal = sum(l["amount"] for l in computed_lines) + total_cc_amount + total_tax_amount
-        grand_total_raw = subtotal
+
+        bill_discount_percent = float(payload.get("bill_discount_percent") or 0.0)
+        bill_discount_flat = float(payload.get("bill_discount_amount") or 0.0)
+        if bill_discount_percent > 0:
+            bill_discount_amount = round(subtotal * bill_discount_percent / 100, 4)
+        else:
+            bill_discount_amount = round(bill_discount_flat, 4)
+
+        grand_total_raw = subtotal - bill_discount_amount
         grand_total = round(grand_total_raw)
         round_off = grand_total - grand_total_raw
 
@@ -308,6 +351,8 @@ class SaleEngine:
             "total_discount_amount": total_discount_amount,
             "total_cc_amount": total_cc_amount,
             "total_tax_amount": total_tax_amount,
+            "bill_discount_percent": bill_discount_percent,
+            "bill_discount_amount": bill_discount_amount,
             "round_off": round_off,
             "grand_total": grand_total,
             "payment_type": payload.get("payment_type"),
@@ -364,6 +409,119 @@ class SaleEngine:
 
         return self._to_dto(self._model.get_by_id(new_id, include_deleted=False))
 
+    def update_sale_invoice(self, sale_invoice_id: int, payload: dict, current_user_id: int) -> SaleInvoiceDTO:
+        """Edit an existing (non-Cancelled) invoice: reverses old lines'
+        stock, replaces header+lines, then re-applies new lines' stock.
+        Follows the same non-atomic, best-effort pattern as
+        create_sale_invoice (see EngineErrorWithInvoice usage below) --
+        this is a deliberate, accepted limitation of this codebase, not
+        something new introduced here."""
+        from engines.permission_enforcer import check_permission
+        check_permission("Sale", "can_edit")
+
+        existing_row = self._model.get_by_id(sale_invoice_id, include_deleted=False)
+        if existing_row is None:
+            raise RecordNotFoundError(f"Sale invoice {sale_invoice_id} not found.")
+        if existing_row["status"] == "Cancelled":
+            raise ValidationError(["Cancelled invoices cannot be edited."])
+
+        old_lines = self._model.get_items_by_invoice(sale_invoice_id)
+
+        is_wholesale = self.is_wholesale_mode()
+
+        header_errors = self._validator.validate_header(payload)
+        if not header_errors.is_valid:
+            raise ValidationError(header_errors.errors)
+
+        raw_lines = payload.get("lines") or []
+        line_errors = self._validator.validate_lines(raw_lines)
+        if not line_errors.is_valid:
+            raise ValidationError(line_errors.errors)
+
+        computed_lines = [self.compute_line(line, is_wholesale) for line in raw_lines]
+
+        total_qty = sum(l["qty"] for l in computed_lines)
+        total_free_qty = sum(l["free_qty"] for l in computed_lines)
+        total_gross_amount = sum(l["qty"] * l["rate"] for l in computed_lines)
+        total_discount_amount = sum(l["discount_amount"] for l in computed_lines)
+        total_cc_amount = sum(l["cc_amount"] for l in computed_lines)
+        total_tax_amount = sum(l["tax_amount"] for l in computed_lines)
+        subtotal = sum(l["amount"] for l in computed_lines) + total_cc_amount + total_tax_amount
+
+        bill_discount_percent = float(payload.get("bill_discount_percent") or 0.0)
+        bill_discount_flat = float(payload.get("bill_discount_amount") or 0.0)
+        if bill_discount_percent > 0:
+            bill_discount_amount = round(subtotal * bill_discount_percent / 100, 4)
+        else:
+            bill_discount_amount = round(bill_discount_flat, 4)
+
+        grand_total_raw = subtotal - bill_discount_amount
+        grand_total = round(grand_total_raw)
+        round_off = grand_total - grand_total_raw
+
+        amount_paid_now_value = float(payload.get("amount_paid_now", 0) or 0)
+
+        header_data = {
+            "customer_id": payload["customer_id"],
+            "area_id": payload.get("area_id"),
+            "price_level_id": payload.get("price_level_id"),
+            "invoice_date_ad": payload.get("invoice_date_ad") or existing_row["invoice_date_ad"],
+            "invoice_date_bs": payload["invoice_date_bs"],
+            "sale_mode": "Wholesale" if is_wholesale else "Retail",
+            "total_qty": total_qty,
+            "total_free_qty": total_free_qty,
+            "total_gross_amount": total_gross_amount,
+            "total_discount_amount": total_discount_amount,
+            "total_cc_amount": total_cc_amount,
+            "total_tax_amount": total_tax_amount,
+            "bill_discount_percent": bill_discount_percent,
+            "bill_discount_amount": bill_discount_amount,
+            "round_off": round_off,
+            "grand_total": grand_total,
+            "payment_type": payload.get("payment_type"),
+            "amount_paid_now": amount_paid_now_value,
+            "balance_amount": grand_total - amount_paid_now_value,
+            "remarks": (payload.get("remarks") or "").strip() or None,
+        }
+
+        # Reverse OLD lines' stock first. If this fails, nothing else has
+        # been touched yet -- safe to just let the exception propagate.
+        for old_line in old_lines:
+            old_total = float(old_line["qty"]) + float(old_line["free_qty"])
+            self._item_engine.post_stock_movement(
+                item_batch_id=old_line["item_batch_id"],
+                transaction_type="ADJUSTMENT",
+                quantity_change=old_total,
+                current_user_id=current_user_id,
+                reference_type="sale_invoice_edit_reversal",
+                reference_id=sale_invoice_id,
+            )
+
+        self._model.update_with_items(sale_invoice_id, header_data, computed_lines)
+
+        stock_errors: list[str] = []
+        for line in computed_lines:
+            total_deduction = line["qty"] + line["free_qty"]
+            try:
+                self._item_engine.post_stock_movement(
+                    item_batch_id=line["item_batch_id"],
+                    transaction_type="SALE",
+                    quantity_change=-total_deduction,
+                    current_user_id=current_user_id,
+                    reference_type="sale_invoice",
+                    reference_id=sale_invoice_id,
+                )
+            except Exception as exc:
+                logger.exception("Stock deduction failed for line item_id=%s", line["item_id"])
+                stock_errors.append(f"Item {line['item_id']}: {exc}")
+
+        if stock_errors:
+            dto = self._to_dto(self._model.get_by_id(sale_invoice_id, include_deleted=False))
+            raise EngineErrorWithInvoice(dto, stock_errors)
+
+        return self._to_dto(self._model.get_by_id(sale_invoice_id, include_deleted=False))
+
+   
     # ------------------------------------------------------------------ #
     # READ
     # ------------------------------------------------------------------ #
@@ -469,7 +627,12 @@ class SaleEngine:
             balance_amount=float(row.get("balance_amount", 0) or 0),
             status=row["status"],
             area_id=row.get("area_id"),
+            area_name=row.get("area_name"),
             price_level_id=row.get("price_level_id"),
+            bill_discount_percent=float(row.get("bill_discount_percent", 0) or 0),
+            bill_discount_amount=float(row.get("bill_discount_amount", 0) or 0),
+            round_off=float(row.get("round_off", 0) or 0),
+            remarks=row.get("remarks", "") or "",
             lines=lines,
         )
 

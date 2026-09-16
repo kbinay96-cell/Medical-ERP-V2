@@ -195,7 +195,7 @@ class ReceiptModel:
             WHERE r.customer_id = %(customer_id)s
               AND r.status != 'Cancelled' AND r.is_deleted = FALSE
               AND r.advance_amount > 0
-            HAVING r.advance_amount - COALESCE(au_sum.total_used, 0) > 0
+              AND r.advance_amount - COALESCE(au_sum.total_used, 0) > 0
             ORDER BY r.receipt_date_ad ASC, r.receipt_id ASC;
         """
         conn = _get_connection()

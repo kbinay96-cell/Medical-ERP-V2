@@ -173,7 +173,7 @@ class SaleReturnModel:
         if filters.search_text:
             conditions.append(
                 "(sr.return_number ILIKE %(search_text)s OR si.invoice_number ILIKE %(search_text)s "
-                "OR c.name ILIKE %(search_text)s)"
+                "OR c.customer_name ILIKE %(search_text)s)"
             )
             params["search_text"] = f"%{filters.search_text}%"
         if filters.customer_id:
@@ -199,7 +199,7 @@ class SaleReturnModel:
         offset = (filters.page - 1) * filters.page_size
 
         sql = f"""
-            SELECT sr.*, si.invoice_number, c.name AS customer_name
+            SELECT sr.*, si.invoice_number, c.customer_name AS customer_name
             FROM sale_return sr
             JOIN sale_invoice si ON si.sale_invoice_id = sr.sale_invoice_id
             JOIN customers c ON c.customer_id = sr.customer_id

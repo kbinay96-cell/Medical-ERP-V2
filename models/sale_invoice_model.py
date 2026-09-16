@@ -106,12 +106,14 @@ class SaleInvoiceModel:
         sql = """
             SELECT
                 sii.*,
+                i.item_name,
                 COALESCE(SUM(sri.return_qty) FILTER (WHERE sr.status != 'Cancelled' AND sr.is_deleted = FALSE), 0) AS already_returned_qty
             FROM sale_invoice_item sii
+            LEFT JOIN item i ON i.item_id = sii.item_id
             LEFT JOIN sale_return_item sri ON sri.sale_invoice_item_id = sii.sale_invoice_item_id
             LEFT JOIN sale_return sr ON sr.sale_return_id = sri.sale_return_id
             WHERE sii.sale_invoice_id = %(sale_invoice_id)s
-            GROUP BY sii.sale_invoice_item_id
+            GROUP BY sii.sale_invoice_item_id, i.item_name
             ORDER BY sii.sale_invoice_item_id;
         """
         with _get_connection() as conn:
@@ -184,6 +186,47 @@ class SaleInvoiceModel:
                 conn.rollback()
                 raise
 
+    def update_with_items(self, sale_invoice_id: int, header_data: dict[str, Any], lines: list[dict]) -> None:
+        """Atomically replace an existing invoice's header fields + ALL of
+        its line items in a single transaction (delete-all-old-lines then
+        insert-all-new-lines, mirroring insert_with_items's all-or-nothing
+        style). Does NOT touch stock -- the engine handles stock reversal/
+        reapply separately, before/after calling this."""
+        if not header_data:
+            set_clause = ""
+        else:
+            set_clause = ", ".join([f"{k} = %({k})s" for k in header_data.keys()])
+        header_sql = f"UPDATE sale_invoice SET {set_clause} WHERE sale_invoice_id = %(sale_invoice_id)s"
+
+        with _get_connection() as conn:
+            try:
+                with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                    if set_clause:
+                        params = dict(header_data)
+                        params["sale_invoice_id"] = sale_invoice_id
+                        cur.execute(header_sql, params)
+
+                    cur.execute(
+                        "DELETE FROM sale_invoice_item WHERE sale_invoice_id = %s",
+                        (sale_invoice_id,),
+                    )
+
+                    for line in lines:
+                        line_payload = dict(line)
+                        line_payload["sale_invoice_id"] = sale_invoice_id
+                        line_keys = list(line_payload.keys())
+                        line_cols = ", ".join(line_keys)
+                        line_placeholders = ", ".join([f"%({k})s" for k in line_keys])
+                        line_sql = (
+                            f"INSERT INTO sale_invoice_item ({line_cols}) VALUES ({line_placeholders}) "
+                            "RETURNING sale_invoice_item_id"
+                        )
+                        cur.execute(line_sql, line_payload)
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def get_customer_outstanding(self, customer_id: int, exclude_invoice_id: Optional[int] = None) -> float:
         sql = """
@@ -245,9 +288,10 @@ class SaleInvoiceModel:
         order_column = _SORTABLE_COLUMNS.get(filters.order_by, "si.created_at_ad")
         order_direction = "ASC" if (filters.order_dir or "").upper() == "ASC" else "DESC"
         query_sql = (
-            "SELECT si.*, c.customer_name "
+            "SELECT si.*, c.customer_name, a.area_name "
             "FROM sale_invoice si "
             "LEFT JOIN customers c ON si.customer_id = c.customer_id "
+            "LEFT JOIN areas a ON si.area_id = a.area_id "
             + where_sql
             + f" ORDER BY {order_column} {order_direction} "
             " LIMIT %s OFFSET %s"

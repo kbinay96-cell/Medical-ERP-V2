@@ -31,7 +31,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QLineEdit, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLineEdit, QPushButton, QWidget
 
 from engines.exceptions import DuplicateRecordError, RecordNotFoundError, ValidationError
 from engines.permission_enforcer import PermissionDeniedError
@@ -77,14 +77,16 @@ class ItemFormScreen(QDialog):
         apply_standard_window_chrome(self, width=920, height=760, embedded=embedded)
         self._photo_picker = host_photo_beside_scroll(self.ui.verticalLayoutRoot, self.ui.scrollArea, side="right")
         self.ui.scrollAreaContents.setStyleSheet("QLineEdit { max-width: 220px; }")
-        self._install_batch_fields()
+        self._install_packing_field()
         standardize_action_buttons(self)
 
         self._engine = engine or ItemEngine(
           manufacturer_lookup_fn=self._safe_manufacturer_lookup,
         )
+        self._populate_packing_combo()
         self._item_id = item_id
         self._is_edit_mode = item_id is not None
+        self._install_batch_fields()
         self._current_manufacturer_margin: Optional[float] = None
         self._purchase_rate_is_autofilled = False
         self._current_user_id = get_current_user_id()
@@ -105,11 +107,19 @@ class ItemFormScreen(QDialog):
         else:
           self.setWindowTitle("Add Item")
           self.ui.lblFormTitle.setText("Add Item")
-          self.ui.txtItemName.setFocus()
+          self.ui.txtItemName.setFocus()    
+
+        self._update_sale_rate_field_visibility()
 
     def _install_batch_fields(self) -> None:
-        """Batch registration is part of Save (including qty 0). No extra Add Batch step."""
-        self.ui.btnAddBatch.hide()
+        """Batch registration is part of Save (including qty 0) for a
+        brand-new item -- these widgets exist and are built regardless of
+        mode (Edit mode also needs them: _load_existing_item() fills them
+        with the item's latest batch for reference). "Add Batch" (below)
+        is additionally shown only in Edit mode as the way to register a
+        FURTHER batch (a new expiry lot, or scanning in a barcode for an
+        older batch that predates this feature) without leaving Item
+        Master."""
         self.ui.lblOpeningQty.setText("Batch Quantity:")
         self.ui.txtOpeningQty.setToolTip(
           "May be 0 — registers an initial zero-stock batch when Batch No. is filled."
@@ -132,9 +142,89 @@ class ItemFormScreen(QDialog):
         self.txtBatchNo.setPlaceholderText("e.g. OPENING or B-2027-045")
         self.ui.formLayoutPricing.insertRow(
           self.ui.formLayoutPricing.indexOf(self.ui.txtOpeningQty),
-          "Batch No.",
+          "Batch Number:",
           self.txtBatchNo,
         )
+        self.txtBarcode = QLineEdit(self.ui.grpPricing)
+        self.txtBarcode.setObjectName("txtBarcode")
+        self.txtBarcode.setPlaceholderText("Scan the barcode printed on this batch's packaging (optional)")
+        self.connect_mobile_button = QPushButton("📱 Connect Mobile", self.ui.grpPricing)
+        self.connect_mobile_button.setObjectName("connect_mobile_button")
+        self.connect_mobile_button.clicked.connect(self._on_connect_mobile_clicked)
+        _barcode_row_widget = QWidget(self.ui.grpPricing)
+        _barcode_row_layout = QHBoxLayout(_barcode_row_widget)
+        _barcode_row_layout.setContentsMargins(0, 0, 0, 0)
+        _barcode_row_layout.addWidget(self.txtBarcode)
+        _barcode_row_layout.addWidget(self.connect_mobile_button)
+        _batch_no_row, _batch_no_role = self.ui.formLayoutPricing.getWidgetPosition(self.txtBatchNo)
+        self.ui.formLayoutPricing.insertRow(
+          _batch_no_row + 1,
+          "Barcode:",
+          _barcode_row_widget,
+        )
+
+        self.txtOpeningFreeQty = QLineEdit(self.ui.grpPricing)
+        self.txtOpeningFreeQty.setObjectName("txtOpeningFreeQty")
+        self.txtOpeningFreeQty.setText("0")
+        self.txtOpeningFreeQty.setToolTip(
+          "Free units received with this opening stock, if any -- used only to "
+          "dilute the Purchase Rate stored on Item Master (e.g. buy 5 get 1 free)."
+        )
+        _opening_qty_row, _opening_qty_role = self.ui.formLayoutPricing.getWidgetPosition(self.ui.txtOpeningQty)
+        self.ui.formLayoutPricing.insertRow(
+          _opening_qty_row + 1,
+          "Free Qty:",
+          self.txtOpeningFreeQty,
+        )
+
+        if self._is_edit_mode:
+            self.ui.btnAddBatch.clicked.connect(self._on_add_batch_clicked)
+            self.ui.btnAddBatch.show()
+        else:
+            self.ui.btnAddBatch.hide()
+
+    def _on_connect_mobile_clicked(self) -> None:
+        from screens.mobile_connect_dialog import MobileConnectDialog
+
+        dialog = MobileConnectDialog(self)
+        dialog.barcode_scanned.connect(self._on_mobile_barcode_scanned)
+        dialog.exec()
+
+    def _on_mobile_barcode_scanned(self, barcode: str) -> None:
+        self.txtBarcode.setText(barcode)
+
+    def _on_add_batch_clicked(self) -> None:
+        from screens.item_batch_dialog import ItemBatchDialog
+
+        dialog = ItemBatchDialog(self, self._engine, self._item_id, self.ui.txtItemName.text())
+        dialog.exec()
+
+    def _install_packing_field(self) -> None:
+        """Permanent Item Master field (shown in both Create and Edit mode,
+        unlike the batch-only fields) -- appended to Basic Information group.
+        Editable combobox: no Packing master table exists, so the dropdown
+        is just suggestions (distinct values already saved on other items);
+        typing a new value and saving is what grows the list for next time."""
+        from PySide6.QtWidgets import QLabel, QComboBox
+        self.lblPacking = QLabel("Packing:", self.ui.grpBasicInfo)
+        self.txtPacking = QComboBox(self.ui.grpBasicInfo)
+        self.txtPacking.setObjectName("txtPacking")
+        self.txtPacking.setEditable(True)
+        self.txtPacking.setInsertPolicy(QComboBox.NoInsert)
+        self.txtPacking.lineEdit().setPlaceholderText("e.g. Strip of 10, 100ml Bottle")
+        self.ui.formLayoutBasic.addRow(self.lblPacking, self.txtPacking)
+
+    def _populate_packing_combo(self) -> None:
+        try:
+            packings = self._engine.get_distinct_packings()
+        except Exception:
+            packings = []
+        self.txtPacking.blockSignals(True)
+        self.txtPacking.setCurrentText("")
+        self.txtPacking.addItem("")
+        self.txtPacking.addItems(packings)
+        self.txtPacking.setCurrentText("")
+        self.txtPacking.blockSignals(False)
 
     def _set_opening_stock_fields_visible(self, visible: bool) -> None:
         self.ui.lblOpeningQty.setVisible(visible)
@@ -143,6 +233,8 @@ class ItemFormScreen(QDialog):
         self._expiry_picker.setVisible(visible)
         self.ui.lblOpeningExpiryHint.setVisible(visible)
         self.txtBatchNo.setVisible(visible)
+        self.txtBarcode.setVisible(visible)
+        self.txtOpeningFreeQty.setVisible(visible)
 
     # ------------------------------------------------------------------ #
     # Wiring
@@ -228,7 +320,10 @@ class ItemFormScreen(QDialog):
         self._photo_picker.load_existing(None)
 
         self.txtBatchNo.clear()
+        self.txtBarcode.clear()
         self.ui.txtOpeningQty.clear()
+        self.txtOpeningFreeQty.clear()
+        self.txtPacking.clear()
         next_year = QDate.currentDate().addYears(1)
         self._expiry_picker.set_month_year(next_year.month(), next_year.year())
         self._existing_batch_id = None
@@ -260,21 +355,21 @@ class ItemFormScreen(QDialog):
     def _update_sale_rate_field_visibility(self) -> None:
         """Disables the Sale Rate field if business type is Retailer."""
         business_type = self._get_business_type()
-        self.ui.txtSaleRate.setEnabled(business_type != 'Retailer')
+        self.ui.txtSaleRate.setEnabled(business_type != 'Retail')
 
     # Checks whether the global business type is Wholesaler.
     def _is_wholesaler(self) -> bool:
-        """Checks if the business type is Wholesaler."""
-        return self._get_business_type() == 'Wholesaler'
+        """Checks if the business type is Wholesale."""
+        return self._get_business_type() == 'Wholesale'
 
     def _get_business_type(self) -> str:
         """Reads the business type setting from the settings engine."""
         try:
           from engines import settings_engine
-          return settings_engine.get_setting('general.business_type', 'Retailer')
+          return settings_engine.get_setting('general.business_type', 'Retail')
         except Exception:
           logger.exception("Failed to load business type setting.")
-          return 'Retailer'
+          return 'Retail'
 
     def _maybe_autofill_pricing_fields(self) -> None:
         """
@@ -473,14 +568,17 @@ class ItemFormScreen(QDialog):
           return
         dialog = ManufacturerListScreen(self)
         dialog.setWindowFlag(Qt.Window)
+        previous_manufacturer_id = self.ui.cmbManufacturer.currentData()
+
+        def _repopulate_and_restore() -> None:
+            self._populate_manufacturer_combo()
+            self._set_combo_by_data(self.ui.cmbManufacturer, previous_manufacturer_id)
+
         if hasattr(dialog, "exec"):
           dialog.exec()
-          self._populate_manufacturer_combo()
+          _repopulate_and_restore()
         else:
-          # Non-modal (QWidget, same as the Dashboard's own usage) --
-          # refresh the combo once this window actually closes rather
-          # than immediately, since show() returns right away.
-          dialog.destroyed.connect(self._populate_manufacturer_combo)
+          dialog.destroyed.connect(_repopulate_and_restore)
           dialog.show()
 
     # ------------------------------------------------------------------ #
@@ -525,6 +623,7 @@ class ItemFormScreen(QDialog):
 
         self.ui.cmbStatus.setCurrentText(dto.status or "Active")
         self.ui.txtRemarks.setPlainText(dto.remarks or "")
+        self.txtPacking.setCurrentText(dto.packing or "")
 
         is_individual = dto.tax_mode == "individual"
         self.ui.radioIndividual.setChecked(is_individual)
@@ -580,6 +679,7 @@ class ItemFormScreen(QDialog):
           "item_custom_percent_text": self.ui.txtCustomPercent.text(),
           "status": self.ui.cmbStatus.currentText(),
           "remarks": self.ui.txtRemarks.toPlainText(),
+          "packing": self.txtPacking.currentText(),
         }
 
     def _on_save_clicked(self) -> None:
@@ -623,11 +723,14 @@ class ItemFormScreen(QDialog):
           return
 
         if opening_batch_payload is not None:
+          diluted_purchase_rate = opening_batch_payload.pop("_diluted_purchase_rate", None)
           try:
               self._engine.add_batch(
                   dto.item_id, opening_batch_payload, self._current_user_id,
                   item_batch_id=opening_batch_payload.pop("item_batch_id", None),
               )
+              if diluted_purchase_rate:
+                  self._engine.update_item_purchase_rate(dto.item_id, diluted_purchase_rate)
           except (ValidationError, DuplicateRecordError, RecordNotFoundError) as exc:
               # Item itself is already saved (0-qty item creation is valid
               # by design) -- surface the batch problem separately rather
@@ -657,6 +760,10 @@ class ItemFormScreen(QDialog):
 
         # Create mode: stay open, reset for the next entry instead of closing --
         # lets the user add several items back-to-back without reopening the form.
+        # Still emit `saved` so the embedded list behind this form refreshes,
+        # without navigating away (only _finish_success() does that).
+        if self._embedded:
+            self.saved.emit()
         self._reset_for_new_item()
         self.ui.txtItemName.setFocus()
 
@@ -664,26 +771,35 @@ class ItemFormScreen(QDialog):
         """
         Registers a batch on Save when Batch No. is filled (qty may be 0).
         Empty batch no + qty 0 still allows an item with no batches.
+        Free Qty (if any) dilutes the stored batch/item Purchase Rate --
+        e.g. entered rate 100, qty 5, free_qty 1 -> stored rate 100*5/6.
         """
         from utils.item_form_helpers import build_batch_payload, parse_decimal
 
         qty = parse_decimal(self.ui.txtOpeningQty.text(), "Batch Quantity")
+        free_qty = parse_decimal(self.txtOpeningFreeQty.text(), "Free Qty")
         batch_no = self.txtBatchNo.text().strip()
         if not batch_no and qty == 0:
           return None
         if not batch_no:
           batch_no = "OPENING"
 
+        entered_rate = parse_decimal(self.ui.txtPurchaseRate.text(), "Purchase Rate")
+        total_units = qty + free_qty
+        diluted_rate = round(entered_rate * qty / total_units, 4) if total_units > 0 else entered_rate
+
         month, year = self._expiry_picker.expiry_month_year_ad()
         payload = build_batch_payload({
           "batch_no": batch_no,
+          "barcode": self.txtBarcode.text(),
           "expiry_year_text": str(year),
           "expiry_month_text": str(month),
-          "batch_qty_text": self.ui.txtOpeningQty.text(),
-          "batch_purchase_rate_text": self.ui.txtPurchaseRate.text(),
+          "batch_qty_text": str(total_units),
+          "batch_purchase_rate_text": str(diluted_rate),
           "remarks": "Opening Stock" if not self._is_edit_mode else "Batch entry",
         })
         payload["item_batch_id"] = getattr(self, "_existing_batch_id", None)
+        payload["_diluted_purchase_rate"] = diluted_rate
         return payload
 
     def _show_validation_message(self, message: str) -> None:

@@ -56,6 +56,9 @@ class PurchaseInvoiceDTO:
     round_off_amount: float = 0.0
     invoice_date_ad: Optional[str] = None
     remarks: Optional[str] = None
+    purchase_order_id: Optional[int] = None
+    total_freight: float = 0.0
+    total_other_charges: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -436,6 +439,241 @@ class PurchaseEngine:
             invoice_date_ad=str(invoice_date_ad),
         )
 
+    def update_purchase_invoice(self, purchase_invoice_id: int, payload: dict[str, Any], current_user_id: int) -> PurchaseInvoiceDTO:
+        """Edit an existing Posted purchase invoice. Mirrors create's
+        validate -> resolve -> allocate -> calculate pipeline, but wraps
+        old-line stock reversal + line replacement around it.
+
+        Order: permission check -> fetch existing + reject Cancelled ->
+        reject if PO-linked (Edit is disabled for these, defense-in-depth
+        behind the UI's own disable) -> fetch old lines -> validate new
+        payload (same validators as create) -> PRE-CHECK reversal safety
+        for every old line (read-only, no writes yet) -> only if ALL old
+        lines are safe to reverse: reverse them, delete old lines, insert
+        new lines + apply their stock (same existing-batch-vs-new-batch
+        branching as create), update the header. Raises ValidationError,
+        RecordNotFoundError."""
+        from engines.date_engine import ad_to_bs, bs_to_ad, DateEngineError  # noqa: F401
+        from engines.permission_enforcer import check_permission
+        check_permission("Purchase", "can_edit")
+
+        existing_row = self._model.get_by_id(purchase_invoice_id, include_deleted=False)
+        if existing_row is None:
+            raise RecordNotFoundError(f"Purchase invoice {purchase_invoice_id} not found.")
+        if existing_row["status"] == "Cancelled":
+            raise ValidationError("Cannot edit a cancelled purchase invoice.")
+        if existing_row.get("purchase_order_id"):
+            raise ValidationError(
+                "This invoice is linked to a Purchase Order and cannot be edited. "
+                "Use Purchase Return for corrections instead."
+            )
+
+        old_lines = self._model.get_items_by_invoice(purchase_invoice_id)
+
+        # -- validate new payload (identical to create) --------------------
+        is_valid, error = PurchaseValidator.validate_invoice_header(payload)
+        if not is_valid:
+            raise ValidationError(error)
+
+        raw_lines = payload.get("lines") or []
+        for raw_line in raw_lines:
+            is_valid, error = PurchaseValidator.validate_invoice_line(raw_line)
+            if not is_valid:
+                raise ValidationError(error)
+            is_valid, error = PurchaseValidator.validate_free_qty_rate(raw_line)
+            if not is_valid:
+                raise ValidationError(error)
+
+        if self._model.exists_by_supplier_and_billno(
+            supplier_id=payload["supplier_id"],
+            invoice_number=payload["invoice_number"],
+            exclude_id=purchase_invoice_id,
+        ):
+            raise DuplicateRecordError(
+                f"Invoice number '{payload['invoice_number']}' already exists for this supplier."
+            )
+
+        # -- PRE-CHECK: is every old line's reversal safe? (no writes yet) -
+        for old_line in old_lines:
+            item_batch_id = old_line.get("item_batch_id")
+            if item_batch_id is None:
+                continue  # nothing to reverse if it was never stock-linked
+            reversal_qty = float(old_line["qty"]) + float(old_line["free_qty"])
+            current_batch = self._item_engine.get_batch(item_batch_id)
+            prospective_balance = float(current_batch.batch_qty) - reversal_qty
+            if prospective_balance < 0:
+                raise ValidationError(
+                    f"Cannot edit -- batch '{current_batch.batch_no}' only has "
+                    f"{current_batch.batch_qty} units left (some have likely been sold "
+                    f"since this purchase); editing would need to remove {reversal_qty}. "
+                    f"Use Purchase Return instead, or resolve the linked sale first."
+                )
+
+        # -- all safe: reverse old lines' stock -----------------------------
+        for old_line in old_lines:
+            item_batch_id = old_line.get("item_batch_id")
+            if item_batch_id is None:
+                continue
+            reversal_qty = float(old_line["qty"]) + float(old_line["free_qty"])
+            self._item_engine.post_stock_movement(
+                item_batch_id=item_batch_id,
+                transaction_type="ADJUSTMENT",
+                quantity_change=-reversal_qty,
+                current_user_id=current_user_id,
+                reference_type="purchase_invoice_edit_reversal",
+                reference_id=purchase_invoice_id,
+            )
+
+        # -- build new DTOs, resolve/allocate/calculate (identical to create) --
+        lines: list[PurchaseInvoiceLineDTO] = []
+        for raw_line in raw_lines:
+            dto_line = PurchaseInvoiceLineDTO(
+                item_id=raw_line["item_id"],
+                batch_no=raw_line["batch_no"],
+                expiry_month=int(raw_line["expiry_month"]),
+                expiry_year=int(raw_line["expiry_year"]),
+                qty=float(raw_line.get("qty") or 0.0),
+                free_qty=float(raw_line.get("free_qty") or 0.0),
+                purchase_rate=float(raw_line.get("purchase_rate") or 0.0),
+                discount_percent=float(raw_line.get("discount_percent") or 0.0),
+                cc_percent=0.0,
+                mrp=float(raw_line.get("mrp") or 0.0),
+                sale_rate=float(raw_line.get("sale_rate") or 0.0),
+            )
+            lines.append(dto_line)
+
+        for dto_line in lines:
+            dto_line.cc_percent = self._resolve_cc_percent(dto_line.item_id)
+
+        total_freight = float(payload.get("total_freight") or 0.0)
+        total_other = float(payload.get("total_other_charges") or 0.0)
+        lines = self._allocate_invoice_level_charges(lines, total_freight, total_other)
+        lines = [self._calculate_line_amounts(dto_line) for dto_line in lines]
+
+        now_ad = datetime.now(timezone.utc)
+        try:
+            now_bs = ad_to_bs(now_ad.date())
+        except DateEngineError:
+            logger.exception("Could not resolve BS date for purchase invoice edit audit stamp")
+            now_bs = None
+
+        raw_total = sum(
+            (l.qty * l.purchase_rate) - l.discount_amount + l.cc_amount
+            + l.freight_allocated + l.other_charges_allocated
+            for l in lines
+        )
+        bill_discount_amount = round(float(payload.get("bill_discount_amount") or 0.0), 4)
+        total_after_bill_discount = raw_total - bill_discount_amount
+        grand_total = round(total_after_bill_discount)
+        round_off_amount = round(grand_total - total_after_bill_discount, 2)
+
+        invoice_date_ad = bs_to_ad(payload["invoice_date_bs"])
+        total_qty = sum(l.qty for l in lines)
+        total_gross_amount = sum(l.qty * l.purchase_rate for l in lines)
+        total_discount_amount = sum(l.discount_amount for l in lines)
+        total_cc_amount = sum(l.cc_amount for l in lines)
+
+        # -- update header ---------------------------------------------------
+        self._model.update_invoice(
+            purchase_invoice_id,
+            {
+                "invoice_number": payload["invoice_number"],
+                "supplier_id": payload["supplier_id"],
+                "invoice_date_ad": invoice_date_ad,
+                "invoice_date_bs": payload["invoice_date_bs"],
+                "total_qty": round(total_qty, 4),
+                "total_gross_amount": round(total_gross_amount, 4),
+                "total_discount_amount": round(total_discount_amount, 4),
+                "total_cc_amount": round(total_cc_amount, 4),
+                "total_freight_amount": total_freight,
+                "total_other_charges": total_other,
+                "grand_total": round(grand_total, 4),
+                "bill_discount_amount": bill_discount_amount,
+                "round_off_amount": round_off_amount,
+                "remarks": (payload.get("remarks") or "").strip() or None,
+                "updated_by": current_user_id,
+                "updated_at_ad": now_ad,
+                "updated_at_bs": now_bs,
+            },
+        )
+
+        # -- delete old lines, insert new ones + apply their stock -----------
+        self._model.delete_items_by_invoice(purchase_invoice_id)
+
+        for dto_line in lines:
+            invoice_item_id = self._model.insert_invoice_item(
+                purchase_invoice_id=purchase_invoice_id,
+                data={
+                    "item_id": dto_line.item_id,
+                    "batch_no": dto_line.batch_no,
+                    "expiry_month": dto_line.expiry_month,
+                    "expiry_year": dto_line.expiry_year,
+                    "qty": dto_line.qty,
+                    "free_qty": dto_line.free_qty,
+                    "purchase_rate": dto_line.purchase_rate,
+                    "discount_percent": dto_line.discount_percent,
+                    "discount_amount": dto_line.discount_amount,
+                    "cc_percent": dto_line.cc_percent,
+                    "cc_amount": dto_line.cc_amount,
+                    "freight_amount_allocated": dto_line.freight_allocated,
+                    "other_charges_allocated": dto_line.other_charges_allocated,
+                    "landing_cost_per_unit": dto_line.landing_cost_per_unit,
+                    "mrp": dto_line.mrp,
+                    "sale_rate": dto_line.sale_rate,
+                },
+            )
+
+            existing_batch = self._item_engine.get_batch_by_no(dto_line.item_id, dto_line.batch_no)
+            if existing_batch is not None:
+                item_batch = self._item_engine.post_stock_movement(
+                    item_batch_id=existing_batch.item_batch_id,
+                    transaction_type="PURCHASE",
+                    quantity_change=dto_line.qty + dto_line.free_qty,
+                    current_user_id=current_user_id,
+                    reference_type="purchase_invoice_edit",
+                    reference_id=purchase_invoice_id,
+                )
+                item_batch_id = item_batch.item_batch_id
+            else:
+                item_batch = self._item_engine.add_batch(
+                    item_id=dto_line.item_id,
+                    batch_payload={
+                        "batch_no": dto_line.batch_no,
+                        "expiry_month": dto_line.expiry_month,
+                        "expiry_year": dto_line.expiry_year,
+                        "batch_qty": dto_line.qty + dto_line.free_qty,
+                        "batch_purchase_rate": dto_line.landing_cost_per_unit,
+                    },
+                    current_user_id=current_user_id,
+                    transaction_type="PURCHASE",
+                    reference_type="purchase_invoice_edit",
+                    reference_id=purchase_invoice_id,
+                )
+                item_batch_id = getattr(item_batch, "item_batch_id", None) or item_batch["item_batch_id"]
+
+            dto_line.item_batch_id = item_batch_id
+            self._model.update_invoice_item_batch_link(
+                purchase_invoice_item_id=invoice_item_id, item_batch_id=item_batch_id
+            )
+
+        return PurchaseInvoiceDTO(
+            purchase_invoice_id=purchase_invoice_id,
+            internal_ref_number=existing_row["internal_ref_number"],
+            invoice_number=payload["invoice_number"],
+            supplier_id=payload["supplier_id"],
+            invoice_date_bs=payload["invoice_date_bs"],
+            grand_total=round(grand_total, 4),
+            status=existing_row["status"],
+            lines=lines,
+            invoice_date_ad=str(invoice_date_ad),
+            bill_discount_amount=bill_discount_amount,
+            round_off_amount=round_off_amount,
+            remarks=(payload.get("remarks") or "").strip() or None,
+            purchase_order_id=existing_row.get("purchase_order_id"),
+            total_freight=total_freight,
+            total_other_charges=total_other,
+        )
+
     def get_purchase_invoice(self, purchase_invoice_id: int, include_deleted: bool = False) -> PurchaseInvoiceDTO:
         row = self._model.get_by_id(purchase_invoice_id, include_deleted=include_deleted)
         if row is None:
@@ -478,6 +716,9 @@ class PurchaseEngine:
         round_off_amount=row.get("round_off_amount", 0.0) or 0.0,
         invoice_date_ad=str(row.get("invoice_date_ad")) if row.get("invoice_date_ad") else None,
         remarks=row.get("remarks"),
+        purchase_order_id=row.get("purchase_order_id"),
+        total_freight=float(row.get("total_freight_amount", 0.0) or 0.0),
+        total_other_charges=float(row.get("total_other_charges", 0.0) or 0.0),
     )
 
     def search_purchase_invoices(
@@ -513,6 +754,7 @@ class PurchaseEngine:
                 grand_total=r["grand_total"],
                 status=r["status"],
                 lines=[],  # list views don't hydrate lines — use get_purchase_invoice() for detail
+                purchase_order_id=r.get("purchase_order_id"),
             )
             for r in rows
         ]
