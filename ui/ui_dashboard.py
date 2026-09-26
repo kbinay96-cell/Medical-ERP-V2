@@ -47,21 +47,17 @@ class Ui_MainWindow(object):
 
         self.topHeaderLayout.addWidget(self.lblCompanyNameHeader)
 
+        # txtSearchMenu moved into the sidebar (frmSidebar/sidebarLayout,
+        # built below). btnNotifications/btnTheme/btnLogout removed from
+        # this row entirely (Theme/Logout moved to the bottom of the
+        # sidebar; Notifications removed -- grpAlerts/lstAlerts on the
+        # dashboard home already shows the same alerts). The space this
+        # freed up, between the spacer and frmUserInfo, is where
+        # DashboardScreen._mount_master_search_bar() inserts
+        # MasterSearchBarWidget at runtime.
         self.topHeaderSpacerLeft = QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         self.topHeaderLayout.addItem(self.topHeaderSpacerLeft)
-
-        self.txtSearchMenu = QLineEdit(self.frmTopHeader)
-        self.txtSearchMenu.setObjectName(u"txtSearchMenu")
-        self.txtSearchMenu.setMinimumWidth(320)
-        self.txtSearchMenu.setMaximumHeight(36)
-        sizePolicy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        sizePolicy.setHorizontalStretch(1)
-        sizePolicy.setVerticalStretch(0)
-        sizePolicy.setHeightForWidth(self.txtSearchMenu.sizePolicy().hasHeightForWidth())
-        self.txtSearchMenu.setSizePolicy(sizePolicy)
-
-        self.topHeaderLayout.addWidget(self.txtSearchMenu)
 
         self.frmUserInfo = QFrame(self.frmTopHeader)
         self.frmUserInfo.setObjectName(u"frmUserInfo")
@@ -87,22 +83,6 @@ class Ui_MainWindow(object):
 
         self.topHeaderLayout.addWidget(self.frmUserInfo)
 
-        self.btnNotifications = QPushButton(self.frmTopHeader)
-        self.btnNotifications.setObjectName(u"btnNotifications")
-
-        self.topHeaderLayout.addWidget(self.btnNotifications)
-
-        self.btnTheme = QPushButton(self.frmTopHeader)
-        self.btnTheme.setObjectName(u"btnTheme")
-
-        self.topHeaderLayout.addWidget(self.btnTheme)
-
-        self.btnLogout = QPushButton(self.frmTopHeader)
-        self.btnLogout.setObjectName(u"btnLogout")
-
-        self.topHeaderLayout.addWidget(self.btnLogout)
-
-
         self.mainVerticalLayout.addWidget(self.frmTopHeader)
 
         self.bodySplitter = QSplitter(self.centralwidget)
@@ -112,6 +92,21 @@ class Ui_MainWindow(object):
         self.frmSidebar.setObjectName(u"frmSidebar")
         self.sidebarLayout = QVBoxLayout(self.frmSidebar)
         self.sidebarLayout.setObjectName(u"sidebarLayout")
+
+        # Moved here from frmTopHeader: the sidebar-menu filter, now at
+        # the very top of the sidebar panel, above the existing heading.
+        self.txtSearchMenu = QLineEdit(self.frmSidebar)
+        self.txtSearchMenu.setObjectName(u"txtSearchMenu")
+        self.txtSearchMenu.setMinimumWidth(0)
+        self.txtSearchMenu.setMaximumHeight(36)
+        sizePolicy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        sizePolicy.setHorizontalStretch(1)
+        sizePolicy.setVerticalStretch(0)
+        sizePolicy.setHeightForWidth(self.txtSearchMenu.sizePolicy().hasHeightForWidth())
+        self.txtSearchMenu.setSizePolicy(sizePolicy)
+
+        self.sidebarLayout.addWidget(self.txtSearchMenu)
+
         self.lblMenuTitle = QLabel(self.frmSidebar)
         self.lblMenuTitle.setObjectName(u"lblMenuTitle")
 
@@ -120,7 +115,23 @@ class Ui_MainWindow(object):
         self.treeSidebarMenu = QTreeWidget(self.frmSidebar)
         self.treeSidebarMenu.setObjectName(u"treeSidebarMenu")
 
-        self.sidebarLayout.addWidget(self.treeSidebarMenu)
+        # Stretch factor 1: the tree takes all the vertical space this
+        # panel has to give, and scrolls internally on overflow, so
+        # btnTheme/btnLogout below end up pinned to the bottom of the
+        # sidebar instead of sitting right under the tree.
+        self.sidebarLayout.addWidget(self.treeSidebarMenu, 1)
+
+        # Moved here from frmTopHeader: Theme and Logout, pinned to the
+        # bottom of the sidebar. btnNotifications was removed entirely.
+        self.btnTheme = QPushButton(self.frmSidebar)
+        self.btnTheme.setObjectName(u"btnTheme")
+
+        self.sidebarLayout.addWidget(self.btnTheme)
+
+        self.btnLogout = QPushButton(self.frmSidebar)
+        self.btnLogout.setObjectName(u"btnLogout")
+
+        self.sidebarLayout.addWidget(self.btnLogout)
 
         self.bodySplitter.addWidget(self.frmSidebar)
         self.stackedContentArea = QStackedWidget(self.bodySplitter)
@@ -395,7 +406,6 @@ class Ui_MainWindow(object):
         self.lblLoggedInUser.setText(QCoreApplication.translate("MainWindow", u"User", None))
         self.lblUserRole.setText(QCoreApplication.translate("MainWindow", u"Role", None))
         self.lblCurrentFinancialYearHeader.setText(QCoreApplication.translate("MainWindow", u"FY", None))
-        self.btnNotifications.setText(QCoreApplication.translate("MainWindow", u"Alerts (0)", None))
         self.btnTheme.setText(QCoreApplication.translate("MainWindow", u"Theme", None))
         self.btnLogout.setText(QCoreApplication.translate("MainWindow", u"Logout", None))
         self.lblMenuTitle.setText(QCoreApplication.translate("MainWindow", u"Modules", None))

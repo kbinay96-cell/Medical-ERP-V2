@@ -210,8 +210,15 @@ class SupplierListScreen(QWidget):
         self._detail.set_field("Address:", dto.address or "-")
         self._detail.set_field("City:", dto.city or "-")
         self._detail.set_field("PAN/VAT:", dto.pan_vat_no or "-")
+        current_balance = dto.current_balance if dto.current_balance is not None else 0.0
+        if current_balance > 0:
+            balance_type_display = "Cr"
+        elif current_balance < 0:
+            balance_type_display = "Dr"
+        else:
+            balance_type_display = "-"
         self._detail.set_field(
-            "Balance:", f"{format_amount(dto.opening_balance)} {dto.balance_type or ''}".strip()
+            "Current Balance:", f"{format_amount(abs(current_balance))} {balance_type_display}".strip()
         )
         self._detail.set_field("Credit Limit:", format_amount(dto.credit_limit))
         self._detail.set_field("Credit Days:", str(dto.credit_days if dto.credit_days is not None else 0))

@@ -116,7 +116,7 @@ class Ui_SupplierListWidget(object):
         self.tblSupplier.setColumnCount(11)
         self.tblSupplier.setHorizontalHeaderLabels([
             "Code", "Supplier Name", "Contact Person", "Mobile No.", "City",
-            "PAN/VAT No.", "Opening Balance", "Type", "Credit Limit",
+            "PAN/VAT No.", "Current Balance", "Type", "Credit Limit",
             "Credit Days", "Status",
         ])
         self.tblSupplier.setAlternatingRowColors(True)

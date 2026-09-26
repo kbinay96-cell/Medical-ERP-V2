@@ -31,12 +31,14 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Optional
 
+from engines import session_manager
 from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.report_validator import STANDARD_FILTERS, ReportValidator
 from models.management_dashboard_model import ManagementDashboardModel
 from models.report_definition_model import ReportDefinitionModel
 from models.report_permission_model import ReportPermissionModel
 from models.report_query_executor import ReportQueryExecutor
+from models.report_category_model import ReportCategoryModel
 
 logger = logging.getLogger(__name__)
 
@@ -61,21 +63,38 @@ class ReportEngine:
         definition_model: Optional[ReportDefinitionModel] = None,
         dashboard_model: Optional[ManagementDashboardModel] = None,
         permission_model: Optional[ReportPermissionModel] = None,
+        category_model: Optional[ReportCategoryModel] = None,     # NEW
         executor: Optional[ReportQueryExecutor] = None,
         validator: Optional[ReportValidator] = None,
-        # Cross-module search delegates -- each is a callable the
-        # Screen layer wires in (search_threads-style functions already
-        # built in every prior module's Model, e.g.
-        # SaleInvoiceModel.search, CustomerModel.search, ...). Optional
-        # so this Engine has no HARD dependency on every other module.
         search_delegates: Optional[dict[str, Any]] = None,
     ) -> None:
         self._definition_model = definition_model or ReportDefinitionModel()
         self._dashboard_model = dashboard_model or ManagementDashboardModel()
         self._permission_model = permission_model or ReportPermissionModel()
+        self._category_model = category_model or ReportCategoryModel()   # NEW
         self._executor = executor or ReportQueryExecutor()
         self._validator = validator or ReportValidator()
         self._search_delegates = search_delegates or {}
+
+    # ------------------------------------------------------------------ #
+    # CATEGORY / DEFINITION LISTING (metadata only -- no query execution)
+    # ------------------------------------------------------------------ #
+    def list_categories(self) -> list[dict[str, Any]]:
+        """Backs the Report Runner screen's left-panel category tree."""
+        return self._category_model.list_active()
+
+    def list_reports_by_category(self, report_category_id: int) -> list[dict[str, Any]]:
+        """Backs the Report Runner screen's per-category report list."""
+        return self._definition_model.list_by_category(report_category_id)
+
+    def get_report_definition(self, report_code: str) -> Optional[dict[str, Any]]:
+        """
+        Returns the report_definition row's metadata (name, applicable_filters,
+        columns_definition, drill-down targets) WITHOUT executing its
+        sql_template -- used by the Screen to build the dynamic filter
+        panel before the user clicks Run.
+        """
+        return self._definition_model.get_by_code(report_code)
 
     # ------------------------------------------------------------------ #
     # RUN A REPORT
@@ -85,12 +104,13 @@ class ReportEngine:
         if definition is None:
             raise RecordNotFoundError(f"Report '{report_code}' not found.")
 
-        granted = self._permission_model.get_permissions_for_role(user_role)
-        permission_result = self._validator.validate_permission(
-            definition["required_permission"], granted, definition["is_financial_statement"]
-        )
-        if not permission_result.is_valid:
-            raise ValidationError("; ".join(permission_result.errors))
+        if not session_manager.is_current_user_admin():
+            granted = self._permission_model.get_permissions_for_role(user_role)
+            permission_result = self._validator.validate_permission(
+                definition["required_permission"], granted, definition["is_financial_statement"]
+            )
+            if not permission_result.is_valid:
+                raise ValidationError("; ".join(permission_result.errors))
 
         applicable = list(definition["applicable_filters"])
         keys_result = self._validator.validate_filter_keys(applicable, set(filters.keys()))
@@ -255,38 +275,37 @@ class ReportEngine:
                     "actual_closing": actual_closing, "difference": round(expected_closing - actual_closing, 2)}
         return None
 
-    def check_payable_exception(self, supplier_id: int, opening_balance: float,
-                                 date_from: date, date_to: date) -> Optional[dict]:
-        """Mirrors check_receivable_exception() exactly, supplier/purchase side."""
+    def check_payable_exception(self, supplier_id: int, date_from: date, date_to: date) -> Optional[dict[str, Any]]:
+        """Mirror of receivable for one supplier."""
         sql = """
-            SELECT
-                COALESCE((SELECT SUM(grand_total) FROM purchase_invoice
-                          WHERE supplier_id = %(supplier_id)s AND status = 'Posted'
-                            AND invoice_date_ad BETWEEN %(date_from)s AND %(date_to)s), 0) AS total_purchases,
-                COALESCE((SELECT SUM(pa.allocated_amount) FROM payment_allocation pa
-                          JOIN payment p ON p.payment_id = pa.payment_id
-                          JOIN purchase_invoice pi ON pi.purchase_invoice_id = pa.purchase_invoice_id
-                          WHERE pi.supplier_id = %(supplier_id)s AND p.status != 'Cancelled'
-                            AND p.payment_date_ad BETWEEN %(date_from)s AND %(date_to)s), 0) AS total_payments,
-                COALESCE((SELECT SUM(grand_total) FROM purchase_return
-                          WHERE supplier_id = %(supplier_id)s AND status = 'Posted'
-                            AND settlement_mode = 'Adjust Against Payable'
-                            AND return_date_ad BETWEEN %(date_from)s AND %(date_to)s), 0) AS total_adjustments
+            SELECT COALESCE((SELECT opening_balance FROM supplier WHERE supplier_id = %(supplier_id)s), 0) AS opening_balance,
+                   COALESCE((SELECT SUM(grand_total) FROM purchase_invoice
+                              WHERE supplier_id = %(supplier_id)s AND status = 'Posted'
+                                AND invoice_date_ad BETWEEN %(date_from)s AND %(date_to)s), 0) AS total_purchases,
+                   COALESCE((SELECT SUM(pa.allocated_amount) FROM payment_allocation pa
+                               JOIN payment p ON p.payment_id = pa.payment_id
+                              WHERE p.supplier_id = %(supplier_id)s AND p.status != 'Cancelled'
+                                AND p.payment_date_ad BETWEEN %(date_from)s AND %(date_to)s), 0) AS total_payments,
+                   COALESCE((SELECT SUM(grand_total) FROM purchase_return
+                              WHERE supplier_id = %(supplier_id)s AND status = 'Posted'
+                                AND settlement_mode = 'Adjust Against Payable'
+                                AND return_date_ad BETWEEN %(date_from)s AND %(date_to)s), 0) AS total_adjustments
         """
         row = self._executor.run(sql, {"supplier_id": supplier_id, "date_from": date_from, "date_to": date_to})[0]
+        opening_balance = float(row["opening_balance"])
         expected_closing = opening_balance + float(row["total_purchases"]) - float(row["total_payments"]) - float(row["total_adjustments"])
         outstanding_sql = """
             SELECT COALESCE(SUM(pi.grand_total
                 - COALESCE(pa_sum.total_allocated, 0) - COALESCE(pr_sum.total_adjusted, 0)), 0) AS actual_outstanding
-            FROM purchase_invoice pi
-            LEFT JOIN (SELECT pa.purchase_invoice_id, SUM(pa.allocated_amount) AS total_allocated
-                       FROM payment_allocation pa JOIN payment p ON p.payment_id = pa.payment_id
-                       WHERE p.status != 'Cancelled' GROUP BY pa.purchase_invoice_id) pa_sum
+             FROM purchase_invoice pi
+             LEFT JOIN (SELECT pa.purchase_invoice_id, SUM(pa.allocated_amount) AS total_allocated
+                          FROM payment_allocation pa JOIN payment p ON p.payment_id = pa.payment_id
+                         WHERE p.status != 'Cancelled' GROUP BY pa.purchase_invoice_id) pa_sum
                 ON pa_sum.purchase_invoice_id = pi.purchase_invoice_id
-            LEFT JOIN (SELECT purchase_invoice_id, SUM(grand_total) AS total_adjusted FROM purchase_return
-                       WHERE settlement_mode = 'Adjust Against Payable' AND status != 'Cancelled'
-                       GROUP BY purchase_invoice_id) pr_sum ON pr_sum.purchase_invoice_id = pi.purchase_invoice_id
-            WHERE pi.supplier_id = %(supplier_id)s AND pi.status = 'Posted';
+             LEFT JOIN (SELECT purchase_invoice_id, SUM(grand_total) AS total_adjusted FROM purchase_return
+                         WHERE settlement_mode = 'Adjust Against Payable' AND status != 'Cancelled'
+                         GROUP BY purchase_invoice_id) pr_sum ON pr_sum.purchase_invoice_id = pi.purchase_invoice_id
+             WHERE pi.supplier_id = %(supplier_id)s AND pi.status = 'Posted';
         """
         actual_row = self._executor.run(outstanding_sql, {"supplier_id": supplier_id})[0]
         actual_closing = float(actual_row["actual_outstanding"])

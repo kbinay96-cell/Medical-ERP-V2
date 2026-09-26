@@ -103,9 +103,15 @@ class SupplierDTO:
     deleted_by: Optional[int]
     deleted_at_ad: Any
     deleted_at_bs: Optional[str]
+    current_balance: Optional[float] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "SupplierDTO":
+        # current_balance is never a column on the `supplier` table --
+        # it's populated separately, after construction, from
+        # PaymentModel.get_current_balance_map() (see
+        # SupplierEngine.search_suppliers()/get_current_balances()).
+        # row.get() correctly yields None here when the key is absent.
         return cls(**{k: row.get(k) for k in cls.__dataclass_fields__.keys()})
 
     def to_dict(self) -> dict:
@@ -120,6 +126,7 @@ class SupplierEngine:
         model: Optional[SupplierModel] = None,
         date_engine: Optional[Any] = None,
         settings_engine: Optional[Any] = None,
+        payment_model: Optional[Any] = None,
     ) -> None:
         self._model = model or SupplierModel()
         self._date_engine = date_engine if date_engine is not None else _load_date_engine()
@@ -128,6 +135,15 @@ class SupplierEngine:
             name_exists_fn=self._model.exists_by_name,
             code_exists_fn=self._model.exists_by_code,
         )
+        # Lazy import -- PaymentModel is a data-access layer with no
+        # engine-level dependencies, so depending on it here is safe
+        # (unlike depending on PaymentEngine, which would create
+        # cross-domain engine coupling).
+        if payment_model is not None:
+            self._payment_model = payment_model
+        else:
+            from models.payment_model import PaymentModel
+            self._payment_model = PaymentModel()
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -341,14 +357,22 @@ class SupplierEngine:
         return SupplierDTO.from_row(row)
 
     def get_current_balance(self, supplier_id: int) -> float:
-        """Placeholder until the full Supplier Ledger (invoices minus
-        payments) exists. Returns opening_balance for now. Callers (e.g.
-        the Purchase Invoice View dialog) should always call this method
-        rather than reading opening_balance directly, so the real
-        calculation can replace this internal logic later without any
-        other file needing to change."""
-        supplier = self.get_supplier(supplier_id)
-        return supplier.opening_balance or 0.0
+        """Live current balance = outstanding Cr-type opening balance +
+        outstanding purchase invoices - available advance -- computed in
+        a single query by PaymentModel.get_current_balance_map() (see that
+        method's docstring for the full formula). Callers (e.g. the
+        Purchase Invoice View dialog) should always call this method
+        rather than reading opening_balance directly."""
+        balances = self._payment_model.get_current_balance_map([supplier_id])
+        return balances.get(supplier_id, 0.0)
+
+    def get_current_balances(self, supplier_ids: list[int]) -> dict[int, float]:
+        """Batch version of get_current_balance() -- ONE query for many
+        suppliers at once (e.g. to enrich a whole Supplier List page
+        without an N+1 query per row). See search_suppliers()."""
+        if not supplier_ids:
+            return {}
+        return self._payment_model.get_current_balance_map(supplier_ids)
 
     def search_suppliers(
         self,
@@ -366,7 +390,16 @@ class SupplierEngine:
             page_size=page_size,
         )
         rows, total_count = self._model.search(filters)
-        return [SupplierDTO.from_row(r) for r in rows], total_count
+        dtos = [SupplierDTO.from_row(r) for r in rows]
+
+        # Enrich with live current_balance in ONE batch query, not one
+        # query per row -- see get_current_balances().
+        supplier_ids = [dto.supplier_id for dto in dtos]
+        balances = self.get_current_balances(supplier_ids)
+        for dto in dtos:
+            dto.current_balance = balances.get(dto.supplier_id, 0.0)
+
+        return dtos, total_count
 
     # ------------------------------------------------------------------ #
     # DUPLICATE CHECKS (exposed for Screens to call live, e.g. on-blur checks)

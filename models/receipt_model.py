@@ -117,47 +117,59 @@ class ReceiptModel:
         rule; the Engine simply consumes rows top-to-bottom. Only rows
         where outstanding_amount > 0 are returned.
 
-        outstanding_amount = grand_total
+        outstanding_amount = sale_invoice.balance_amount
                               - COALESCE(SUM(receipt_allocation via non-cancelled receipts), 0)
                               - COALESCE(SUM(sale_return.grand_total WHERE refund_mode='Adjust Against Invoice' AND status != 'Cancelled'), 0)
+
+        balance_amount (= grand_total - amount_paid_now, written when the
+        invoice is saved) is the base, NOT grand_total: whatever the
+        customer already paid at the counter is not receivable and must
+        not be collected again through a Receipt. Nothing updates
+        balance_amount after the invoice is saved, so receipts are
+        subtracted live here and never written back to the invoice.
 
         The sale_return subtraction is included NOW (even though the
         Accounts module isn't built yet) because Sale Return was built
         BEFORE Receipt in this project's order -- ignoring it here would
         make outstanding wrong for any invoice that already had a return
         applied against it.
+
+        The "> 0" filter is applied in an OUTER query on the derived
+        column: a HAVING without GROUP BY over non-aggregated columns is
+        a Postgres GroupingError.
         """
         sql = """
-            SELECT
-                si.sale_invoice_id,
-                si.invoice_number,
-                si.invoice_date_ad,
-                si.grand_total,
-                si.grand_total
-                    - COALESCE(ra_sum.total_allocated, 0)
-                    - COALESCE(sr_sum.total_adjusted, 0) AS outstanding_amount
-            FROM sale_invoice si
-            LEFT JOIN (
-                SELECT ra.sale_invoice_id, SUM(ra.allocated_amount) AS total_allocated
-                FROM receipt_allocation ra
-                JOIN receipt r ON r.receipt_id = ra.receipt_id
-                WHERE r.status != 'Cancelled' AND r.is_deleted = FALSE
-                GROUP BY ra.sale_invoice_id
-            ) ra_sum ON ra_sum.sale_invoice_id = si.sale_invoice_id
-            LEFT JOIN (
-                SELECT sr.sale_invoice_id, SUM(sr.grand_total) AS total_adjusted
-                FROM sale_return sr
-                WHERE sr.refund_mode = 'Adjust Against Invoice'
-                  AND sr.status != 'Cancelled' AND sr.is_deleted = FALSE
-                GROUP BY sr.sale_invoice_id
-            ) sr_sum ON sr_sum.sale_invoice_id = si.sale_invoice_id
-            WHERE si.customer_id = %(customer_id)s
-              AND si.status = 'Posted'
-              AND si.is_deleted = FALSE
-            HAVING si.grand_total
-                    - COALESCE(ra_sum.total_allocated, 0)
-                    - COALESCE(sr_sum.total_adjusted, 0) > 0
-            ORDER BY si.invoice_date_ad ASC, si.sale_invoice_id ASC;
+            SELECT inv.*
+            FROM (
+                SELECT
+                    si.sale_invoice_id,
+                    si.invoice_number,
+                    si.invoice_date_ad,
+                    si.grand_total,
+                    si.balance_amount
+                        - COALESCE(ra_sum.total_allocated, 0)
+                        - COALESCE(sr_sum.total_adjusted, 0) AS outstanding_amount
+                FROM sale_invoice si
+                LEFT JOIN (
+                    SELECT ra.sale_invoice_id, SUM(ra.allocated_amount) AS total_allocated
+                    FROM receipt_allocation ra
+                    JOIN receipt r ON r.receipt_id = ra.receipt_id
+                    WHERE r.status != 'Cancelled' AND r.is_deleted = FALSE
+                    GROUP BY ra.sale_invoice_id
+                ) ra_sum ON ra_sum.sale_invoice_id = si.sale_invoice_id
+                LEFT JOIN (
+                    SELECT sr.sale_invoice_id, SUM(sr.grand_total) AS total_adjusted
+                    FROM sale_return sr
+                    WHERE sr.refund_mode = 'Adjust Against Invoice'
+                      AND sr.status != 'Cancelled' AND sr.is_deleted = FALSE
+                    GROUP BY sr.sale_invoice_id
+                ) sr_sum ON sr_sum.sale_invoice_id = si.sale_invoice_id
+                WHERE si.customer_id = %(customer_id)s
+                  AND si.status = 'Posted'
+                  AND si.is_deleted = FALSE
+            ) inv
+            WHERE inv.outstanding_amount > 0
+            ORDER BY inv.invoice_date_ad ASC, inv.sale_invoice_id ASC;
         """
         conn = _get_connection()
         try:

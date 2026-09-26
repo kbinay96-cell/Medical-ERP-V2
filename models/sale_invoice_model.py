@@ -229,18 +229,47 @@ class SaleInvoiceModel:
                 raise
 
     def get_customer_outstanding(self, customer_id: int, exclude_invoice_id: Optional[int] = None) -> float:
-        sql = """
-            SELECT COALESCE(SUM(balance_amount), 0) AS total
-            FROM sale_invoice
-            WHERE customer_id = %s
-              AND is_deleted = FALSE
-              AND status = 'Posted'
-              AND balance_amount > 0
         """
-        params: list[Any] = [customer_id]
-        if exclude_invoice_id is not None:
-            sql += " AND sale_invoice_id <> %s"
-            params.append(exclude_invoice_id)
+        Live current outstanding for the credit-limit check: each Posted,
+        non-deleted invoice's balance_amount (grand_total - amount_paid_now)
+        minus whatever has since been collected against it via a
+        non-cancelled Receipt, minus any sale_return adjusted against it --
+        floored at 0 per invoice, so one over-collected invoice cannot
+        create headroom for another. Summing raw balance_amount (the old
+        behaviour) ignored every Receipt and permanently overstated a
+        customer's outstanding once any receipt existed.
+        """
+        sql = """
+            SELECT COALESCE(SUM(inv.outstanding_amount), 0) AS total
+            FROM (
+                SELECT
+                    si.sale_invoice_id,
+                    si.balance_amount
+                        - COALESCE(ra_sum.total_allocated, 0)
+                        - COALESCE(sr_sum.total_adjusted, 0) AS outstanding_amount
+                FROM sale_invoice si
+                LEFT JOIN (
+                    SELECT ra.sale_invoice_id, SUM(ra.allocated_amount) AS total_allocated
+                    FROM receipt_allocation ra
+                    JOIN receipt r ON r.receipt_id = ra.receipt_id
+                    WHERE r.status != 'Cancelled' AND r.is_deleted = FALSE
+                    GROUP BY ra.sale_invoice_id
+                ) ra_sum ON ra_sum.sale_invoice_id = si.sale_invoice_id
+                LEFT JOIN (
+                    SELECT sr.sale_invoice_id, SUM(sr.grand_total) AS total_adjusted
+                    FROM sale_return sr
+                    WHERE sr.refund_mode = 'Adjust Against Invoice'
+                      AND sr.status != 'Cancelled' AND sr.is_deleted = FALSE
+                    GROUP BY sr.sale_invoice_id
+                ) sr_sum ON sr_sum.sale_invoice_id = si.sale_invoice_id
+                WHERE si.customer_id = %(customer_id)s
+                  AND si.is_deleted = FALSE
+                  AND si.status = 'Posted'
+                  AND (%(exclude_invoice_id)s IS NULL OR si.sale_invoice_id != %(exclude_invoice_id)s)
+            ) inv
+            WHERE inv.outstanding_amount > 0
+        """
+        params = {"customer_id": customer_id, "exclude_invoice_id": exclude_invoice_id}
         with _get_connection() as conn:
             with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
                 cur.execute(sql, params)

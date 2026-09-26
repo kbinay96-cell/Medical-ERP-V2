@@ -87,6 +87,7 @@ class PurchaseEngine:
         item_engine,
         purchase_order_engine,
         discount_engine=None,
+        payment_engine=None,   
     ) -> None:
         """item_engine: an ItemEngine instance — Purchase Engine delegates
         all stock/batch writes to it, never touches item_batch/stock_ledger
@@ -103,6 +104,7 @@ class PurchaseEngine:
         self._item_engine = item_engine
         self._purchase_order_engine = purchase_order_engine
         self._discount_engine = discount_engine
+        self._payment_engine = payment_engine   
 
     # -- numbering ----------------------------------------------------------
 
@@ -354,6 +356,25 @@ class PurchaseEngine:
                 "created_at_bs": now_bs,
             }
         )
+
+        # NEW: auto-consume any existing supplier advance against this new
+        # invoice, mirroring SaleEngine.create_sale_invoice()'s
+        # receipt_engine.apply_advance_to_invoice() hook. Wrapped in
+        # try/except so a failure here never rolls back an already-saved
+        # purchase invoice.
+        if self._payment_engine is not None:
+            try:
+                self._payment_engine.apply_advance_to_invoice(
+                    supplier_id=payload["supplier_id"],
+                    purchase_invoice_id=new_invoice_id,
+                    requested_amount=round(grand_total, 4),
+                    applied_by=current_user_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Advance auto-apply failed for purchase_invoice_id=%s; advance remains unapplied.",
+                    new_invoice_id,
+                )
 
         # 7. insert each line, then delegate stock/batch creation to ItemEngine
         for dto_line in lines:

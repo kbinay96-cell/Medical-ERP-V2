@@ -47,7 +47,7 @@ class ReportValidator:
         filter left blank is fine, the Engine fills it with None.
         """
         result = ValidationResult()
-        unknown = provided_filter_keys - set(applicable_filters)
+        unknown = set(provided_filter_keys) - set(applicable_filters)
         if unknown:
             result.add(f"These filters are not applicable to this report: {sorted(unknown)}.")
         return result

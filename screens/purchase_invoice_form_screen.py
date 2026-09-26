@@ -857,6 +857,49 @@ class PurchaseInvoiceFormScreen(QDialog):
             "lines": lines,
         }
 
+    def _reset_form_for_next_entry(self) -> None:
+        """Resets every field back to New-Purchase-Invoice construction-time
+        state, so the dialog can stay open for the next entry instead of
+        closing. Mirrors __init__/_build_ui's initial values exactly --
+        never called in Edit mode."""
+        # Header fields
+        if self.supplier_combo.count() > 0:
+            self.supplier_combo.setCurrentIndex(0)
+        self.invoice_number_input.clear()
+
+        try:
+            from engines.date_engine import ad_to_bs
+            self.invoice_date_input.set_bs_date_string(ad_to_bs(date.today()))
+        except Exception:
+            logger.warning("Could not reset BS date picker to today's date.")
+
+        self.link_po_combo.setCurrentIndex(0)
+        self._linked_purchase_order_id = None
+
+        # Invoice-level charges + remarks
+        self.freight_input.setValue(0)
+        self.other_charges_input.setValue(0)
+        self.bill_discount_input.setValue(0)
+        self.remarks_input.clear()
+        self.barcode_scan_input.clear()
+
+        # Attach-bill state
+        self._attached_bill_path = None
+        self.attach_bill_label.setText("No file attached")
+        self.attach_bill_label.setStyleSheet("color: gray; font-size: 11px;")
+
+        # Line-items grid -- back to construction-time zero-row state
+        self.table.setRowCount(0)
+        self._row_landing_costs.clear()
+        self._row_pricing_meta.clear()
+        self._row_last_item_id.clear()
+
+        # Live totals preview
+        self.round_off_label.setText("Round Off: 0.00")
+        self.grand_total_label.setText("Grand Total: 0.00")
+
+        self.invoice_number_input.setFocus()
+
     def _on_save_clicked(self) -> None:
         payload = self._collect_form_values()
         supplier_id = payload["supplier_id"]
@@ -907,4 +950,10 @@ class PurchaseInvoiceFormScreen(QDialog):
         QMessageBox.information(
             self, "Saved", f"Purchase invoice {invoice_dto.internal_ref_number} {action_word} successfully."
         )
-        self.accept()
+
+        if self._existing_invoice_id is not None:
+            # Edit mode: unchanged behavior -- close the dialog.
+            self.accept()
+        else:
+            # New-invoice mode: stay open, reset for the next entry.
+            self._reset_form_for_next_entry()

@@ -113,6 +113,7 @@ SCREEN_ICONS = {
     "Payment": "money",
     "Receipt": "money",
     "Reports": "report",
+    "Management Dashboard": "report",
     "Audit Log": "list",
     "Settings": "settings",
     "User Master": "user",
@@ -159,19 +160,7 @@ class DashboardScreen(QMainWindow):
         QApplication.instance().installEventFilter(self._idle_filter)
 
     def _init_purchase_engines(self):
-        """Initialize Purchase module engines for dashboard use.
-
-        self._item_engine is a fresh ItemEngine() instance. Confirmed safe
-        via the real engines/item_engine.py: ItemEngine holds no in-memory
-        state of its own (every method is a pure pass-through to
-        ItemModel/ItemBatchModel/StockTransactionModel, which are thin DB
-        wrappers) — so a second instance behaves identically to whichever
-        one Item Master's own screens construct. It MUST still be given
-        the real manufacturer_lookup/country_tax_lookup functions from
-        item_lookup_registry.py — without them, resolve_item_tax() (and
-        therefore Purchase's CC%) would silently always return (0, 0),
-        since ItemEngine's own defaults are no-op fallbacks.
-        """
+        """Initialize Purchase module engines for dashboard use. ... (docstring: ItemEngine stateless, lookup fns zaroori) ..."""
         try:
             from engines import date_engine, settings_engine
 
@@ -183,6 +172,11 @@ class DashboardScreen(QMainWindow):
                 country_tax_lookup_fn=country_tax_lookup,
                 manufacturer_lookup_fn=manufacturer_lookup,
             )
+
+            from models.payment_model import PaymentModel
+            from engines.payment_engine import PaymentEngine
+
+            self._payment_engine = PaymentEngine(model=PaymentModel())
 
             self._purchase_order_engine = PurchaseOrderEngine(
                 model=self._po_model,
@@ -197,6 +191,7 @@ class DashboardScreen(QMainWindow):
                 settings_engine=settings_engine,
                 item_engine=self._item_engine,
                 purchase_order_engine=self._purchase_order_engine,
+                payment_engine=self._payment_engine,
             )
 
             self._item_free_scheme_engine = SaleItemFreeSchemeEngine(model=SaleItemFreeSchemeModel())
@@ -234,7 +229,146 @@ class DashboardScreen(QMainWindow):
             self._supplier_engine = None
             self._item_engine = None
             self._receipt_engine = None
+            self._payment_engine = None
             self._sale_return_engine = None
+
+    def _init_reports_engine(self):
+        """
+        Initialize the Reports module's engine for dashboard use. Wrapped
+        in the same try/except-then-None pattern _init_purchase_engines()
+        uses -- if this ever fails (e.g. report tables missing),
+        self._report_engine stays None and open_module_from_sidebar()'s
+        None-check (mirroring the existing self._item_engine check for
+        "stock ledger"/"stock master") blocks the "All Reports" sidebar
+        entry instead of crashing dashboard startup.
+
+        Depends on self._item_engine and self._supplier_engine, both set
+        by _init_purchase_engines() (called immediately before this, in
+        initialize()) -- if THAT init failed, both are already None
+        (per its own except-block fallback), so this method treats that
+        as its own failure too rather than building delegates around a
+        None engine that would only crash later, silently, inside
+        ReportEngine.get_master_search_results()'s per-delegate try/except.
+
+        search_delegates are thin adapter functions/factories
+        (engines/report_search_delegates.py) -- NOT the raw Customer/
+        Item/Supplier calls directly, since those have differing
+        calling conventions (DTO + tuple returns for Item/Supplier,
+        plain dict list for Customer) while
+        ReportEngine.get_master_search_results() expects a uniform
+        delegate(search_text: str) -> list[dict] shape across all of them.
+        """
+        self._report_engine = None
+        try:
+            if self._item_engine is None or self._supplier_engine is None:
+                raise RuntimeError(
+                    "Reports engine requires Purchase engines (item/supplier) "
+                    "to have initialized successfully first."
+                )
+
+            from engines.report_engine import ReportEngine
+            from engines.report_search_delegates import (
+                make_item_search_delegate,
+                make_supplier_search_delegate,
+                make_sale_invoice_search_delegate,
+                make_purchase_invoice_search_delegate,
+                make_receipt_search_delegate,
+                make_payment_search_delegate,
+                make_sale_return_search_delegate,
+                make_purchase_order_search_delegate,
+                make_purchase_return_search_delegate,
+                make_manufacturer_search_delegate,
+                make_user_search_delegate,
+                make_country_tax_search_delegate,
+                settings_search_delegate,
+            )
+            self._report_engine = ReportEngine(
+                search_delegates={
+                    "items": make_item_search_delegate(self._item_engine),
+                    "suppliers": make_supplier_search_delegate(self._supplier_engine),
+                    "sale_invoices": make_sale_invoice_search_delegate(self._sale_engine),
+                    "purchase_invoices": make_purchase_invoice_search_delegate(self._purchase_engine),
+                    "receipts": make_receipt_search_delegate(self._receipt_engine),
+                    "payments": make_payment_search_delegate(self._payment_engine),
+                    "sale_returns": make_sale_return_search_delegate(self._sale_return_engine),
+                    "purchase_orders": make_purchase_order_search_delegate(self._purchase_order_engine),
+                    "purchase_returns": make_purchase_return_search_delegate(self._pi_model, self._item_engine),
+                    "manufacturers": make_manufacturer_search_delegate(),
+                    "users": make_user_search_delegate(),
+                    "country_tax": make_country_tax_search_delegate(),
+                    "settings": settings_search_delegate,
+                }
+            )
+        except Exception:
+            from utils.app_logger import get_logger
+            get_logger().exception("Failed to initialize Reports module engine.")
+
+    def _mount_master_search_bar(self) -> None:
+        """
+        Mounts RP10's MasterSearchBarWidget once, in the main top bar
+        (self.ui.topHeaderLayout), in the space freed up by moving
+        txtSearchMenu into the sidebar and removing btnNotifications/
+        btnTheme/btnLogout from this row -- between topHeaderSpacerLeft
+        and frmUserInfo. The generated ui/ui_dashboard.py is never edited
+        for this specific insertion -- the widget is placed into the
+        layout at runtime here. Skipped entirely if the Reports engine
+        failed to initialize, same guard open_module_from_sidebar()
+        already uses for "All Reports".
+        """
+        if self._report_engine is None:
+            return
+
+        from screens.master_search_bar_widget import MasterSearchBarWidget
+
+        self._master_search_bar = MasterSearchBarWidget(self.ui.frmTopHeader, self._report_engine)
+        user_info_index = self.ui.topHeaderLayout.indexOf(self.ui.frmUserInfo)
+        self.ui.topHeaderLayout.insertWidget(user_info_index, self._master_search_bar)
+
+        self._master_search_bar.report_activated.connect(self._open_report_from_dashboard)
+        self._master_search_bar.record_activated.connect(self._on_master_search_record_activated)
+
+    def _on_master_search_record_activated(self, group_key: str, row: dict) -> None:
+        """
+        Routes a non-report Master Search result to that module's own
+        record opener (never builds a new detail view itself -- see
+        master_search_bar_widget.py's own docstring). customer_id was
+        directly confirmed live on the customer delegate's rows;
+        item_id/supplier_id follow this project's universal <entity>_id
+        naming convention but were NOT independently confirmed live for
+        the item/supplier delegates -- verify on first real click and
+        report back if a group opens the wrong record or nothing at all.
+        """
+        if group_key == "customers":
+            self._open_customer_form(row.get("customer_id"))
+        elif group_key == "suppliers":
+            self._open_supplier_form(row.get("supplier_id"))
+        elif group_key == "items":
+            self._open_item_form(row.get("item_id"))
+        elif group_key == "country_tax":
+            self._open_country_tax_form(row.get("country_tax_id"))
+        elif group_key == "users":
+            # UserFormScreen accepts user_id and opens that specific
+            # record directly, in edit mode (confirmed via
+            # screens/user_form_screen.py and UserListScreen's own
+            # _on_edit_clicked, which makes the identical call) -- safe
+            # since password fields stay disabled either way.
+            self._open_user_form(row.get("user_id"))
+        elif group_key == "settings":
+            # Settings already has its own internal search_settings()-backed
+            # search box (screens/settings_screen.py), so this opens the
+            # screen generically rather than deep-linking to one setting row
+            # -- same construction as open_module_from_sidebar()'s "settings"
+            # branch.
+            self._open_settings_screen()
+
+    def _open_settings_screen(self) -> None:
+        def _make_screen():
+            return SettingsScreen(
+                current_username=self.login_result.username or "system",
+                is_admin=self.login_result.is_admin,
+                parent=self,
+            )
+        self._get_or_create_screen("settings_screen", _make_screen, mode="window")
 
     # -----------------------------------------------------
     # SETUP
@@ -245,6 +379,8 @@ class DashboardScreen(QMainWindow):
         #      actions can safely reference self._purchase_order_engine /
         #      self._purchase_engine) ----
         self._init_purchase_engines()
+        self._init_reports_engine()
+        self._mount_master_search_bar()
 
         # ---- Content-area navigation state (QStackedWidget-based) ----
         # self._nav_history holds the *previous* widget each time we
@@ -308,7 +444,6 @@ class DashboardScreen(QMainWindow):
             themed_icon("search"), self.ui.txtSearchMenu.ActionPosition.LeadingPosition
         )
 
-        self.ui.btnNotifications.setIconSize(icon_size)
         self.ui.btnLogout.setIconSize(icon_size)
 
         theme_icon = "moon" if get_current_theme() == "Light" else "sun"
@@ -320,7 +455,6 @@ class DashboardScreen(QMainWindow):
     def _apply_tooltips_and_status_tips(self):
         self.ui.btnLogout.setToolTip("Logout (Ctrl+Q)")
         self.ui.btnTheme.setToolTip("Switch between Light and Dark theme (Ctrl+T)")
-        self.ui.btnNotifications.setStatusTip("View current alerts.")
         self.ui.txtSearchMenu.setToolTip("Type to search the module menu.")
         self.ui.btnNewSale.setStatusTip("Open a new Sale entry.")
         self.ui.btnNewSale.clicked.connect(self._handle_new_sale_quick_action)
@@ -577,7 +711,6 @@ class DashboardScreen(QMainWindow):
 
         self.ui.lstAlerts.clear()
         self.ui.lstAlerts.addItems(data.alerts)
-        self.ui.btnNotifications.setText(f"Alerts ({len(data.alerts)})")
 
     # -----------------------------------------------------
     # CONTENT-AREA NAVIGATION (QStackedWidget)
@@ -586,15 +719,18 @@ class DashboardScreen(QMainWindow):
     def _navigate_to(self, widget):
         """Push `widget` onto the content-area stack and show it."""
         if widget is self.ui.stackedContentArea.currentWidget():
-            # Already the visible page (e.g. a repeat sidebar click on the
-            # same already-open embedded module, reused via
-            # _get_or_create_screen's alive branch) - nothing to do. Without
-            # this guard we'd push a self-referential entry onto
-            # _nav_history on every repeat click, so leaving the screen
-            # would require pressing Back once per extra click before it
-            # actually returned to the real previous screen.
             return
-        self._nav_history.append(self.ui.stackedContentArea.currentWidget())
+        current = self.ui.stackedContentArea.currentWidget()
+        if current is not None:
+            # De-duplicate: a reused (singleton) screen -- e.g. Payment List --
+            # can already be sitting deeper in _nav_history from an earlier
+            # visit (abandon-mid-form, sidebar-jump-away, come-back pattern).
+            # Without this, that stale duplicate entry can later be popped by
+            # _navigate_back() AFTER the same widget has already been deleted
+            # via its more recent occurrence, causing "libshiboken: Internal
+            # C++ object already deleted" when we try to setCurrentWidget() on it.
+            self._nav_history = [w for w in self._nav_history if w is not current]
+            self._nav_history.append(current)
         self.ui.stackedContentArea.addWidget(widget)
         self.ui.stackedContentArea.setCurrentWidget(widget)
 
@@ -603,15 +739,55 @@ class DashboardScreen(QMainWindow):
         if not self._nav_history:
             return
         leaving = self.ui.stackedContentArea.currentWidget()
-        previous = self._nav_history.pop()
+
+        previous = None
+        while self._nav_history:
+            candidate = self._nav_history.pop()
+            if candidate is leaving:
+                # Defensive: a stale duplicate of the widget we're currently
+                # leaving should never be navigated "back" to.
+                continue
+            try:
+                candidate.isVisible()
+            except RuntimeError:
+                # The underlying Qt C++ object was already destroyed by an
+                # earlier _navigate_back() call (a stale duplicate left over
+                # in _nav_history from before this fix, or from a path the
+                # de-duplication in _navigate_to() doesn't cover) -- skip it
+                # and keep looking further back in history.
+                continue
+            previous = candidate
+            break
+
+        if previous is None:
+            # Nothing left in history that's still alive to go back to.
+            return
+
         self.ui.stackedContentArea.setCurrentWidget(previous)
         if leaving is not previous:
             self.ui.stackedContentArea.removeWidget(leaving)
             leaving.deleteLater()
+            # Scrub any other stale references to the widget we just deleted,
+            # so a later _navigate_back() can never try to land on it again.
+            self._nav_history = [w for w in self._nav_history if w is not leaving]
             if leaving is getattr(self, "sale_return_list", None):
                 self.sale_return_list = None
             if leaving is getattr(self, "sale_return_form", None):
                 self.sale_return_form = None
+            if leaving is getattr(self, "payment_list", None):
+                self.payment_list = None
+
+    def _open_report_from_dashboard(self, report_code: str) -> None:
+        if self._report_engine is None:
+            return
+        from screens.report_runner_screen import ReportRunnerScreen
+        screen = ReportRunnerScreen(
+            self, self._report_engine, self.login_result.roleid,
+            item_engine=self._item_engine, supplier_engine=self._supplier_engine,
+            initial_report_code=report_code, embedded=True,
+        )
+        screen.close_requested.connect(self._navigate_back)
+        self._navigate_to(screen)
 
     def _open_item_form(self, item_id=None):
         """Open the Item form embedded in the content-area stack."""
@@ -716,6 +892,43 @@ class DashboardScreen(QMainWindow):
         self._navigate_back()
         if getattr(self, "receipt_list", None) is not None:
             self.receipt_list.refresh()
+
+    def _open_payment_form(self, payment_id=None):
+        """Open the Payment form (Add or Edit) embedded in the content-area stack."""
+        from screens.payment_form_screen import PaymentFormScreen
+
+        form = PaymentFormScreen(
+            self,
+            payment_id=payment_id,
+            engine=self._payment_engine,
+            current_user_id=self.login_result.userid,
+            supplier_engine=self._supplier_engine,
+            embedded=True,
+        )
+        form.saved.connect(lambda: self._on_payment_form_saved(form))
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _view_payment_form(self, payment_id):
+        """Open the Payment form in read-only View mode, embedded."""
+        from screens.payment_form_screen import PaymentFormScreen
+
+        form = PaymentFormScreen(
+            self,
+            payment_id=payment_id,
+            engine=self._payment_engine,
+            current_user_id=self.login_result.userid,
+            supplier_engine=self._supplier_engine,
+            embedded=True,
+            read_only=True,
+        )
+        form.close_requested.connect(self._navigate_back)
+        self._navigate_to(form)
+
+    def _on_payment_form_saved(self, form):
+        self._navigate_back()
+        if getattr(self, "payment_list", None) is not None:
+            self.payment_list.refresh()
 
     def _open_manufacturer_form(self, manufacturer_id=None):
         """Open the Manufacturer form embedded in the content-area stack."""
@@ -860,6 +1073,39 @@ class DashboardScreen(QMainWindow):
         self.customer_form = CustomerFormScreen(self.login_result, parent=self)
         self.customer_form.show()
 
+    def _open_customer_form(self, customer_id=None):
+        """
+        Open the Customer form as a modal dialog, optionally pre-loaded on
+        an existing record. CustomerFormScreen is a QDialog (unlike Item/
+        Supplier's embedded QWidget forms, which route through
+        _navigate_to()), so this shows it modally instead -- same pattern
+        as open_customer_form() above, just id-aware. Added for RP10/RP12's
+        Master Search: Item and Supplier already had an id-accepting
+        opener (_open_item_form / _open_supplier_form); Customer did not.
+        """
+        self.customer_form = CustomerFormScreen(self.login_result, customer_id=customer_id, parent=self)
+        self.customer_form.show()
+
+    def _open_user_form(self, user_id=None):
+        """
+        Open the User form as a modal dialog, optionally pre-loaded on an
+        existing record. UserFormScreen already accepts user_id and opens
+        that user in edit mode when given (screens/user_list_screen.py's
+        own _on_edit_clicked does exactly this) -- password fields stay
+        disabled in edit mode regardless (a password change always goes
+        through ResetPasswordScreen instead), so opening straight into
+        this dialog from Master Search carries no risk of an accidental
+        password edit. If the calling user later saves a change, the User
+        Master list (if open) is refreshed the same way _on_receipt_form_saved
+        already refreshes the Receipt list.
+        """
+        from screens.user_form_screen import UserFormScreen
+
+        dialog = UserFormScreen(self, user_id=user_id, current_user_id=self.login_result.userid)
+        if dialog.exec():
+            if getattr(self, "user_list", None) is not None:
+                self.user_list.refresh()
+
     def _get_or_create_screen(self, attr_name, factory, mode="navigate"):
         """
         Reuse-guard for sidebar-launched screens (see open_module_from_sidebar).
@@ -871,13 +1117,16 @@ class DashboardScreen(QMainWindow):
         mode="navigate": screen lives in the embedded navigation stack and
         is (re)shown via self._navigate_to(...).
         mode="window": screen is an independent top-level window shown via
-        apply_standard_window_chrome(...) + .show() (chrome is applied only
-        once, at creation - not on every re-show).
+        .show() (chrome - window flags, custom width/height, centering - is
+        applied by the screen's own __init__ via apply_standard_window_chrome,
+        NOT here; calling it a second time here with no width/height args
+        would silently reset every window-mode screen back to that function's
+        1100x700 default, undoing each screen's own custom size).
 
         `factory` is a zero-argument callable that constructs and fully
         wires (signal connections, etc.) a new screen instance, but does
-        NOT navigate to it / show it / apply chrome - this method owns that
-        last step so it can be skipped on reuse.
+        NOT navigate to it / show it - this method owns that last step so
+        it can be skipped on reuse.
         """
         existing = getattr(self, attr_name, None)
         alive = False
@@ -919,7 +1168,6 @@ class DashboardScreen(QMainWindow):
         if mode == "navigate":
             self._navigate_to(screen)
         else:
-            apply_standard_window_chrome(screen)
             screen.show()
 
     def open_module_from_sidebar(self, item, column):
@@ -1183,6 +1431,57 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Sale Return", "Sale Return engines not initialized. Please restart the application.")
                 return
             self._open_sale_return_list()
+
+        elif module_name == "payment":
+            if self._payment_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Payment", "Payment engine not initialized. Please restart the application.")
+                return
+            def _make_screen():
+                from screens.payment_list_screen import PaymentListScreen
+                screen = PaymentListScreen(
+                    parent=self,
+                    engine=self._payment_engine,
+                    current_user_id=self.login_result.userid,
+                    embedded=True,
+                )
+                screen.close_requested.connect(self._navigate_back)
+                screen.form_requested.connect(self._open_payment_form)
+                screen.view_requested.connect(self._view_payment_form)
+                return screen
+            self._get_or_create_screen("payment_list", _make_screen, mode="navigate")
+
+        elif module_name == "management dashboard":
+            if self._report_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Reports", "Reports engine not initialized. Please restart the application.")
+                return
+            def _make_screen():
+                from screens.management_dashboard_screen import ManagementDashboardScreen
+                screen = ManagementDashboardScreen(self, self._report_engine, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                screen.open_report_requested.connect(self._open_report_from_dashboard)
+                return screen
+            self._get_or_create_screen("management_dashboard_screen", _make_screen, mode="navigate")
+
+        elif module_name == "reports":
+            if self._report_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(self, "Reports", "Reports engine not initialized. Please restart the application.")
+                return
+            def _make_screen():
+                from screens.report_runner_screen import ReportRunnerScreen
+                screen = ReportRunnerScreen(
+                    self,
+                    self._report_engine,
+                    self.login_result.roleid,
+                    item_engine=self._item_engine,
+                    supplier_engine=self._supplier_engine,
+                    embedded=True,
+                )
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("report_runner_screen", _make_screen, mode="navigate")
     # -----------------------------------------------------
     # LOGOUT
     # -----------------------------------------------------

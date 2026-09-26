@@ -79,6 +79,37 @@ class PaymentValidator:
             result.add(f"Payment Number '{number}' already exists.")
         return result
 
+    def validate_opening_balance_allocation(self, ob_allocated: float, ob_outstanding: float, amount: float) -> ValidationResult:
+        """
+        Validates the amount proposed for settling a supplier's Cr-type
+        opening balance out of this payment. ob_outstanding is 0.0 when the
+        supplier has no Cr opening balance left to track (see
+        PaymentModel.get_opening_balance_outstanding_for_supplier).
+        """
+        result = ValidationResult()
+        try:
+            ob_allocated = float(ob_allocated)
+        except (TypeError, ValueError):
+            result.add("Opening balance allocation must be a valid number.")
+            return result
+
+        if ob_allocated < 0:
+            result.add("Opening balance allocation cannot be negative.")
+            return result
+
+        if ob_allocated > ob_outstanding:
+            result.add(
+                f"Opening balance allocation ({ob_allocated}) exceeds this supplier's "
+                f"outstanding opening balance ({ob_outstanding})."
+            )
+
+        if ob_allocated > amount:
+            result.add(
+                f"Opening balance allocation ({ob_allocated}) cannot exceed the payment amount ({amount})."
+            )
+
+        return result
+
     def validate_allocations(self, allocation_rows: list[dict], amount: float,
                               outstanding_lookup: dict[int, float]) -> ValidationResult:
         """

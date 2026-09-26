@@ -93,9 +93,24 @@ def dto_to_table_row(dto: Any) -> list[str]:
     """
     Formats a SupplierDTO into display strings for one QTableWidget row, in
     the exact column order defined in ui/supplier_list.ui:
-    Code, Name, Contact Person, Mobile, City, PAN/VAT, Opening Balance,
+    Code, Name, Contact Person, Mobile, City, PAN/VAT, Current Balance,
     Type, Credit Limit, Credit Days, Status.
+
+    Current Balance/Type reflect the LIVE net position (outstanding
+    opening balance + outstanding purchase invoices - available advance),
+    not the static supplier.opening_balance/balance_type master fields --
+    see SupplierEngine.get_current_balance()/get_current_balances().
+    Positive = we owe the supplier (Cr); negative = the supplier owes us
+    or holds unused advance (Dr); zero = settled.
     """
+    current_balance = dto.current_balance if dto.current_balance is not None else 0.0
+    if current_balance > 0:
+        balance_type_display = "Cr"
+    elif current_balance < 0:
+        balance_type_display = "Dr"
+    else:
+        balance_type_display = "-"
+
     return [
         dto.supplier_code or "",
         dto.supplier_name or "",
@@ -103,8 +118,8 @@ def dto_to_table_row(dto: Any) -> list[str]:
         dto.mobile_no or "",
         dto.city or "",
         dto.pan_vat_no or "",
-        format_amount(dto.opening_balance),
-        dto.balance_type or "",
+        format_amount(abs(current_balance)),
+        balance_type_display,
         format_amount(dto.credit_limit),
         str(dto.credit_days if dto.credit_days is not None else 0),
         "Deleted" if dto.is_deleted else (dto.status or ""),

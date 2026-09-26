@@ -48,7 +48,7 @@ SIDEBAR_MODULES = {
     "Sales": ["New Sale", "Sale List", "Sale Free Scheme", "Sale Return"],
     "Inventory": ["Stock Ledger", "Stock Master"],
     "Accounts": ["Payment", "Receipt"],
-    "Reports": ["Reports", "Audit Log"],
+    "Reports": ["Management Dashboard", "Reports", "Audit Log"],
     "Settings": ["Settings", "User Master", "Password Reset Requests", "Change Password"],
 }
 

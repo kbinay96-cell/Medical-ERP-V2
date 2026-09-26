@@ -201,9 +201,14 @@ class ReceiptListScreen(QWidget):
         filter_bar.addWidget(self.cmbStatusFilter, stretch=1)
 
         filter_bar.addWidget(QLabel("From:"))
+        # Both date filters are OPTIONAL: sitting on the widget's minimum
+        # date means "no limit" (shown as "Any"). A QDateEdit with no date
+        # set defaults to 2000-01-01, which used to make an unset To date
+        # silently filter every receipt out.
         self.dtFromDate = QDateEdit(self)
         self.dtFromDate.setObjectName("dtFromDate")
         self.dtFromDate.setCalendarPopup(True)
+        self.dtFromDate.setSpecialValueText("Any")
         self.dtFromDate.setDate(self.dtFromDate.minimumDate())
         filter_bar.addWidget(self.dtFromDate, stretch=1)
 
@@ -211,6 +216,8 @@ class ReceiptListScreen(QWidget):
         self.dtToDate = QDateEdit(self)
         self.dtToDate.setObjectName("dtToDate")
         self.dtToDate.setCalendarPopup(True)
+        self.dtToDate.setSpecialValueText("Any")
+        self.dtToDate.setDate(self.dtToDate.minimumDate())
         filter_bar.addWidget(self.dtToDate, stretch=1)
 
         self.btnApplyFilter = QPushButton("Filter", self)
@@ -284,7 +291,11 @@ class ReceiptListScreen(QWidget):
                 if self.dtFromDate.date() == self.dtFromDate.minimumDate()
                 else self.dtFromDate.date().toPython()
             ),
-            date_to_ad=self.dtToDate.date().toPython(),
+            date_to_ad=(
+                None
+                if self.dtToDate.date() == self.dtToDate.minimumDate()
+                else self.dtToDate.date().toPython()
+            ),
         )
 
     def _on_clear_filter_clicked(self) -> None:
@@ -292,6 +303,7 @@ class ReceiptListScreen(QWidget):
         self.cmbPaymentModeFilter.setCurrentIndex(0)
         self.cmbStatusFilter.setCurrentIndex(0)
         self.dtFromDate.setDate(self.dtFromDate.minimumDate())
+        self.dtToDate.setDate(self.dtToDate.minimumDate())
         self.refresh()
 
     def _populate_table(self, rows: list) -> None:

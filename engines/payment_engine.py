@@ -107,14 +107,18 @@ class PaymentEngine:
     # INTERNAL HELPERS
     # ------------------------------------------------------------------ #
     def _payment_number_exists(self, payment_number: str, exclude_id: Optional[int] = None) -> bool:
-        existing = self._model.search(PaymentSearchFilters(search_text=payment_number, page_size=1))
+        existing = self._model.search(
+            search_text=payment_number,
+            page_size=1,
+            include_deleted=True,
+        )
         for row in existing:
             if row["payment_number"] == payment_number and row["payment_id"] != exclude_id:
                 return True
         return False
 
     def _generate_payment_number(self) -> str:
-        latest = self._model.search(PaymentSearchFilters(page_size=1, include_deleted=True))
+        latest = self._model.search(page_size=1, include_deleted=True)
         next_seq = 1
         if latest:
             try:
@@ -170,6 +174,7 @@ class PaymentEngine:
         remarks: Optional[str] = None,
         manual_allocations: Optional[list[dict]] = None,   # None = auto FIFO; [] = pure advance; [...] = user-chosen
         status: str = "Posted",
+        opening_balance_allocation_amount: Optional[float] = None,   # NEW: None = auto (min(amount, outstanding)); 0 = skip; >0 = user-chosen
     ) -> PaymentDTO:
         header_data = {
             "supplier_id": supplier_id,
@@ -185,8 +190,25 @@ class PaymentEngine:
         if not header_result.is_valid:
             raise ValidationError("; ".join(header_result.errors))
 
+        # NEW: settle the supplier's Cr-type opening balance FIRST -- it
+        # represents the oldest debt by definition, so it is always paid
+        # off before any purchase invoice, regardless of invoice dates.
+        ob_row = self._model.get_opening_balance_outstanding_for_supplier(supplier_id)
+        ob_outstanding = float(ob_row["outstanding_amount"]) if ob_row is not None else 0.0
+
+        if opening_balance_allocation_amount is None:
+            ob_allocated = round(min(amount, ob_outstanding), 2)
+        else:
+            ob_allocated = round(float(opening_balance_allocation_amount), 2)
+
+        ob_result = self._validator.validate_opening_balance_allocation(ob_allocated, ob_outstanding, amount)
+        if not ob_result.is_valid:
+            raise ValidationError("; ".join(ob_result.errors))
+
+        remaining_for_invoices = round(amount - ob_allocated, 2)
+
         if manual_allocations is None:
-            allocation_rows = self._run_fifo_allocation(supplier_id, amount)
+            allocation_rows = self._run_fifo_allocation(supplier_id, remaining_for_invoices)
         else:
             for row in manual_allocations:
                 row.setdefault("is_auto_allocated", False)
@@ -194,12 +216,12 @@ class PaymentEngine:
 
         open_invoices = self._model.get_outstanding_invoices_for_supplier(supplier_id)
         outstanding_lookup = {inv["purchase_invoice_id"]: float(inv["outstanding_amount"]) for inv in open_invoices}
-        alloc_result = self._validator.validate_allocations(allocation_rows, amount, outstanding_lookup)
+        alloc_result = self._validator.validate_allocations(allocation_rows, remaining_for_invoices, outstanding_lookup)
         if not alloc_result.is_valid:
             raise ValidationError("; ".join(alloc_result.errors))
 
         allocated_amount = round(sum(a["allocated_amount"] for a in allocation_rows), 2)
-        advance_amount = round(amount - allocated_amount, 2)
+        advance_amount = round(amount - allocated_amount - ob_allocated, 2)
 
         payment_number = self._generate_payment_number()
         number_result = self._validator.validate_payment_number_unique(payment_number)
@@ -207,6 +229,7 @@ class PaymentEngine:
             raise DuplicateRecordError("; ".join(number_result.errors))
 
         now_ad = datetime.now(timezone.utc)
+        now_bs = self._stamp_bs_date(now_ad.date())
         header_data.update({
             "payment_number": payment_number,
             "payment_date_ad": payment_date_ad,
@@ -214,10 +237,20 @@ class PaymentEngine:
             "advance_amount": advance_amount,
             "created_by": created_by,
             "created_at_ad": now_ad,
-            "created_at_bs": self._stamp_bs_date(now_ad.date()),
+            "created_at_bs": now_bs,
         })
 
-        payment_id = self._model.insert_with_allocations(header_data, allocation_rows)
+        opening_balance_allocation = None
+        if ob_allocated > 0:
+            opening_balance_allocation = {
+                "supplier_id": supplier_id,
+                "allocated_amount": ob_allocated,
+                "created_by": created_by,
+                "created_at_ad": now_ad,
+                "created_at_bs": now_bs,
+            }
+
+        payment_id = self._model.insert_with_allocations(header_data, allocation_rows, opening_balance_allocation)
         return self.get_by_id(payment_id)
 
     # ------------------------------------------------------------------ #
@@ -267,15 +300,36 @@ class PaymentEngine:
         allocations = [PaymentAllocationDTO.from_row(r) for r in allocation_rows]
         return PaymentDTO.from_row(row, allocations=allocations)
 
-    def search(self, filters: PaymentSearchFilters) -> list[PaymentDTO]:
-        rows = self._model.search(filters)
+    def search(self, filters: "PaymentSearchFilters") -> list[PaymentDTO]:
+        rows = self._model.search(
+            search_text=filters.search_text,
+            supplier_id=filters.supplier_id,
+            status=filters.status,
+            payment_mode=filters.payment_mode,
+            date_from_ad=filters.date_from_ad,
+            date_to_ad=filters.date_to_ad,
+            include_deleted=filters.include_deleted,
+            page=filters.page,
+            page_size=filters.page_size,
+        )
         return [PaymentDTO.from_row(row) for row in rows]
+
+# before get_outstanding_invoices() — a plain pass-through, screens
+# must never call self._model directly):
+    def get_audit_log(self, payment_id: int) -> list[dict]:
+        """Read-only audit trail for one Payment -- used by the
+        audit-log viewer dialog on the list screen."""
+        return self._model.get_audit_log(payment_id)
 
     def get_outstanding_invoices(self, supplier_id: int) -> list[dict]:
         return self._model.get_outstanding_invoices_for_supplier(supplier_id)
 
-    def get_audit_log(self, payment_id: int) -> list[dict]:
-        return self._model.get_audit_log(payment_id)
+    def get_opening_balance_outstanding(self, supplier_id: int) -> float:
+        """Read-only pass-through for the Payment Form's FIFO preview --
+        Screens must never call the Model directly. Returns 0.0 when the
+        supplier has no Cr-type opening balance left to settle."""
+        row = self._model.get_opening_balance_outstanding_for_supplier(supplier_id)
+        return float(row["outstanding_amount"]) if row is not None else 0.0
 
     # ------------------------------------------------------------------ #
     # EDIT -- audit-logged, in-place
