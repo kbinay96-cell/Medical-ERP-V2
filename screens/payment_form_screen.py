@@ -108,6 +108,7 @@ class PaymentFormScreen(QWidget):
         payment_id: Optional[int] = None,
         embedded: bool = False,
         read_only: bool = False,
+        initial_supplier_id: Optional[int] = None,
     ) -> None:
         super().__init__(parent)
         self._engine = engine
@@ -132,6 +133,8 @@ class PaymentFormScreen(QWidget):
 
         if self._is_edit_mode:
             self._load_existing_payment()
+        elif initial_supplier_id is not None:
+            self._preselect_supplier(initial_supplier_id)
 
         if self._read_only:
             self._apply_read_only_mode()
@@ -288,6 +291,18 @@ class PaymentFormScreen(QWidget):
                 sup.supplier_name,
                 userData=sup.supplier_id,
             )
+
+    def _preselect_supplier(self, supplier_id: int) -> bool:
+        """Select `supplier_id` on a blank form (Record Detail Hub -> New
+        Payment). Goes through cmbSupplier's normal currentIndexChanged
+        chain, exactly as if the user had picked the supplier by hand.
+        Returns False (form left blank) if the supplier is not in the
+        active-supplier list."""
+        index = self.cmbSupplier.findData(supplier_id)
+        if index < 0:
+            return False
+        self.cmbSupplier.setCurrentIndex(index)
+        return True
 
     def _on_supplier_or_amount_changed(self) -> None:
         supplier_id = self.cmbSupplier.currentData()

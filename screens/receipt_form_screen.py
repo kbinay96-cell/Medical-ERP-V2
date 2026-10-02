@@ -181,6 +181,7 @@ class ReceiptFormScreen(QWidget):
         receipt_id: Optional[int] = None,
         embedded: bool = False,
         read_only: bool = False,
+        initial_customer_id: Optional[int] = None,
     ) -> None:
         super().__init__(parent)
         self._engine = engine
@@ -208,6 +209,8 @@ class ReceiptFormScreen(QWidget):
             self._load_existing_receipt()
         else:
             self.dtReceiptDate.setText(_safe_ad_to_bs(date.today()))
+            if initial_customer_id is not None:
+                self._preselect_customer(initial_customer_id)
 
         if self._read_only:
             self._apply_read_only_mode()
@@ -359,6 +362,18 @@ class ReceiptFormScreen(QWidget):
         completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         completer.activated.connect(self._on_customer_completer_activated)
         self.cmbCustomer.setCompleter(completer)
+
+    def _preselect_customer(self, customer_id: int) -> bool:
+        """Select `customer_id` on a blank form (Record Detail Hub -> New
+        Receipt). Goes through cmbCustomer's normal currentIndexChanged
+        chain, exactly as if the user had picked the customer by hand.
+        Returns False (form left blank) if the customer is not in the
+        active-customer list."""
+        index = self.cmbCustomer.findData(customer_id)
+        if index < 0:
+            return False
+        self.cmbCustomer.setCurrentIndex(index)
+        return True
 
     def _on_customer_completer_activated(self, text: str) -> None:
         index = self.cmbCustomer.findText(text)

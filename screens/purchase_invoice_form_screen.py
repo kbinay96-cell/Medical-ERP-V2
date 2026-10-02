@@ -156,6 +156,7 @@ class PurchaseInvoiceFormScreen(QDialog):
         current_user_id: int,
         item_free_scheme_engine: ItemFreeSchemeEngine | None = None,
         existing_invoice_id: int | None = None,
+        initial_supplier_id: int | None = None,
     ):
         super().__init__(parent)
         apply_standard_window_chrome(self, width=1200, height=800, start_maximized=True)
@@ -188,6 +189,8 @@ class PurchaseInvoiceFormScreen(QDialog):
 
         if existing_invoice_id is not None:
             self._load_existing_invoice(existing_invoice_id)
+        elif initial_supplier_id is not None:
+            self._preselect_supplier(initial_supplier_id)
 
     # -- UI construction ------------------------------------------------
 
@@ -445,6 +448,18 @@ class PurchaseInvoiceFormScreen(QDialog):
         dialog.show()
 
     # -- PO linking -----------------------------------------------------------
+
+    def _preselect_supplier(self, supplier_id: int) -> bool:
+        """Select `supplier_id` on a blank form (Record Detail Hub -> New
+        Purchase). Goes through supplier_combo's normal currentIndexChanged
+        chain (_on_supplier_changed loads that supplier's POs), exactly as if
+        the user had picked it by hand. Returns False (form left blank) if
+        the supplier is not in the combo."""
+        index = self.supplier_combo.findData(supplier_id)
+        if index < 0:
+            return False
+        self.supplier_combo.setCurrentIndex(index)
+        return True
 
     def _on_supplier_changed(self, _index: int) -> None:
         """Filters the 'Link to Purchase Order' combo to this supplier's

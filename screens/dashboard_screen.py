@@ -280,10 +280,12 @@ class DashboardScreen(QMainWindow):
                 make_manufacturer_search_delegate,
                 make_user_search_delegate,
                 make_country_tax_search_delegate,
+                search_customers_delegate,
                 settings_search_delegate,
             )
             self._report_engine = ReportEngine(
                 search_delegates={
+                    "customers": search_customers_delegate,
                     "items": make_item_search_delegate(self._item_engine),
                     "suppliers": make_supplier_search_delegate(self._supplier_engine),
                     "sale_invoices": make_sale_invoice_search_delegate(self._sale_engine),
@@ -372,10 +374,12 @@ class DashboardScreen(QMainWindow):
                     dialog.finished.connect(lambda _result=0: hub.refresh())
 
             history_actions = [
+                HubAction("New Sale", lambda: self._new_sale_for_customer(record_id)),
+                HubAction("New Receipt", lambda: self._new_receipt_for_customer(record_id)),
                 HubAction(
                     "View Receipt History",
                     lambda: open_history("CUSTOMER_RECEIPT_HISTORY", {"customer_id": record_id}),
-                )
+                ),
             ]
         elif entity == "supplier":
             if self._supplier_engine is None:
@@ -392,10 +396,12 @@ class DashboardScreen(QMainWindow):
                 self._open_supplier_form(record_id)
 
             history_actions = [
+                HubAction("New Purchase", lambda: self._new_purchase_for_supplier(record_id)),
+                HubAction("New Payment", lambda: self._new_payment_for_supplier(record_id)),
                 HubAction(
                     "View Payment History",
                     lambda: open_history("SUPPLIER_PAYMENT_HISTORY", {"supplier_id": record_id}),
-                )
+                ),
             ]
         elif entity == "item":
             if self._item_engine is None:
@@ -949,8 +955,10 @@ class DashboardScreen(QMainWindow):
         if getattr(self, "sale_return_list", None) is not None:
             self.sale_return_list._refresh()
 
-    def _open_receipt_form(self, receipt_id=None):
-        """Open the Receipt form (Add or Edit) embedded in the content-area stack."""
+    def _open_receipt_form(self, receipt_id=None, initial_customer_id=None):
+        """Open the Receipt form (Add or Edit) embedded in the content-area stack.
+        initial_customer_id (Record Detail Hub -> New Receipt) preselects that
+        customer on a blank form."""
         from screens.receipt_form_screen import ReceiptFormScreen
         from engines import customer_engine
 
@@ -961,6 +969,7 @@ class DashboardScreen(QMainWindow):
             current_user_id=self.login_result.userid,
             customer_engine=customer_engine,
             embedded=True,
+            initial_customer_id=initial_customer_id,
         )
         form.saved.connect(lambda: self._on_receipt_form_saved(form))
         form.close_requested.connect(self._navigate_back)
@@ -988,8 +997,10 @@ class DashboardScreen(QMainWindow):
         if getattr(self, "receipt_list", None) is not None:
             self.receipt_list.refresh()
 
-    def _open_payment_form(self, payment_id=None):
-        """Open the Payment form (Add or Edit) embedded in the content-area stack."""
+    def _open_payment_form(self, payment_id=None, initial_supplier_id=None):
+        """Open the Payment form (Add or Edit) embedded in the content-area stack.
+        initial_supplier_id (Record Detail Hub -> New Payment) preselects that
+        supplier on a blank form."""
         from screens.payment_form_screen import PaymentFormScreen
 
         form = PaymentFormScreen(
@@ -999,6 +1010,7 @@ class DashboardScreen(QMainWindow):
             current_user_id=self.login_result.userid,
             supplier_engine=self._supplier_engine,
             embedded=True,
+            initial_supplier_id=initial_supplier_id,
         )
         form.saved.connect(lambda: self._on_payment_form_saved(form))
         form.close_requested.connect(self._navigate_back)
@@ -1112,10 +1124,13 @@ class DashboardScreen(QMainWindow):
             return
         self._open_sale_invoice_form()
 
-    def _open_sale_invoice_form(self, existing_invoice_id=None):
+    def _open_sale_invoice_form(self, existing_invoice_id=None, initial_customer_id=None):
         """Open the Sale Invoice form embedded in the content-area stack.
         Sale Invoice is full-screen -- it also reclaims the sidebar's screen
-        area, restored again when the form closes or saves."""
+        area, restored again when the form closes or saves.
+
+        initial_customer_id (Record Detail Hub -> New Sale) opens a blank
+        invoice with that customer already selected."""
 
         def factory():
             form = SaleInvoiceFormScreen(
@@ -1128,6 +1143,7 @@ class DashboardScreen(QMainWindow):
                 current_username=self.login_result.username or "system",
                 embedded=True,
                 existing_invoice_id=existing_invoice_id,
+                initial_customer_id=initial_customer_id,
             )
             form.saved.connect(lambda: self._on_sale_invoice_form_saved(form))
             form.close_requested.connect(self._navigate_back)
@@ -1135,13 +1151,15 @@ class DashboardScreen(QMainWindow):
             form.saved.connect(self._restore_sidebar_width)
             return form
 
-        if existing_invoice_id is None:
+        if existing_invoice_id is None and initial_customer_id is None:
             # Blank "New Sale" - reuse-guarded like other sidebar screens.
             self._get_or_create_screen("sale_invoice_form", factory, mode="navigate")
         else:
-            # Editing a specific invoice must always get its own fresh form -
-            # reuse-guard here would risk showing a different invoice's data,
-            # and must not overwrite the tracked blank "New Sale" instance.
+            # Editing a specific invoice, or starting a new one for a specific
+            # customer, must always get its own fresh form - the reuse-guard
+            # would risk showing a different invoice's data (or an already
+            # open blank form without the customer), and must not overwrite
+            # the tracked blank "New Sale" instance.
             form = factory()
             self._navigate_to(form)
 
@@ -1152,6 +1170,116 @@ class DashboardScreen(QMainWindow):
         self._navigate_back()
         if getattr(self, "sale_invoice_list", None) is not None:
             self.sale_invoice_list.refresh()
+
+    # ------------------------------------------------------------------
+    # Record Detail Hub quick-create actions: New Sale / New Receipt /
+    # New Purchase / New Payment with the hub's customer or supplier
+    # already selected. Each checks up front that the form can actually
+    # reach that record, so the user gets a clear message instead of a
+    # silently blank form.
+    # ------------------------------------------------------------------
+    def _customer_ready_for_new_transaction(self, customer_id, title: str, needs_area: bool = False) -> bool:
+        from utils.integration_adapters import show_error
+
+        customer = customer_engine.get_customer(customer_id) if customer_id is not None else None
+        if customer is None or customer.get("is_deleted"):
+            show_error(self, title, "This customer was not found or has been deleted.")
+            return False
+        if not customer.get("is_active"):
+            show_error(
+                self, title,
+                "This customer is inactive. Activate the customer first to create a new transaction.",
+            )
+            return False
+        if needs_area:
+            active_area_ids = {a.get("area_id") for a in customer_engine.get_lookup_data().get("areas", [])}
+            if customer.get("area_id") not in active_area_ids:
+                show_error(
+                    self, title,
+                    "This customer has no active Area assigned. New Sale picks customers through "
+                    "their Area, so assign (or activate) an Area in the Customer record first.",
+                )
+                return False
+        return True
+
+    def _supplier_ready_for_new_transaction(self, supplier_id, title: str) -> bool:
+        from engines.exceptions import RecordNotFoundError
+        from utils.integration_adapters import show_error
+
+        if self._supplier_engine is None:
+            show_error(self, title, "Supplier engine not initialized. Please restart the application.")
+            return False
+        try:
+            supplier = self._supplier_engine.get_supplier(supplier_id)
+        except RecordNotFoundError:
+            show_error(self, title, "This supplier was not found or has been deleted.")
+            return False
+        if supplier.status != "Active":
+            show_error(
+                self, title,
+                "This supplier is inactive. Activate the supplier first to create a new transaction.",
+            )
+            return False
+        return True
+
+    def _new_sale_for_customer(self, customer_id) -> None:
+        from utils.integration_adapters import show_error
+
+        if self._sale_engine is None or self._item_engine is None:
+            show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
+            return
+        if not self._customer_ready_for_new_transaction(customer_id, "Sales", needs_area=True):
+            return
+        self._open_sale_invoice_form(initial_customer_id=customer_id)
+
+    def _new_receipt_for_customer(self, customer_id) -> None:
+        from utils.integration_adapters import show_error
+
+        if getattr(self, "_receipt_engine", None) is None:
+            show_error(self, "Receipt", "Receipt engine not initialized. Please restart the application.")
+            return
+        if not self._customer_ready_for_new_transaction(customer_id, "Receipt"):
+            return
+        self._open_receipt_form(initial_customer_id=customer_id)
+
+    def _open_purchase_invoice_form(self, initial_supplier_id=None) -> None:
+        """Open a fresh Purchase Invoice window (it is a QDialog, shown the same
+        way the sidebar's 'purchase' branch shows it) with an optional
+        supplier preselected. Always a new instance, never the reuse-guarded
+        sidebar one, so the supplier is guaranteed to be applied."""
+        from utils.integration_adapters import show_error
+
+        if self._purchase_engine is None or self._purchase_order_engine is None or self._supplier_engine is None:
+            show_error(self, "Purchase Invoice", "Purchase engines not initialized. Please restart the application.")
+            return
+        form = PurchaseInvoiceFormScreen(
+            parent=self,
+            engine=self._purchase_engine,
+            purchase_order_engine=self._purchase_order_engine,
+            supplier_engine=self._supplier_engine,
+            item_engine=self._item_engine,
+            current_user_id=self.login_result.userid,
+            initial_supplier_id=initial_supplier_id,
+        )
+        self.purchase_invoice_form_from_hub = form
+        form.show()
+        form.raise_()
+        form.activateWindow()
+
+    def _new_purchase_for_supplier(self, supplier_id) -> None:
+        if not self._supplier_ready_for_new_transaction(supplier_id, "Purchase Invoice"):
+            return
+        self._open_purchase_invoice_form(initial_supplier_id=supplier_id)
+
+    def _new_payment_for_supplier(self, supplier_id) -> None:
+        from utils.integration_adapters import show_error
+
+        if getattr(self, "_payment_engine", None) is None:
+            show_error(self, "Payment", "Payment engine not initialized. Please restart the application.")
+            return
+        if not self._supplier_ready_for_new_transaction(supplier_id, "Payment"):
+            return
+        self._open_payment_form(initial_supplier_id=supplier_id)
 
     # -----------------------------------------------------
     # MODULE OPENERS

@@ -23,7 +23,6 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 from engines.exceptions import RecordNotFoundError
 from utils.integration_adapters import show_error
 from utils.item_form_helpers import format_qty
-from utils.supplier_form_helpers import format_amount
 from widgets.master_detail_panel import MasterDetailPanel
 
 logger = logging.getLogger(__name__)
@@ -214,10 +213,8 @@ def build_supplier_payload(supplier_engine, supplier_id: int) -> HubPayload:
             "Address:": dto.address or "-",
             "City:": dto.city or "-",
             "PAN/VAT:": dto.pan_vat_no or "-",
-            "Open. Balance:": format_amount(dto.opening_balance, dto.balance_type),
-            "Credit Limit:": (
-                format_amount(dto.credit_limit, None) if dto.credit_limit is not None else "-"
-            ),
+            "Open. Balance:": f"{_money(dto.opening_balance)} {dto.balance_type or ''}".strip(),
+            "Credit Limit:": _money(dto.credit_limit) if dto.credit_limit is not None else "-",
             "Credit Days:": str(dto.credit_days) if dto.credit_days is not None else "-",
             "Status:": "Deleted" if dto.is_deleted else (dto.status or "-"),
             "Created:": fmt(dto.created_by, dto.created_at_bs, dto.created_at_ad),
@@ -237,8 +234,7 @@ def _item_lookup_names() -> tuple[dict, dict, dict]:
     manufacturers: dict = {}
     units: dict = {}
     try:
-        rows, _ = category_engine().search_categories(page=1, page_size=1000)
-        categories = {c.category_id: c.category_name for c in rows}
+        categories = {dto.id: dto.name for dto in category_engine().list_active()}
     except Exception:  # noqa: BLE001
         logger.exception("Failed to load category names for Item hub.")
     try:
@@ -247,8 +243,7 @@ def _item_lookup_names() -> tuple[dict, dict, dict]:
     except Exception:  # noqa: BLE001
         logger.exception("Failed to load manufacturer names for Item hub.")
     try:
-        rows, _ = unit_engine().search_units(page=1, page_size=1000)
-        units = {u.unit_id: u.unit_name for u in rows}
+        units = {dto.id: dto.name for dto in unit_engine().list_active()}
     except Exception:  # noqa: BLE001
         logger.exception("Failed to load unit names for Item hub.")
     return categories, manufacturers, units

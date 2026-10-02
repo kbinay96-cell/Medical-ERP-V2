@@ -178,7 +178,7 @@ class PurchaseReturnModel:
         if filters.search_text:
             conditions.append(
                 "(pr.return_number ILIKE %(search_text)s OR pi.internal_ref_number ILIKE %(search_text)s "
-                "OR s.name ILIKE %(search_text)s)"
+                "OR s.supplier_name ILIKE %(search_text)s)"
             )
             params["search_text"] = f"%{filters.search_text}%"
         if filters.supplier_id:
@@ -204,7 +204,7 @@ class PurchaseReturnModel:
         offset = (filters.page - 1) * filters.page_size
 
         sql = f"""
-            SELECT pr.*, pi.internal_ref_number, s.name AS supplier_name
+            SELECT pr.*, pi.internal_ref_number, s.supplier_name
             FROM purchase_return pr
             JOIN purchase_invoice pi ON pi.purchase_invoice_id = pr.purchase_invoice_id
             JOIN supplier s ON s.supplier_id = pr.supplier_id

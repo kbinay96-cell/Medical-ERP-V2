@@ -186,6 +186,7 @@ class SaleInvoiceFormScreen(QDialog):
         current_username: str = "system",
         embedded: bool = False,
         existing_invoice_id: Optional[int] = None,
+        initial_customer_id: Optional[int] = None,
     ) -> None:
         super().__init__(parent)
         self._embedded = embedded
@@ -242,6 +243,8 @@ class SaleInvoiceFormScreen(QDialog):
             self._load_existing_invoice(existing_invoice_id)
         else:
             self._add_line_row()
+            if initial_customer_id is not None:
+                self._preselect_customer(initial_customer_id)
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -464,6 +467,28 @@ class SaleInvoiceFormScreen(QDialog):
             self.area_combo, self._areas, display_key="area_name", data_key="area_id",
             placeholder="(All Areas)",
         )
+
+    def _preselect_customer(self, customer_id: int) -> bool:
+        """Select `customer_id` on a blank form (Record Detail Hub -> New Sale).
+
+        The Customer combo is only ever filled by the Area -> Customer
+        cascade, so the customer's Area is selected first (which repopulates
+        the Customer combo through _on_area_changed), then the customer
+        itself. Both go through the combos' normal signals -- the same chain
+        as a user picking them by hand. Returns False (form left blank) if
+        the customer cannot be reached through the cascade."""
+        customer = self._customer_engine.get_customer(customer_id)
+        if customer is None or customer.get("area_id") is None:
+            return False
+        area_index = self.area_combo.findData(customer.get("area_id"))
+        if area_index < 0:
+            return False
+        self.area_combo.setCurrentIndex(area_index)
+        customer_index = self.customer_combo.findData(customer_id)
+        if customer_index < 0:
+            return False
+        self.customer_combo.setCurrentIndex(customer_index)
+        return True
 
     def _on_area_changed(self, area_id) -> None:
         """Repopulates the Customer combo via
