@@ -327,39 +327,133 @@ class DashboardScreen(QMainWindow):
         self._master_search_bar.report_activated.connect(self._open_report_from_dashboard)
         self._master_search_bar.record_activated.connect(self._on_master_search_record_activated)
 
+    def _open_record_detail_hub(self, entity: str, record_id) -> None:
+        """
+        Open the Record Detail Hub (key-info card + Edit + ledger/history
+        button) for a Customer / Supplier / Item picked from Master Search.
+        A hub always shows ONE specific record, so it is built fresh every
+        time and never cached through _get_or_create_screen() -- the same
+        rule _open_sale_invoice_form() applies when editing a specific
+        invoice.
+        """
+        from utils.integration_adapters import show_error
+        from screens.record_detail_hub_screen import (
+            CUSTOMER_HUB_CAPTIONS,
+            ITEM_HUB_CAPTIONS,
+            SUPPLIER_HUB_CAPTIONS,
+            HubAction,
+            RecordDetailHubScreen,
+            build_customer_payload,
+            build_item_payload,
+            build_supplier_payload,
+        )
+
+        if record_id is None:
+            show_error(self, "Record", "This search result has no record id, so it cannot be opened.")
+            return
+
+        def open_history(report_code: str, filters: dict) -> None:
+            self._open_report_from_dashboard(report_code, initial_filters=filters)
+
+        if entity == "customer":
+            heading = "Customer Details"
+            placeholder_icon = "user.svg"
+            captions = CUSTOMER_HUB_CAPTIONS
+
+            def loader():
+                return build_customer_payload(customer_engine, record_id)
+
+            def on_edit():
+                self._open_customer_form(record_id)
+                dialog = getattr(self, "customer_form", None)
+                if dialog is not None:
+                    # Customer edit is a separate dialog window, so the hub
+                    # is not re-shown when it closes -- refresh explicitly.
+                    dialog.finished.connect(lambda _result=0: hub.refresh())
+
+            history_actions = [
+                HubAction(
+                    "View Receipt History",
+                    lambda: open_history("CUSTOMER_RECEIPT_HISTORY", {"customer_id": record_id}),
+                )
+            ]
+        elif entity == "supplier":
+            if self._supplier_engine is None:
+                show_error(self, "Supplier", "Supplier engine not initialized. Please restart the application.")
+                return
+            heading = "Supplier Details"
+            placeholder_icon = "truck.svg"
+            captions = SUPPLIER_HUB_CAPTIONS
+
+            def loader():
+                return build_supplier_payload(self._supplier_engine, record_id)
+
+            def on_edit():
+                self._open_supplier_form(record_id)
+
+            history_actions = [
+                HubAction(
+                    "View Payment History",
+                    lambda: open_history("SUPPLIER_PAYMENT_HISTORY", {"supplier_id": record_id}),
+                )
+            ]
+        elif entity == "item":
+            if self._item_engine is None:
+                show_error(self, "Item", "Item engine not initialized. Please restart the application.")
+                return
+            heading = "Item Details"
+            placeholder_icon = "box.svg"
+            captions = ITEM_HUB_CAPTIONS
+
+            def loader():
+                return build_item_payload(self._item_engine, record_id)
+
+            def on_edit():
+                self._open_item_form(record_id)
+
+            history_actions = [
+                HubAction(
+                    "View Stock Ledger",
+                    lambda: open_history("STOCK_LEDGER", {"item_id": record_id}),
+                )
+            ]
+        else:
+            return
+
+        hub = RecordDetailHubScreen(
+            self,
+            heading=heading,
+            placeholder_title="Loading...",
+            placeholder_icon=placeholder_icon,
+            field_captions=captions,
+            loader=loader,
+            on_edit=on_edit,
+            history_actions=history_actions,
+        )
+        hub.close_requested.connect(self._navigate_back)
+        self._navigate_to(hub)
+
     def _on_master_search_record_activated(self, group_key: str, row: dict) -> None:
         """
-        Routes a non-report Master Search result to that module's own
-        record opener (never builds a new detail view itself -- see
-        master_search_bar_widget.py's own docstring). customer_id was
-        directly confirmed live on the customer delegate's rows;
-        item_id/supplier_id follow this project's universal <entity>_id
-        naming convention but were NOT independently confirmed live for
-        the item/supplier delegates -- verify on first real click and
-        report back if a group opens the wrong record or nothing at all.
+        Routes a non-report Master Search result. Group keys are the plural
+        keys ReportEngine.get_master_search_results() emits (see
+        _GROUP_LABELS in master_search_bar_widget.py).
+
+        Customers / Suppliers / Items open the Record Detail Hub (key info +
+        Edit + ledger/history). Every other group is not wired yet and shows
+        the placeholder message.
         """
-        if group_key == "customers":
-            self._open_customer_form(row.get("customer_id"))
-        elif group_key == "suppliers":
-            self._open_supplier_form(row.get("supplier_id"))
-        elif group_key == "items":
-            self._open_item_form(row.get("item_id"))
-        elif group_key == "country_tax":
-            self._open_country_tax_form(row.get("country_tax_id"))
-        elif group_key == "users":
-            # UserFormScreen accepts user_id and opens that specific
-            # record directly, in edit mode (confirmed via
-            # screens/user_form_screen.py and UserListScreen's own
-            # _on_edit_clicked, which makes the identical call) -- safe
-            # since password fields stay disabled either way.
-            self._open_user_form(row.get("user_id"))
-        elif group_key == "settings":
-            # Settings already has its own internal search_settings()-backed
-            # search box (screens/settings_screen.py), so this opens the
-            # screen generically rather than deep-linking to one setting row
-            # -- same construction as open_module_from_sidebar()'s "settings"
-            # branch.
-            self._open_settings_screen()
+        hub_targets = {
+            "customers": ("customer", "customer_id"),
+            "suppliers": ("supplier", "supplier_id"),
+            "items": ("item", "item_id"),
+        }
+        target = hub_targets.get(group_key)
+        if target is not None:
+            entity, id_key = target
+            self._open_record_detail_hub(entity, row.get(id_key))
+            return
+        show_info("This result will be linked soon.")
 
     def _open_settings_screen(self) -> None:
         def _make_screen():
@@ -777,7 +871,7 @@ class DashboardScreen(QMainWindow):
             if leaving is getattr(self, "payment_list", None):
                 self.payment_list = None
 
-    def _open_report_from_dashboard(self, report_code: str) -> None:
+    def _open_report_from_dashboard(self, report_code: str, initial_filters: dict | None = None) -> None:
         if self._report_engine is None:
             return
         from screens.report_runner_screen import ReportRunnerScreen
@@ -785,6 +879,7 @@ class DashboardScreen(QMainWindow):
             self, self._report_engine, self.login_result.roleid,
             item_engine=self._item_engine, supplier_engine=self._supplier_engine,
             initial_report_code=report_code, embedded=True,
+            initial_filters=initial_filters,
         )
         screen.close_requested.connect(self._navigate_back)
         self._navigate_to(screen)

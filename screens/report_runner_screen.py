@@ -105,6 +105,7 @@ class ReportRunnerScreen(QWidget):
         supplier_engine=None,
         initial_report_code: Optional[str] = None,
         embedded: bool = False,
+        initial_filters: Optional[dict[str, Any]] = None,
     ) -> None:
         super().__init__(parent)
         self._engine = engine
@@ -249,7 +250,14 @@ class ReportRunnerScreen(QWidget):
         self._load_categories()
 
         if initial_report_code:
-            self._on_report_selected(initial_report_code)
+            self._on_report_selected(initial_report_code, initial_filters)
+            if initial_filters:
+                # Caller supplied filters (Record Detail Hub ledger/history
+                # button): run the report right away, like the drill-down
+                # path does. Deferred to the event loop so the screen is
+                # fully constructed and navigated-to before it runs.
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, self._on_run_clicked)
 
     # ------------------------------------------------------------------ #
     # CATEGORY / REPORT NAVIGATION (horizontal toolbar + dropdown menus)
