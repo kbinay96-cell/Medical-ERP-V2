@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
@@ -40,9 +40,18 @@ COLUMN_COUNT = 5
 
 class ItemFreeSchemeListScreen(QWidget):
     """List/search for the Item Free Scheme master."""
+    close_requested = Signal()
 
-    def __init__(self, parent, engine: SaleItemFreeSchemeEngine, item_engine, current_user_id: int) -> None:
+    def __init__(
+        self,
+        parent,
+        engine: SaleItemFreeSchemeEngine,
+        item_engine,
+        current_user_id: int,
+        embedded: bool = False,
+    ) -> None:
         super().__init__(parent)
+        self._embedded = embedded
         self._engine = engine
         self._item_engine = item_engine
         self._current_user_id = current_user_id
@@ -59,6 +68,9 @@ class ItemFreeSchemeListScreen(QWidget):
     # ------------------------------------------------------------------ #
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        if self._embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(self, root, self.close_requested.emit)
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Search:"))

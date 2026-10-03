@@ -10,7 +10,7 @@ here - everything goes through the Authentication Engine.
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QDate, QTime, QSize
+from PySide6.QtCore import Qt, QTimer, QDate, QTime, QSize, QEvent
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from PySide6.QtWidgets import QMainWindow, QLineEdit
 
@@ -24,9 +24,10 @@ from engines.subscription_manager import validate_subscription
 from engines.theme_engine import toggle_theme
 from utils.icon_utils import themed_icon
 from engines.date_engine import ad_to_bs, DateEngineError
-from models.company_model import get_active_companies
+from models import company_model, user_model
 from models.financialyear_model import get_all_financial_years
 from screens.language_dialog import LanguageDialog
+from utils.company_branding import set_company_logo
 
 logger = get_logger()
 
@@ -71,6 +72,7 @@ class LoginScreen(QMainWindow):
         self._inject_first_time_setup_button()
         self.ui.btnChangeLanguage.clicked.connect(self._handle_change_language)
         self.ui.chkShowPassword.toggled.connect(self._toggle_password_visibility)
+        self.ui.cmbCompany.currentIndexChanged.connect(self._on_company_changed)
 
         self._apply_icons()
         self._apply_tooltips_and_status_tips()
@@ -87,6 +89,8 @@ class LoginScreen(QMainWindow):
         icon_size = QSize(18, 18)
 
         self.ui.lblLoginIcon.setPixmap(themed_icon("login").pixmap(QSize(40, 40)))
+        set_company_logo(self.ui.lblCompanyLogo, None, QSize(112, 112))
+        self.ui.lblErpLogo.hide()
 
         self.ui.txtUsername.addAction(themed_icon("user"), QLineEdit.ActionPosition.LeadingPosition)
         self.ui.txtPassword.addAction(themed_icon("lock"), QLineEdit.ActionPosition.LeadingPosition)
@@ -199,7 +203,7 @@ class LoginScreen(QMainWindow):
         self.ui.cmbCompany.clear()
 
         try:
-            companies = get_active_companies()
+            companies = company_model.get_active_companies()
         except Exception as e:
             logger.error(f"Failed to load companies: {e}")
             self.ui.lblConnectionStatus.setText("Database: Not Connected")
@@ -209,6 +213,25 @@ class LoginScreen(QMainWindow):
 
         for company in companies:
             self.ui.cmbCompany.addItem(company["companyname"], company["companyid"])
+        self._on_company_changed(self.ui.cmbCompany.currentIndex())
+
+    def _on_company_changed(self, _index: int) -> None:
+        company_id = self.ui.cmbCompany.currentData()
+        if not company_id:
+            set_company_logo(self.ui.lblCompanyLogo, None, QSize(112, 112))
+            return
+        try:
+            branding = company_model.get_company_branding(company_id)
+        except Exception:
+            logger.exception("Failed to load selected company branding for Login.")
+            set_company_logo(self.ui.lblCompanyLogo, None, QSize(112, 112))
+            return
+
+        if branding is None:
+            logger.warning("Selected company '%s' has no active branding record.", company_id)
+            set_company_logo(self.ui.lblCompanyLogo, None, QSize(112, 112))
+            return
+        set_company_logo(self.ui.lblCompanyLogo, branding.get("logopath"), QSize(112, 112))
 
     def _load_financial_years(self):
         self.ui.cmbFinancialYear.clear()
@@ -245,19 +268,36 @@ class LoginScreen(QMainWindow):
     # -----------------------------------------------------
 
     def _setup_remember_me(self):
-        """Wire the Remember Me checkbox: username autocomplete (from
-        locally saved logins) + password/company/financial-year autofill
-        on selecting a suggestion."""
+        """Offer active accounts as username suggestions and retain saved-login autofill."""
         from PySide6.QtWidgets import QCompleter
-        from PySide6.QtCore import Qt
-        from utils.remembered_logins import get_remembered_usernames
 
-        usernames = get_remembered_usernames()
+        try:
+            usernames = user_model.get_active_usernames()
+        except user_model.UserModelError:
+            logger.exception("Failed to load active usernames for Login suggestions.")
+            usernames = []
+
         self._remember_me_completer = QCompleter(usernames, self)
         self._remember_me_completer.setCaseSensitivity(Qt.CaseInsensitive)
         self._remember_me_completer.setFilterMode(Qt.MatchStartsWith)
+        self._remember_me_completer.setMaxVisibleItems(10)
         self.ui.txtUsername.setCompleter(self._remember_me_completer)
         self._remember_me_completer.activated.connect(self._on_remembered_username_selected)
+        self.ui.txtUsername.installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        if (
+            watched is self.ui.txtUsername
+            and event.type() == QEvent.Type.MouseButtonPress
+            and self._remember_me_completer.completionCount()
+        ):
+            QTimer.singleShot(0, self._show_active_username_suggestions)
+        return super().eventFilter(watched, event)
+
+    def _show_active_username_suggestions(self):
+        completer = self._remember_me_completer
+        completer.setCompletionPrefix(self.ui.txtUsername.text())
+        completer.complete()
 
     def _on_remembered_username_selected(self, username):
         from utils.remembered_logins import load_remembered_login

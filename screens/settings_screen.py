@@ -64,7 +64,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -143,12 +143,15 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
     Settings screen: left category tree, right dynamic settings
     panel, search, and Save/Apply/Restore/Import/Export/Close.
     """
+    close_requested = Signal()
 
     def __init__(
         self,
         current_username: str,
         is_admin: bool,
         parent: Optional[QWidget] = None,
+        current_user_id: Optional[int] = None,
+        embedded: bool = False,
     ) -> None:
         """
         current_username / is_admin must be supplied by the caller
@@ -161,9 +164,14 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
         """
         super().__init__(parent)
         self.setupUi(self)
+        self._embedded = embedded
+        if embedded:
+            self.setWindowFlags(Qt.WindowType.Widget)
+            self.btnClose.setText("← Back")
 
         self._current_username: str = current_username
         self._is_admin: bool = is_admin
+        self._current_user_id = current_user_id
 
         # group_name -> list[setting dict]
         self._settings_by_group: dict[str, list[dict[str, Any]]] = {}
@@ -303,6 +311,12 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
         setting_key: str = setting["setting_key"]
         data_type: str = setting.get("data_type", "string")
         current_value: str = setting.get("setting_value") or ""
+        if setting_key == UI_CONTROL_HEIGHT_KEY and self._current_user_id is not None:
+            current_value = str(
+                settings_engine.get_user_setting(
+                    self._current_user_id, setting_key, current_value
+                )
+            )
         description: str = setting.get("description") or ""
         is_editable: bool = setting.get("is_editable", True)
         setting_group: str = setting.get("setting_group", "")
@@ -359,12 +373,12 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
         # instead of the unranged default integer QSpinBox.
         if setting_key == UI_CONTROL_HEIGHT_KEY:
             spin = QSpinBox()
-            spin.setRange(24, 48)
+            spin.setRange(26, 48)
             spin.setSuffix(" px")
             try:
                 spin.setValue(int(current_value))
             except (TypeError, ValueError):
-                spin.setValue(34)
+                spin.setValue(28)
             spin.valueChanged.connect(
                 lambda _value, key=setting_key: self._on_setting_changed(key)
             )
@@ -594,7 +608,12 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
             return
 
         for setting_key, value in self._pending_changes.items():
-            success, msg = settings_engine.apply_setting_temporarily(setting_key, value)
+            if setting_key == UI_CONTROL_HEIGHT_KEY and self._current_user_id is not None:
+                success, msg = settings_engine.apply_user_setting_temporarily(
+                    self._current_user_id, setting_key, value
+                )
+            else:
+                success, msg = settings_engine.apply_setting_temporarily(setting_key, value)
             if not success:
                 logger.error(
                     f"SettingsScreen: apply_setting_temporarily('{setting_key}') "
@@ -613,9 +632,18 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
 
         changed_groups: set[str] = set()
         for setting_key, value in list(self._pending_changes.items()):
-            success, msg = settings_engine.save_setting(
-                setting_key, value, updated_by=self._current_username
-            )
+            if setting_key == UI_CONTROL_HEIGHT_KEY and self._current_user_id is not None:
+                success, msg = settings_engine.save_user_setting(
+                    self._current_user_id,
+                    setting_key,
+                    value,
+                    updated_by=self._current_username,
+                    reason="User adjusted personal screen control size",
+                )
+            else:
+                success, msg = settings_engine.save_setting(
+                    setting_key, value, updated_by=self._current_username
+                )
             if not success:
                 logger.error(f"SettingsScreen: save_setting('{setting_key}') failed: {msg}")
                 message.show_error(
@@ -682,9 +710,16 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
             return
 
         for setting_key in list(self._row_widgets.keys()):
-            success, msg = settings_engine.reset_setting_to_default(
-                setting_key, updated_by=self._current_username
-            )
+            if setting_key == UI_CONTROL_HEIGHT_KEY and self._current_user_id is not None:
+                success, msg = settings_engine.reset_user_setting(
+                    self._current_user_id,
+                    setting_key,
+                    updated_by=self._current_username,
+                )
+            else:
+                success, msg = settings_engine.reset_setting_to_default(
+                    setting_key, updated_by=self._current_username
+                )
             if not success:
                 logger.error(
                     f"SettingsScreen: reset_setting_to_default('{setting_key}') "
@@ -692,6 +727,14 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
                 )
                 message.show_error(msg, "Restore Default")
                 return
+
+        if UI_CONTROL_HEIGHT_KEY in self._row_widgets and self._current_user_id is not None:
+            height = settings_engine.get_user_setting(
+                self._current_user_id,
+                UI_CONTROL_HEIGHT_KEY,
+                settings_engine.get_setting(UI_CONTROL_HEIGHT_KEY, 28),
+            )
+            self._apply_screen_side_effects(UI_CONTROL_HEIGHT_KEY, str(height))
 
         self._load_categories()
         current_item = self.treeCategories.currentItem()
@@ -763,6 +806,10 @@ class SettingsScreen(QMainWindow, Ui_SettingsScreen):
     # Close
     # -----------------------------------------------------------
     def _on_btn_close_clicked(self) -> None:
+        if self._embedded:
+            if self._confirm_discard_if_unsaved():
+                self.close_requested.emit()
+            return
         self.close()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override signature

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
@@ -20,6 +20,7 @@ from utils.integration_adapters import get_current_user_id
 
 class PeriodLockScreen(QWidget):
     """Period lock controls; period and permission rules remain in injected models."""
+    close_requested = Signal()
 
     def __init__(
         self,
@@ -42,6 +43,8 @@ class PeriodLockScreen(QWidget):
         self._coa_model = coa_model
         self._permissions: dict = {}
         root = QVBoxLayout(self)
+        from utils.ui_standards import add_embedded_back_button
+        add_embedded_back_button(self, root, self.close_requested.emit)
         header = QHBoxLayout()
         header.addWidget(QLabel("Financial years and accounting periods"), 1)
         self.refresh_button = QPushButton("Refresh")

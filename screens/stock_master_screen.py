@@ -1,6 +1,7 @@
 # screens/stock_master_screen.py
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
@@ -16,14 +17,20 @@ from PySide6.QtWidgets import (
 
 class StockMasterScreen(QWidget):
     """Current batch-level stock (item_batch). Read-only inventory master."""
+    close_requested = Signal()
 
-    def __init__(self, parent, item_engine):
+    def __init__(self, parent, item_engine, embedded: bool = False):
         super().__init__(parent)
+        self._embedded = embedded
         self._item_engine = item_engine
         self.setWindowTitle("Stock Master")
-        self.setMinimumSize(1100, 560)
+        if not embedded:
+            self.setMinimumSize(1100, 560)
 
         root = QVBoxLayout(self)
+        if embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(self, root, self.close_requested.emit)
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Search item:"))
         self.search_input = QLineEdit()

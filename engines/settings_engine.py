@@ -34,6 +34,7 @@ logger = get_logger()
 # application restart (Blueprint-13: runtime-apply vs restart-required).
 RUNTIME_APPLY_GROUPS = {"General", "Print"}
 RESTART_REQUIRED_GROUPS = {"Date & Calendar", "Company"}
+_user_runtime_overrides: dict[tuple[int, str], str] = {}
 
 
 def load_all_settings() -> None:
@@ -167,6 +168,80 @@ def reset_setting_to_default(key: str, updated_by: str) -> tuple[bool, str]:
 
 def requires_restart(setting_group: str) -> bool:
     return setting_group in RESTART_REQUIRED_GROUPS
+
+
+def get_user_setting(userid: int, key: str, default=None):
+    """Return a user's override, falling back to the global setting."""
+    override = _user_runtime_overrides.get((userid, key))
+    if override is not None:
+        row = settings_cache.get_cached_row(key) or settings_model.get_setting_by_key(key)
+        if row is not None:
+            return _parse_user_value(row["data_type"], override)
+    try:
+        row = settings_model.get_setting_by_key(key, userid=userid)
+    except Exception:
+        logger.exception("get_user_setting: database lookup failed for user %s, key %s", userid, key)
+        raise
+    if row is not None:
+        return _parse_user_value(row["data_type"], row["setting_value"])
+    return get_setting(key, default)
+
+
+def _parse_user_value(data_type: str, value: str):
+    from engines.settings_validator import parse_setting_value
+
+    return parse_setting_value(data_type, value)
+
+
+def save_user_setting(
+    userid: int, key: str, new_value: str, updated_by: str, reason: str = ""
+) -> tuple[bool, str]:
+    row = settings_cache.get_cached_row(key) or settings_model.get_setting_by_key(key)
+    if row is None:
+        return False, f"Setting '{key}' not found."
+    is_valid, error_message = validate_setting_value(row["data_type"], new_value)
+    if not is_valid:
+        return False, error_message
+    try:
+        success, message = settings_model.save_user_setting(
+            key, new_value, userid, updated_by, reason
+        )
+    except Exception as exc:
+        logger.exception("save_user_setting: failed for user %s, key %s", userid, key)
+        return False, "Could not save your appearance preference."
+    if success:
+        _user_runtime_overrides.pop((userid, key), None)
+    return success, message
+
+
+def apply_user_setting_temporarily(userid: int, key: str, new_value: str) -> tuple[bool, str]:
+    row = settings_cache.get_cached_row(key) or settings_model.get_setting_by_key(key)
+    if row is None:
+        return False, f"Setting '{key}' not found."
+    is_valid, error_message = validate_setting_value(row["data_type"], new_value)
+    if not is_valid:
+        return False, error_message
+    _user_runtime_overrides[(userid, key)] = new_value
+    return True, "Applied (not saved)."
+
+
+def reset_user_setting(userid: int, key: str, updated_by: str) -> tuple[bool, str]:
+    try:
+        success, message = settings_model.reset_user_setting(key, userid, updated_by)
+    except Exception:
+        logger.exception("reset_user_setting: failed for user %s, key %s", userid, key)
+        return False, "Could not reset your appearance preference."
+    if success:
+        _user_runtime_overrides.pop((userid, key), None)
+    return success, message
+
+
+def clear_user_runtime_overrides(userid: int | None = None) -> None:
+    if userid is None:
+        _user_runtime_overrides.clear()
+        return
+    for cache_key in [key for key in _user_runtime_overrides if key[0] == userid]:
+        _user_runtime_overrides.pop(cache_key, None)
 
 
 def export_settings(file_path: str) -> tuple[bool, str]:

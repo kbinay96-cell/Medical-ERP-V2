@@ -50,6 +50,30 @@ def get_active_companies() -> list:
         conn.close()
 
 
+def get_company_branding(companyid: str) -> Optional[Dict[str, Any]]:
+    """Return the selected company's display name and logo path."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT companyname, logopath
+                FROM company
+                WHERE companyid = %s
+                  AND status = 'Active'
+                  AND isdeleted = FALSE
+                """,
+                (companyid,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    except psycopg2.Error as e:
+        logger.error("get_company_branding failed for company %s: %s", companyid, e)
+        raise CompanyModelError(str(e)) from e
+    finally:
+        conn.close()
+
+
 def generate_next_company_id(cursor) -> str:
     """
     Generates the next sequential companyid in the form COM001, COM002...

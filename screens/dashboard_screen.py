@@ -12,7 +12,10 @@ from PySide6.QtCore import Qt, QTimer, QTime, QDate, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon, QFont
 from utils.icon_utils import themed_icon
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
     QFrame,
+    QFormLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -28,10 +31,11 @@ from utils.message import show_info, confirm
 from utils.app_logger import get_logger
 from utils.ui_standards import standardize_action_buttons, apply_action_button_style
 from engines.authentication_engine import logout
-from engines.dashboard_engine import build_dashboard, SIDEBAR_MODULES
+from engines.dashboard_engine import build_dashboard, filter_sidebar_modules
 from screens.password_reset_requests_screen import PasswordResetRequestsScreen
 from screens.audit_log_screen import AuditLogScreen
 from engines.theme_engine import toggle_theme, get_current_theme
+from engines import theme_engine
 from engines import settings_engine
 from engines.date_engine import ad_to_bs, DateEngineError
 from engines import session_manager
@@ -71,6 +75,7 @@ from screens.item_free_scheme_list_screen import ItemFreeSchemeListScreen
 from screens.stock_ledger_screen import StockLedgerScreen
 from screens.stock_master_screen import StockMasterScreen
 from utils.window_chrome import apply_standard_window_chrome
+from utils.company_branding import set_company_logo
 
 # Purchase engines
 from engines.purchase_order_engine import PurchaseOrderEngine
@@ -141,6 +146,7 @@ SIDEBAR_MODULE_FONT_SIZE = 11.5
 SIDEBAR_SCREEN_FONT_SIZE = 10.0
 SIDEBAR_ARROW_COLUMN_WIDTH = 28
 SIDEBAR_ICON_SIZE = 18
+DASHBOARD_SIDEBAR_WIDTH = 260
 
 
 class DashboardScreen(QMainWindow):
@@ -149,9 +155,19 @@ class DashboardScreen(QMainWindow):
         super().__init__()
 
         self.login_result = login_result
+        self._company_logo_path = None
+        settings_engine.clear_user_runtime_overrides(self.login_result.userid)
+        theme_engine.set_active_user_id(self.login_result.userid)
 
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        theme_engine.apply_theme(get_current_theme())
+        self.ui.bodySplitter.setChildrenCollapsible(False)
+        self.ui.bodySplitter.setHandleWidth(0)
+        self.ui.bodySplitter.setCollapsible(0, True)
+        self.ui.frmSidebar.setMinimumWidth(DASHBOARD_SIDEBAR_WIDTH)
+        self.ui.frmSidebar.setMaximumWidth(DASHBOARD_SIDEBAR_WIDTH)
+        self.ui.treeSidebarMenu.setMinimumWidth(0)
 
         
         standardize_action_buttons(self)
@@ -359,7 +375,7 @@ class DashboardScreen(QMainWindow):
                 settings_search_delegate,
             )
             self._report_engine = ReportEngine(
-                search_delegates={
+                search_delegates=self._filter_master_search_delegates({
                     "customers": search_customers_delegate,
                     "items": make_item_search_delegate(self._item_engine),
                     "suppliers": make_supplier_search_delegate(self._supplier_engine),
@@ -374,11 +390,45 @@ class DashboardScreen(QMainWindow):
                     "users": make_user_search_delegate(),
                     "country_tax": make_country_tax_search_delegate(),
                     "settings": settings_search_delegate,
-                }
+                })
             )
         except Exception:
             from utils.app_logger import get_logger
             get_logger().exception("Failed to initialize Reports module engine.")
+
+    def _filter_master_search_delegates(self, delegates: dict) -> dict:
+        if self.login_result.is_admin:
+            return delegates
+
+        screen_for_group = {
+            "customers": "Customer",
+            "items": "Item",
+            "suppliers": "Supplier",
+            "sale_invoices": "Sale List",
+            "purchase_invoices": "Purchase Invoice List",
+            "receipts": "Receipt",
+            "payments": "Payment",
+            "sale_returns": "Sale Return",
+            "purchase_orders": "Purchase Order",
+            "purchase_returns": "Purchase Return",
+            "manufacturers": "Manufacturer",
+            "users": "User Master",
+            "country_tax": "Country Tax",
+            "settings": "Settings",
+        }
+        allowed = {
+            screen.casefold()
+            for screens in filter_sidebar_modules(
+                getattr(self.login_result, "accessible_menus", []),
+                is_admin=False,
+            ).values()
+            for screen in screens
+        }
+        return {
+            group: delegate
+            for group, delegate in delegates.items()
+            if screen_for_group.get(group, "").casefold() in allowed
+        }
 
     def _mount_master_search_bar(self) -> None:
         """
@@ -521,8 +571,8 @@ class DashboardScreen(QMainWindow):
         _GROUP_LABELS in master_search_bar_widget.py).
 
         Customers / Suppliers / Items open the Record Detail Hub (key info +
-        Edit + ledger/history). Every other group is not wired yet and shows
-        the placeholder message.
+        Edit + ledger/history). Other record groups open a read-only detail
+        dialog using the fields already returned by their search delegate.
         """
         hub_targets = {
             "customers": ("customer", "customer_id"),
@@ -534,16 +584,52 @@ class DashboardScreen(QMainWindow):
             entity, id_key = target
             self._open_record_detail_hub(entity, row.get(id_key))
             return
-        show_info("This result will be linked soon.")
+        self._open_master_search_record_details(group_key, row)
+
+    def _open_master_search_record_details(self, group_key: str, row: dict) -> None:
+        """Show safe fields from a Master Search result without opening an edit form."""
+        title = group_key.replace("_", " ").title()
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{title} Details")
+        dialog.setMinimumWidth(420)
+        root = QVBoxLayout(dialog)
+        fields = QFormLayout()
+        excluded_tokens = ("password", "secret", "token", "salt", "hash")
+        for key, value in row.items():
+            normalized_key = key.casefold()
+            if (
+                value is None
+                or normalized_key.endswith("_id")
+                or any(token in normalized_key for token in excluded_tokens)
+                or isinstance(value, (dict, list, tuple))
+            ):
+                continue
+            caption = key.replace("_", " ").strip().title()
+            label = QLabel(str(value))
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setWordWrap(True)
+            fields.addRow(f"{caption}:", label)
+        if fields.rowCount() == 0:
+            fields.addRow("Details:", QLabel("No non-sensitive details are available."))
+        root.addLayout(fields)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        root.addWidget(buttons)
+        dialog.exec()
 
     def _open_settings_screen(self) -> None:
         def _make_screen():
-            return SettingsScreen(
+            screen = SettingsScreen(
                 current_username=self.login_result.username or "system",
                 is_admin=self.login_result.is_admin,
                 parent=self,
+                current_user_id=self.login_result.userid,
+                embedded=True,
             )
-        self._get_or_create_screen("settings_screen", _make_screen, mode="window")
+            screen.close_requested.connect(self._navigate_back)
+            return screen
+        self._get_or_create_screen("settings_screen", _make_screen, mode="navigate")
 
     # -----------------------------------------------------
     # SETUP
@@ -568,7 +654,9 @@ class DashboardScreen(QMainWindow):
         self._build_dashboard_header()
         self._style_dashboard_widgets()
         self._apply_icons()
+        self._show_company_branding()
         self._build_sidebar_menu()
+        theme_engine.apply_control_density()
 
         if getattr(self.login_result, "mustchangepassword", False):
             from screens.change_password_screen import ChangePasswordScreen
@@ -584,15 +672,6 @@ class DashboardScreen(QMainWindow):
         # once the window actually appears. singleShot(0, ...) defers it
         # to right after that first layout/show, once the real size is known.
         QTimer.singleShot(0, self._restore_sidebar_width)
-
-        # Debounced save -- splitterMoved fires continuously while
-        # dragging, so we only persist ~400ms after the user stops
-        # moving it (same debounce pattern used elsewhere, e.g. Item
-        # Master's search box).
-        self._sidebar_width_save_timer = QTimer(self)
-        self._sidebar_width_save_timer.setSingleShot(True)
-        self._sidebar_width_save_timer.timeout.connect(self._save_sidebar_width)
-        self.ui.bodySplitter.splitterMoved.connect(self._on_sidebar_splitter_moved)
 
         self._apply_tooltips_and_status_tips()
         self._setup_shortcuts()
@@ -627,7 +706,7 @@ class DashboardScreen(QMainWindow):
         self.ui.btnTheme.setIcon(themed_icon(theme_icon))
         self.ui.btnTheme.setIconSize(icon_size)
 
-        self.ui.lblCompanyLogoSmall.setPixmap(themed_icon("building").pixmap(QSize(28, 28)))
+        set_company_logo(self.ui.lblCompanyLogoSmall, self._company_logo_path, QSize(36, 36))
         for button, icon_name in (
             (self.ui.btnNewSale, "money"),
             (self.ui.btnNewPurchase, "cart"),
@@ -648,7 +727,7 @@ class DashboardScreen(QMainWindow):
 
         greeting = QVBoxLayout()
         greeting.setSpacing(3)
-        name = self.login_result.fullname or self.login_result.username
+        name = self._user_display_name
         self.ui.lblDashboardGreeting = QLabel(f"Welcome back, {name}")
         self.ui.lblDashboardGreeting.setObjectName("dashboardGreeting")
         greeting.addWidget(self.ui.lblDashboardGreeting)
@@ -734,6 +813,8 @@ class DashboardScreen(QMainWindow):
             self.ui.lstFavorites,
             self.ui.lstRecentlyOpened,
         ):
+            minimum_row_height = max(widget.fontMetrics().height() + 17, 28)
+            widget.setMinimumHeight(10 * minimum_row_height)
             widget.style().unpolish(widget)
             widget.style().polish(widget)
 
@@ -813,13 +894,52 @@ class DashboardScreen(QMainWindow):
             logger.error(f"Auto-backup on exit failed: {message}")
 
     def _show_user_context(self):
-        self.ui.lblLoggedInUser.setText(self.login_result.fullname or self.login_result.username)
+        self._user_display_name = self._resolve_user_display_name(self.login_result)
+        self.ui.lblLoggedInUser.setText(self._user_display_name)
         self.ui.lblUserRole.setText(self.login_result.rolename or "")
         self.ui.lblCurrentFinancialYearHeader.setText(f"FY: {self.login_result.financialyear or ''}")
-        self.ui.lblCompanyNameHeader.setText(self.login_result.companyid or "")
+
         self.statusBar().showMessage(
             f"Logged in as {self.login_result.username} | Machine: {self.login_result.machine_name}"
         )
+
+    @staticmethod
+    def _resolve_user_display_name(login_result) -> str:
+        """Avoid presenting the role name as the user's name when they are identical."""
+        full_name = login_result.fullname or ""
+        username = login_result.username or ""
+        role_name = login_result.rolename or ""
+
+        if (
+            full_name
+            and role_name
+            and full_name.casefold() == role_name.casefold()
+            and username
+            and username.casefold() != role_name.casefold()
+        ):
+            return username
+        return full_name or username
+
+    def _show_company_branding(self):
+        try:
+            from models.company_model import get_company_branding
+            branding = get_company_branding(self.login_result.companyid)
+        except Exception:
+            logger.exception("Failed to load selected company branding for Dashboard.")
+            branding = None
+
+        if branding is None:
+            logger.warning(
+                "Company branding is unavailable for company '%s'.",
+                self.login_result.companyid,
+            )
+            self.ui.lblCompanyNameHeader.setText(self.login_result.companyid or "")
+        else:
+            self._company_logo_path = branding.get("logopath")
+            set_company_logo(self.ui.lblCompanyLogoSmall, self._company_logo_path, QSize(36, 36))
+            self.ui.lblCompanyNameHeader.setText(
+                branding.get("companyname") or self.login_result.companyid or ""
+            )
 
     def _build_sidebar_menu(self):
         tree = self.ui.treeSidebarMenu
@@ -852,7 +972,36 @@ class DashboardScreen(QMainWindow):
         screen_font.setBold(False)
         screen_font.setPointSizeF(SIDEBAR_SCREEN_FONT_SIZE)
 
-        for module_name, screen_names in SIDEBAR_MODULES.items():
+        visible_modules = filter_sidebar_modules(
+            getattr(self.login_result, "accessible_menus", []),
+            is_admin=bool(self.login_result.is_admin),
+        )
+        quick_action_permissions = (
+            (self.ui.btnNewSale, "Sale"),
+            (self.ui.btnNewPurchase, "Purchase"),
+            (self.ui.btnAddCustomer, "Customer"),
+            (self.ui.btnAddSupplier, "Supplier"),
+            (self.ui.btnAddItem, "Item"),
+        )
+        for button, permission_screen in quick_action_permissions:
+            can_add = bool(self.login_result.is_admin)
+            if not can_add:
+                try:
+                    from engines.authorization_engine import has_permission
+                    can_add = has_permission(
+                        self.login_result.roleid,
+                        permission_screen,
+                        "can_add",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not verify the %s quick-action permission.",
+                        permission_screen,
+                    )
+            button.setVisible(can_add)
+        self.ui.btnBackupDatabase.setVisible(bool(self.login_result.is_admin))
+
+        for module_name, screen_names in visible_modules.items():
             module_item = QTreeWidgetItem([module_name, ""])
             icon_name = MODULE_ICONS.get(module_name, "list")
             module_item.setIcon(0, themed_icon(icon_name))
@@ -908,18 +1057,7 @@ class DashboardScreen(QMainWindow):
         # Sales/...) show; user clicks a header to expand its screens.
 
     def _filter_sidebar_menu(self, search_text: str):
-        """
-        Filters the sidebar module tree by name as the user types.
-
-        NOTE (future-ready): this currently only filters the
-        Sidebar Menu tree. The Blueprint calls for this box to
-        eventually become a Global Search across Company,
-        Supplier, Customer, Item, Purchase, Sales, Invoice,
-        Reports, and Settings records - once those modules
-        exist. This method is the single place that behaviour
-        will be added, without changing the search box itself
-        or any other Screen.
-        """
+        """Filter visible sidebar entries; record search lives in Master Search."""
         search_text = search_text.strip().lower()
 
         root = self.ui.treeSidebarMenu.invisibleRootItem()
@@ -941,24 +1079,10 @@ class DashboardScreen(QMainWindow):
                 module_item.setExpanded(True)
 
     def _restore_sidebar_width(self):
-        try:
-            width = int(settings_engine.get_setting("dashboard.sidebar_width", 260))
-        except (TypeError, ValueError):
-            width = 260
         total = self.ui.bodySplitter.width() or 1200
-        self.ui.bodySplitter.setSizes([width, max(total - width, 200)])
-
-    def _on_sidebar_splitter_moved(self, pos, index):
-        self._sidebar_width_save_timer.start(400)
-
-    def _save_sidebar_width(self):
-        sizes = self.ui.bodySplitter.sizes()
-        if not sizes:
-            return
-        width = sizes[0]
-        updated_by = self.login_result.username or "system"
-        settings_engine.save_setting("dashboard.sidebar_width", str(width), updated_by,
-                                      reason="Dashboard sidebar resized by user")
+        self.ui.bodySplitter.setSizes(
+            [DASHBOARD_SIDEBAR_WIDTH, max(total - DASHBOARD_SIDEBAR_WIDTH, 200)]
+        )
 
     def _start_clock(self):
         self.clock_timer = QTimer(self)
@@ -990,17 +1114,25 @@ class DashboardScreen(QMainWindow):
             logger.exception(f"Dashboard failed to load data: {e}")
             return
 
-        self.ui.lblTodaySalesValue.setText(f"{data.today_sales:,.2f}")
-        self.ui.lblTodayPurchaseValue.setText(f"{data.today_purchase:,.2f}")
-        self.ui.lblStockValueValue.setText(f"{data.stock_value:,.2f}")
-        self.ui.lblLowStockValue.setText(str(int(data.low_stock_count)))
-        self.ui.lblExpiringValue.setText(str(int(data.expiring_count)))
-        self.ui.lblPendingPaymentsValue.setText(f"{data.pending_payments:,.2f}")
-        self.ui.lblPendingReceiptsValue.setText(f"{data.pending_receipts:,.2f}")
-        self.ui.lblActiveUsersValue.setText(str(int(data.active_users)))
+        self.ui.lblTodaySalesValue.setText(self._format_currency_kpi(data.today_sales))
+        self.ui.lblTodayPurchaseValue.setText(self._format_currency_kpi(data.today_purchase))
+        self.ui.lblStockValueValue.setText(self._format_currency_kpi(data.stock_value))
+        self.ui.lblLowStockValue.setText(self._format_count_kpi(data.low_stock_count))
+        self.ui.lblExpiringValue.setText(self._format_count_kpi(data.expiring_count))
+        self.ui.lblPendingPaymentsValue.setText(self._format_currency_kpi(data.pending_payments))
+        self.ui.lblPendingReceiptsValue.setText(self._format_currency_kpi(data.pending_receipts))
+        self.ui.lblActiveUsersValue.setText(self._format_count_kpi(data.active_users))
 
         self.ui.lstAlerts.clear()
         self.ui.lstAlerts.addItems(data.alerts)
+
+    @staticmethod
+    def _format_currency_kpi(value) -> str:
+        return "Unavailable" if value is None else f"{value:,.2f}"
+
+    @staticmethod
+    def _format_count_kpi(value) -> str:
+        return "Unavailable" if value is None else str(int(value))
 
     # -----------------------------------------------------
     # CONTENT-AREA NAVIGATION (QStackedWidget)
@@ -1064,6 +1196,10 @@ class DashboardScreen(QMainWindow):
                 self.sale_return_list = None
             if leaving is getattr(self, "sale_return_form", None):
                 self.sale_return_form = None
+            if leaving is getattr(self, "purchase_return_list", None):
+                self.purchase_return_list = None
+            if leaving is getattr(self, "purchase_return_form", None):
+                self.purchase_return_form = None
             if leaving is getattr(self, "payment_list", None):
                 self.payment_list = None
 
@@ -1145,6 +1281,43 @@ class DashboardScreen(QMainWindow):
         self._navigate_back()
         if getattr(self, "sale_return_list", None) is not None:
             self.sale_return_list._refresh()
+
+    def _open_purchase_return_list(self):
+        from screens.purchase_return_list_screen import PurchaseReturnListScreen
+
+        def factory():
+            screen = PurchaseReturnListScreen(
+                parent=self,
+                engine=self._purchase_return_engine,
+                supplier_engine=self._supplier_engine,
+                current_user_id=self.login_result.userid,
+                embedded=True,
+            )
+            screen.close_requested.connect(self._navigate_back)
+            screen.form_requested.connect(self._open_purchase_return_form)
+            return screen
+
+        self._get_or_create_screen("purchase_return_list", factory, mode="navigate")
+
+    def _open_purchase_return_form(self):
+        from screens.purchase_return_form_screen import PurchaseReturnFormScreen
+
+        self.purchase_return_form = PurchaseReturnFormScreen(
+            parent=self,
+            engine=self._purchase_return_engine,
+            purchase_invoice_engine=self._purchase_engine,
+            supplier_engine=self._supplier_engine,
+            item_engine=self._item_engine,
+            current_user_id=self.login_result.userid,
+        )
+        self.purchase_return_form.saved.connect(self._on_purchase_return_form_saved)
+        self.purchase_return_form.close_requested.connect(self._navigate_back)
+        self._navigate_to(self.purchase_return_form)
+
+    def _on_purchase_return_form_saved(self):
+        self._navigate_back()
+        if getattr(self, "purchase_return_list", None) is not None:
+            self.purchase_return_list.refresh()
 
     def _open_receipt_form(self, receipt_id=None, initial_customer_id=None):
         """Open the Receipt form (Add or Edit) embedded in the content-area stack.
@@ -1578,6 +1751,7 @@ class DashboardScreen(QMainWindow):
             return
 
         screen = factory()
+        theme_engine.apply_control_density()
         setattr(self, attr_name, screen)
         if mode == "navigate":
             self._navigate_to(screen)
@@ -1597,6 +1771,20 @@ class DashboardScreen(QMainWindow):
             return
 
         module_name = item.text(0).strip().lower()
+        if not self.login_result.is_admin:
+            allowed_screens = {
+                screen.casefold()
+                for screens in filter_sidebar_modules(
+                    getattr(self.login_result, "accessible_menus", []),
+                    is_admin=False,
+                ).values()
+                for screen in screens
+            }
+            normalized_name = module_name.split(" (", 1)[0]
+            if normalized_name not in allowed_screens:
+                from utils.integration_adapters import show_error
+                show_error(self, "Access Denied", "You do not have view permission for this screen.")
+                return
 
         if module_name == "supplier":
             def _make_screen():
@@ -1644,8 +1832,10 @@ class DashboardScreen(QMainWindow):
 
         elif module_name == "customer":
             def _make_screen():
-                return CustomerListScreen(self.login_result, parent=self)
-            self._get_or_create_screen("customer_list", _make_screen, mode="window")
+                screen = CustomerListScreen(self.login_result, parent=self, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("customer_list", _make_screen, mode="navigate")
 
         elif module_name == "sale free scheme":
             if self._item_free_scheme_engine is None or self._item_engine is None:
@@ -1653,13 +1843,16 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Sales", "Sales engines not initialized. Please restart the application.")
                 return
             def _make_screen():
-                return ItemFreeSchemeListScreen(
+                screen = ItemFreeSchemeListScreen(
                     self,
                     engine=self._item_free_scheme_engine,
                     item_engine=self._item_engine,
                     current_user_id=self.login_result.userid,
+                    embedded=True,
                 )
-            self._get_or_create_screen("sale_free_scheme_list", _make_screen, mode="window")
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("sale_free_scheme_list", _make_screen, mode="navigate")
 
         elif module_name == "item":
             def _make_screen():
@@ -1671,8 +1864,14 @@ class DashboardScreen(QMainWindow):
 
         elif module_name == "user master":
             def _make_screen():
-                return UserListScreen(self, current_user_id=self.login_result.userid)
-            self._get_or_create_screen("user_list", _make_screen, mode="window")
+                screen = UserListScreen(
+                    self,
+                    current_user_id=self.login_result.userid,
+                    embedded=True,
+                )
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("user_list", _make_screen, mode="navigate")
 
         elif module_name.startswith("password reset requests"):
             from engines.session_manager import is_current_user_admin
@@ -1700,12 +1899,16 @@ class DashboardScreen(QMainWindow):
 
         elif module_name == "settings":
             def _make_screen():
-                return SettingsScreen(
+                screen = SettingsScreen(
                     current_username=self.login_result.username or "system",
                     is_admin=self.login_result.is_admin,
                     parent=self,
+                    current_user_id=self.login_result.userid,
+                    embedded=True,
                 )
-            self._get_or_create_screen("settings_screen", _make_screen, mode="window")
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("settings_screen", _make_screen, mode="navigate")
 
         elif module_name == "change password":
             from screens.change_password_screen import ChangePasswordScreen
@@ -1718,14 +1921,17 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Purchase Order", "Purchase engines not initialized. Please restart the application.")
                 return
             def _make_screen():
-                return PurchaseOrderFormScreen(
+                screen = PurchaseOrderListScreen(
                     parent=self,
                     engine=self._purchase_order_engine,
                     supplier_engine=self._supplier_engine,
                     item_engine=self._item_engine,
                     current_user_id=self.login_result.userid,
+                    embedded=True,
                 )
-            self._get_or_create_screen("purchase_order_form", _make_screen, mode="window")
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("purchase_order_list", _make_screen, mode="navigate")
 
         elif module_name == "purchase":
             if self._purchase_engine is None or self._purchase_order_engine is None or self._supplier_engine is None:
@@ -1733,15 +1939,18 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Purchase Invoice", "Purchase engines not initialized. Please restart the application.")
                 return
             def _make_screen():
-                return PurchaseInvoiceFormScreen(
+                screen = PurchaseInvoiceFormScreen(
                     parent=self,
                     engine=self._purchase_engine,
                     purchase_order_engine=self._purchase_order_engine,
                     supplier_engine=self._supplier_engine,
                     item_engine=self._item_engine,
                     current_user_id=self.login_result.userid,
+                    embedded=True,
                 )
-            self._get_or_create_screen("purchase_invoice_form", _make_screen, mode="window")
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("purchase_invoice_form", _make_screen, mode="navigate")
 
         elif module_name == "purchase list":
             if self._purchase_order_engine is None or self._supplier_engine is None:
@@ -1749,14 +1958,17 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Purchase Order", "Purchase engines not initialized. Please restart the application.")
                 return
             def _make_screen():
-                return PurchaseOrderListScreen(
+                screen = PurchaseOrderListScreen(
                     parent=self,
                     engine=self._purchase_order_engine,
                     supplier_engine=self._supplier_engine,
                     item_engine=self._item_engine,
                     current_user_id=self.login_result.userid,
+                    embedded=True,
                 )
-            self._get_or_create_screen("purchase_order_list", _make_screen, mode="window")
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("purchase_order_list", _make_screen, mode="navigate")
 
         elif module_name == "new sale":
             if self._sale_engine is None or self._item_engine is None:
@@ -1792,8 +2004,10 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Inventory", "Item engine not initialized. Please restart the application.")
                 return
             def _make_screen():
-                return StockLedgerScreen(self, self._item_engine)
-            self._get_or_create_screen("stock_ledger_screen", _make_screen, mode="window")
+                screen = StockLedgerScreen(self, self._item_engine, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("stock_ledger_screen", _make_screen, mode="navigate")
 
         elif module_name == "stock master":
             if self._item_engine is None:
@@ -1801,8 +2015,10 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Inventory", "Item engine not initialized. Please restart the application.")
                 return
             def _make_screen():
-                return StockMasterScreen(self, self._item_engine)
-            self._get_or_create_screen("stock_master_screen", _make_screen, mode="window")
+                screen = StockMasterScreen(self, self._item_engine, embedded=True)
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("stock_master_screen", _make_screen, mode="navigate")
 
         elif module_name == "purchase invoice list":
             if self._purchase_engine is None or self._supplier_engine is None:
@@ -1810,14 +2026,32 @@ class DashboardScreen(QMainWindow):
                 show_error(self, "Purchase Invoice", "Purchase engines not initialized. Please restart the application.")
                 return
             def _make_screen():
-                return PurchaseInvoiceListScreen(
+                screen = PurchaseInvoiceListScreen(
                     parent=self,
                     engine=self._purchase_engine,
                     supplier_engine=self._supplier_engine,
                     item_engine=self._item_engine,
                     current_user_id=self.login_result.userid,
+                    embedded=True,
                 )
-            self._get_or_create_screen("purchase_invoice_list", _make_screen, mode="window")
+                screen.close_requested.connect(self._navigate_back)
+                return screen
+            self._get_or_create_screen("purchase_invoice_list", _make_screen, mode="navigate")
+
+        elif module_name == "purchase return":
+            if (
+                self._purchase_return_engine is None
+                or self._purchase_engine is None
+                or self._supplier_engine is None
+            ):
+                from utils.integration_adapters import show_error
+                show_error(
+                    self,
+                    "Purchase Return",
+                    "Purchase Return engines are unavailable. Check the Purchase Return database migration and restart the application.",
+                )
+                return
+            self._open_purchase_return_list()
 
         # ---- ACCOUNTS MODULE ----
         elif module_name in {
@@ -1838,27 +2072,33 @@ class DashboardScreen(QMainWindow):
             if module_name == "chart of accounts":
                 def _make_screen():
                     from screens.chart_of_accounts_screen import ChartOfAccountsScreen
-                    return ChartOfAccountsScreen(
+                    screen = ChartOfAccountsScreen(
                         self,
                         coa_model=self._coa_model,
                         engine=self._accounting_engine,
                         financial_year_model=self._financial_year_model,
                     )
+                    screen.close_requested.connect(self._navigate_back)
+                    return screen
                 self._get_or_create_screen("chart_of_accounts_screen", _make_screen, mode="navigate")
             elif module_name == "journal voucher":
                 def _make_screen():
                     from screens.journal_list_screen import JournalListScreen
-                    return JournalListScreen(self, self._accounting_engine, self._coa_model)
+                    screen = JournalListScreen(self, self._accounting_engine, self._coa_model)
+                    screen.close_requested.connect(self._navigate_back)
+                    return screen
                 self._get_or_create_screen("journal_list_screen", _make_screen, mode="navigate")
             elif module_name == "account ledger":
                 def _make_screen():
                     from screens.account_ledger_screen import AccountLedgerScreen
-                    return AccountLedgerScreen(self, self._accounting_engine, self._coa_model)
+                    screen = AccountLedgerScreen(self, self._accounting_engine, self._coa_model)
+                    screen.close_requested.connect(self._navigate_back)
+                    return screen
                 self._get_or_create_screen("account_ledger_screen", _make_screen, mode="navigate")
             elif module_name == "period lock":
                 def _make_screen():
                     from screens.period_lock_screen import PeriodLockScreen
-                    return PeriodLockScreen(
+                    screen = PeriodLockScreen(
                         self,
                         self._accounting_period_model,
                         self._accounting_role_permission_model,
@@ -1868,11 +2108,15 @@ class DashboardScreen(QMainWindow):
                         financial_year_model=self._financial_year_model,
                         coa_model=self._coa_model,
                     )
+                    screen.close_requested.connect(self._navigate_back)
+                    return screen
                 self._get_or_create_screen("period_lock_screen", _make_screen, mode="navigate")
             else:
                 def _make_screen():
                     from screens.bank_reconciliation_screen import BankReconciliationScreen
-                    return BankReconciliationScreen(self, self._bank_recon_model, self._coa_model)
+                    screen = BankReconciliationScreen(self, self._bank_recon_model, self._coa_model)
+                    screen.close_requested.connect(self._navigate_back)
+                    return screen
                 self._get_or_create_screen("bank_reconciliation_screen", _make_screen, mode="navigate")
 
         elif module_name == "receipt":

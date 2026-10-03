@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
@@ -31,6 +32,7 @@ def _value(row, key, default=""):
 
 class JournalListScreen(QWidget):
     """Search, inspect, reverse and cancel journal entries."""
+    close_requested = Signal()
 
     def __init__(self, parent, engine, coa_model: ChartOfAccountsModel | None = None):
         super().__init__(parent)
@@ -38,6 +40,8 @@ class JournalListScreen(QWidget):
         self._coa_model = coa_model or getattr(engine, "_coa_model", None)
         self._visible_ids: list[int] = []
         root = QVBoxLayout(self)
+        from utils.ui_standards import add_embedded_back_button
+        add_embedded_back_button(self, root, self.close_requested.emit)
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Source:"))
         self.source_filter = QComboBox()

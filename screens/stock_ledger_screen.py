@@ -1,6 +1,7 @@
 # screens/stock_ledger_screen.py
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -18,14 +19,20 @@ from utils.searchable_combo_helper import populate_searchable_combo
 
 class StockLedgerScreen(QWidget):
     """Read-only stock_ledger history for one item. Data via ItemEngine."""
+    close_requested = Signal()
 
-    def __init__(self, parent, item_engine):
+    def __init__(self, parent, item_engine, embedded: bool = False):
         super().__init__(parent)
+        self._embedded = embedded
         self._item_engine = item_engine
         self.setWindowTitle("Stock Ledger")
-        self.setMinimumSize(1000, 520)
+        if not embedded:
+            self.setMinimumSize(1000, 520)
 
         root = QVBoxLayout(self)
+        if embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(self, root, self.close_requested.emit)
         row = QHBoxLayout()
         row.addWidget(QLabel("Item:"))
         self.item_combo = QComboBox()

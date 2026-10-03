@@ -30,6 +30,7 @@ def apply_standard_window_chrome(widget, *, width=1100, height=700, min_size=Non
     __init__ unchanged; only the caller decides embedded=True/False.
     """
     if embedded:
+        widget.setWindowFlags(Qt.WindowType.Widget)
         return
     widget.setWindowFlags(STANDARD_WINDOW_FLAGS)
     if min_size is None:

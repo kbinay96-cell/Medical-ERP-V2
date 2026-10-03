@@ -255,6 +255,8 @@ class BSCalendarPopup(QDialog):
         btn = QPushButton(str(day_row["bsday"]))
         btn.setObjectName(f"btnBsCalendarDay{day_row['bsday']}")
         btn.setProperty("cssClass", "bsCalendarDayButton")
+        btn.setProperty("uiDensityFixedWidth", _DAY_BUTTON_SIZE[0])
+        btn.setProperty("uiDensityFixedHeight", _DAY_BUTTON_SIZE[1])
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFixedSize(*_DAY_BUTTON_SIZE)
 

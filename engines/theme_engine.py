@@ -36,6 +36,13 @@ THEME_STYLESHEETS: dict[str, str] = {
 DEFAULT_THEME = "Light"
 
 _current_theme = DEFAULT_THEME
+_active_user_id: int | None = None
+
+
+def set_active_user_id(userid: int | None) -> None:
+    """Select the personal appearance override used for the active session."""
+    global _active_user_id
+    _active_user_id = userid
 
 
 def get_current_theme() -> str:
@@ -43,22 +50,40 @@ def get_current_theme() -> str:
     return _current_theme
 
 
-def _build_dynamic_overrides() -> str:
-    """Builds a QSS override block from user-adjustable appearance
-    settings (ui.control_height, ui.font_size, ui.font_family), applied
-    on top of the base theme stylesheet so it always wins the cascade.
-    Local import avoids any risk of circular imports at startup."""
+def _get_control_height() -> int:
     from engines import settings_engine
 
     try:
-        height = int(settings_engine.get_setting("ui.control_height", 34))
+        default_height = int(settings_engine.get_setting("ui.control_height", 28))
+        height = (
+            int(settings_engine.get_user_setting(_active_user_id, "ui.control_height", default_height))
+            if _active_user_id is not None else default_height
+        )
     except (TypeError, ValueError):
-        height = 34
+        height = 28
+    return max(26, min(height, 48))
+
+
+def apply_control_density() -> None:
+    app = QApplication.instance()
+    if app is None:
+        return
+    from utils.ui_standards import apply_application_density
+
+    apply_application_density(app, _get_control_height())
+
+
+def _build_dynamic_overrides() -> str:
+    """Build a QSS override block for user-adjustable appearance settings."""
+    from engines import settings_engine
+
+    height = _get_control_height()
     try:
         font_size = float(settings_engine.get_setting("ui.font_size", 10.5))
     except (TypeError, ValueError):
         font_size = 10.5
     font_family = settings_engine.get_setting("ui.font_family", "Segoe UI") or "Segoe UI"
+    widget_height = max(height - 2, 0)
 
     return f"""
 /* ---------- Dynamic appearance overrides (ui.* settings) ---------- */
@@ -66,8 +91,40 @@ def _build_dynamic_overrides() -> str:
     font-family: "{font_family}";
     font-size: {font_size}pt;
 }}
-QPushButton[cssClass="actionButton"] {{
-    min-height: {height}px;
+QPushButton[uiDensityButton="true"] {{
+    min-height: {widget_height}px;
+    max-height: {widget_height}px;
+    padding: 2px 6px;
+}}
+QPushButton[uiButtonWidth="144"] {{
+    min-width: 144px;
+    max-width: 144px;
+}}
+QPushButton[uiButtonWidth="84"] {{
+    min-width: 84px;
+    max-width: 84px;
+    padding: 1px 3px;
+}}
+QPushButton[uiButtonWidth="32"] {{
+    min-width: 32px;
+    max-width: 32px;
+    padding: 0;
+}}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateEdit, QTimeEdit {{
+    min-height: {widget_height}px;
+    max-height: {widget_height}px;
+    padding: 2px 6px;
+}}
+QPlainTextEdit, QTextEdit {{
+    min-height: {widget_height}px;
+    padding: 2px 6px;
+}}
+QHeaderView::section {{
+    min-height: {widget_height}px;
+    padding: 0px 6px;
+}}
+QTableView::item {{
+    padding: 2px 5px;
 }}
 QTreeWidget#treeSidebarMenu::item {{
     padding: {max(height - 22, 4)}px 4px;
@@ -100,6 +157,7 @@ def apply_theme(theme_name: str) -> None:
         with open(path, "r", encoding="utf-8") as f:
             base_qss = f.read()
         app.setStyleSheet(base_qss + _build_dynamic_overrides())
+        apply_control_density()
         _current_theme = theme_name
         _install_button_cursor_filter(app)
     except (FileNotFoundError, OSError) as e:

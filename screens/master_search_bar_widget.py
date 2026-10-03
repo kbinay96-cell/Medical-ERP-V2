@@ -35,6 +35,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from utils.app_logger import get_logger
+
+logger = get_logger()
 
 _DEBOUNCE_MS = 300
 _MIN_CHARS = 2
@@ -165,14 +168,23 @@ class MasterSearchBarWidget(QWidget):
         search_text = self._search_bar.text().strip()
         if len(search_text) < _MIN_CHARS:
             return
+        self._search_error = False
         try:
             self._last_results = self._engine.get_master_search_results(search_text)
-        except Exception:  # noqa: BLE001 -- a failed search should never crash the app
+        except Exception:
+            logger.exception("Master Search failed.")
+            self._search_error = True
             self._last_results = {}
         self._render_grouped_results(self._last_results)
 
     def _render_grouped_results(self, results: dict[str, list[dict]]) -> None:
         self._results_list.clear()
+        if getattr(self, "_search_error", False):
+            error_item = QListWidgetItem("Search unavailable. Check the application log.")
+            error_item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._results_list.addItem(error_item)
+            self._show_popup()
+            return
         any_rows = False
         for group_key, rows in results.items():
             if not rows:

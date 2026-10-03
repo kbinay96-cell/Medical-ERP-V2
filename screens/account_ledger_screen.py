@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,6 +25,7 @@ from engines.supplier_engine import SupplierEngine
 
 class AccountLedgerScreen(QWidget):
     """General ledger view with client-side running balance presentation."""
+    close_requested = Signal()
 
     def __init__(self, parent, engine, coa_model: ChartOfAccountsModel):
         super().__init__(parent)
@@ -32,6 +34,8 @@ class AccountLedgerScreen(QWidget):
         self._accounts: dict[int, dict] = {}
         self._supplier_engine = SupplierEngine()
         root = QVBoxLayout(self)
+        from utils.ui_standards import add_embedded_back_button
+        add_embedded_back_button(self, root, self.close_requested.emit)
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Account:"))
         self.account_combo = QComboBox()

@@ -51,6 +51,20 @@ def get_user_by_username(username: str) -> dict | None:
             return cur.fetchone()
 
 
+def get_active_usernames() -> List[str]:
+    """Return usernames of accounts that are currently active for Login suggestions."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT username FROM users WHERE status = %s ORDER BY username",
+                    (STATUS_ACTIVE,),
+                )
+                return [row["username"] for row in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        raise UserModelError(f"Failed to load active usernames: {exc}") from exc
+
+
 def create_user(username: str, plain_password: str, fullname: str, roleid: int, companyid: str, created_by: str) -> tuple[bool, str]:
     username = username.strip()
 

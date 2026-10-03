@@ -469,7 +469,7 @@ QPushButton#purchasePrimaryButton {
     background-color: #16836A;
     color: #FFFFFF;
     border-radius: 5px;
-    padding: 8px 18px;
+    padding: 2px 6px;
     font-weight: 700;
 }
 QPushButton#purchasePrimaryButton:hover {
@@ -480,7 +480,7 @@ QPushButton#purchaseSecondaryButton {
     color: #D8E4F8;
     border: 1px solid #3A465D;
     border-radius: 5px;
-    padding: 7px 12px;
+    padding: 2px 6px;
 }
 QPushButton#purchaseSecondaryButton:hover {
     background-color: #303A4F;
@@ -491,14 +491,14 @@ QTableWidget#purchaseInvoiceLines {
     gridline-color: #30394D;
 }
 QTableWidget#purchaseInvoiceLines QHeaderView::section {
-    padding: 8px 6px;
+    padding: 0px 6px;
 }
 QTableWidget#purchaseInvoiceLines QLineEdit,
 QTableWidget#purchaseInvoiceLines QComboBox,
 QTableWidget#purchaseInvoiceLines QSpinBox,
 QTableWidget#purchaseInvoiceLines QDoubleSpinBox,
 QTableWidget#purchaseInvoiceLines QDateEdit {
-    padding: 3px 5px;
+    padding: 0px 6px;
     border-radius: 3px;
 }
 
@@ -552,7 +552,7 @@ QPushButton#salePrimaryButton {
     color: #FFFFFF;
     border: 1px solid #187A65;
     border-radius: 5px;
-    padding: 4px 9px;
+    padding: 2px 6px;
     font-weight: 700;
 }
 QPushButton#salePrimaryButton:hover { background-color: #219779; }
@@ -561,7 +561,7 @@ QPushButton#saleSecondaryButton {
     color: #D8E4F8;
     border: 1px solid #3A465D;
     border-radius: 5px;
-    padding: 3px 7px;
+    padding: 2px 6px;
 }
 QPushButton#saleSecondaryButton:hover {
     background-color: #303A4F;
@@ -578,7 +578,7 @@ QTableWidget#saleInvoiceLines QHeaderView::section,
 QTableWidget#saleInvoiceListTable QHeaderView::section {
     background-color: #0A0E16;
     color: #E6EDF7;
-    padding: 4px 5px;
+    padding: 0px 6px;
     border: none;
     border-bottom: 1px solid #30394D;
     font-weight: 700;

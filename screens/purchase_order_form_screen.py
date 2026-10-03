@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -49,6 +49,7 @@ class PurchaseOrderFormScreen(QDialog):
     No SQL, no business logic here — every save goes through
     PurchaseOrderEngine.create_purchase_order().
     """
+    close_requested = Signal()
 
     def __init__(
         self,
@@ -57,9 +58,13 @@ class PurchaseOrderFormScreen(QDialog):
         supplier_engine,
         item_engine,
         current_user_id: int,
+        embedded: bool = False,
     ):
         super().__init__(parent)
-        apply_standard_window_chrome(self, width=1200, height=800, start_maximized=True)
+        self._embedded = embedded
+        apply_standard_window_chrome(
+            self, width=1200, height=800, start_maximized=True, embedded=embedded
+        )
         self._engine = engine
         self._supplier_engine = supplier_engine
         self._item_engine = item_engine
@@ -77,6 +82,9 @@ class PurchaseOrderFormScreen(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        if self._embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(self, root, self.close_requested.emit)
 
         header_row = QHBoxLayout()
         header_row.addWidget(QLabel("Supplier:"))
@@ -124,6 +132,12 @@ class PurchaseOrderFormScreen(QDialog):
         self.cancel_button.clicked.connect(self.reject)
         self.whatsapp_send_button.clicked.connect(self._on_whatsapp_send_clicked)
         self.email_send_button.clicked.connect(self._on_email_send_clicked)
+
+    def reject(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().reject()
 
     def _populate_supplier_combo(self) -> None:
         suppliers, _ = self._supplier_engine.search_suppliers(page=1, page_size=1000)

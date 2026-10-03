@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -53,10 +53,22 @@ class PurchaseInvoiceListScreen(QWidget):
     """List/search/filter — mirrors screens/supplier_list_screen.py exactly.
     Filters: Supplier, Status, Date range. Actions: View (read-only detail),
     Cancel (soft-delete with reason), Print (future — not in this phase)."""
+    close_requested = Signal()
 
-    def __init__(self, parent, engine: PurchaseEngine, supplier_engine, item_engine, current_user_id: int):
+    def __init__(
+        self,
+        parent,
+        engine: PurchaseEngine,
+        supplier_engine,
+        item_engine,
+        current_user_id: int,
+        embedded: bool = False,
+    ):
         super().__init__(parent)
-        apply_standard_window_chrome(self, width=1200, height=800, start_maximized=True)
+        self._embedded = embedded
+        apply_standard_window_chrome(
+            self, width=1200, height=800, start_maximized=True, embedded=embedded
+        )
         self._engine = engine
         self._supplier_engine = supplier_engine
         self._item_engine = item_engine
@@ -77,6 +89,9 @@ class PurchaseInvoiceListScreen(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        if self._embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(self, root, self.close_requested.emit)
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Search:"))
@@ -143,9 +158,22 @@ class PurchaseInvoiceListScreen(QWidget):
                 "Status", "View", "Edit", "Cancel", "",
             ]
         )
-        self.table.horizontalHeader().setSectionResizeMode(COL_SUPPLIER, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionsClickable(True)
-        self.table.horizontalHeader().setSortIndicatorShown(True)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(COL_SUPPLIER, QHeaderView.Stretch)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        for column, width in {
+            COL_INTERNAL_REF: 92,
+            COL_INVOICE_NUMBER: 96,
+            COL_INVOICE_DATE: 88,
+            COL_GRAND_TOTAL: 100,
+            COL_STATUS: 80,
+            COL_VIEW: 86,
+            COL_EDIT: 86,
+            COL_CANCEL: 86,
+        }.items():
+            self.table.setColumnWidth(column, width)
+        self.table.setColumnHidden(COL_PRINT, True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         root.addWidget(self.table)

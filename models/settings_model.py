@@ -54,6 +54,21 @@ def get_setting_by_key(key: str, companyid: str | None = None, userid: int | Non
             return cur.fetchone()
 
 
+def get_user_settings(userid: int) -> list[dict]:
+    """Return settings overrides that belong to one user."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM settings
+                WHERE companyid IS NULL AND userid = %s
+                ORDER BY setting_group, display_order, setting_key
+                """,
+                (userid,),
+            )
+            return cur.fetchall()
+
+
 def get_settings_by_group(setting_group: str) -> list[dict]:
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -305,3 +320,90 @@ def save_company_setting(
         conn.commit()
 
     return True, "Company setting saved successfully."
+
+
+def save_user_setting(
+    key: str, value: str, userid: int, updated_by: str, reason: str = ""
+) -> tuple[bool, str]:
+    """Create or update one user's override without changing the global value."""
+    global_row = get_setting_by_key(key)
+    if global_row is None:
+        return False, f"Setting '{key}' not found (no global default to base override on)."
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT setting_value FROM settings
+                WHERE setting_key = %s AND companyid IS NULL AND userid = %s
+                """,
+                (key, userid),
+            )
+            existing = cur.fetchone()
+            old_value = existing["setting_value"] if existing else global_row["setting_value"]
+
+            cur.execute(
+                """
+                INSERT INTO settings (
+                    setting_key, setting_value, setting_group, data_type,
+                    default_value, description, display_order, userid, updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (setting_key, companyid, userid) WHERE userid IS NOT NULL
+                DO UPDATE SET setting_value = EXCLUDED.setting_value,
+                              updated_at = CURRENT_TIMESTAMP,
+                              updated_by = EXCLUDED.updated_by
+                """,
+                (
+                    key, value, global_row["setting_group"], global_row["data_type"],
+                    global_row["default_value"], global_row["description"],
+                    global_row["display_order"], userid, updated_by,
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO settings_history (setting_key, old_value, new_value, changed_by, reason)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (key, old_value, value, updated_by, reason or f"User {userid} preference"),
+            )
+        conn.commit()
+
+    return True, "User setting saved successfully."
+
+
+def reset_user_setting(key: str, userid: int, updated_by: str) -> tuple[bool, str]:
+    """Remove a user's override and fall back to the global default."""
+    global_row = get_setting_by_key(key)
+    if global_row is None:
+        return False, f"Setting '{key}' not found."
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT setting_value FROM settings
+                WHERE setting_key = %s AND companyid IS NULL AND userid = %s
+                """,
+                (key, userid),
+            )
+            existing = cur.fetchone()
+            if existing is None:
+                return True, "User setting already uses the default."
+            cur.execute(
+                "DELETE FROM settings WHERE setting_key = %s AND companyid IS NULL AND userid = %s",
+                (key, userid),
+            )
+            cur.execute(
+                """
+                INSERT INTO settings_history (setting_key, old_value, new_value, changed_by, reason)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    key, existing["setting_value"], global_row["default_value"],
+                    updated_by, f"Reset user {userid} preference to default",
+                ),
+            )
+        conn.commit()
+
+    return True, "User setting reset to default."

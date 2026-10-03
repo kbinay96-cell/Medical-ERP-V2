@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import QHeaderView, QPushButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QHeaderView, QPushButton, QWidget
 
 from config.settings import STATUS_LOCKED
 from engines.exceptions import RecordNotFoundError
@@ -55,13 +55,28 @@ def _status_filter_value(label: str) -> Optional[str]:
 
 class UserListScreen(QWidget):
     """User Master list/search/filter screen. Opens UserFormScreen for Add/Edit."""
+    close_requested = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None, engine: Optional[UserEngine] = None, current_user_id: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        engine: Optional[UserEngine] = None,
+        current_user_id: Optional[int] = None,
+        embedded: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.ui = Ui_UserListView()
         self.ui.setupUi(self)
-        apply_standard_window_chrome(self, width=1360, height=760)
+        self._embedded = embedded
+        apply_standard_window_chrome(self, width=1360, height=760, embedded=embedded)
         standardize_action_buttons(self)
+        if embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(
+                self,
+                self.ui.verticalLayout_root,
+                self.close_requested.emit,
+            )
 
         self._engine = engine or UserEngine()
         self._current_user_id = current_user_id

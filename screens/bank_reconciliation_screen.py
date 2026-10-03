@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
@@ -72,6 +73,7 @@ class _ReconcileDialog(QDialog):
 
 class BankReconciliationScreen(QWidget):
     """Review unreconciled bank journal lines and mark reconciled through the model."""
+    close_requested = Signal()
 
     def __init__(self, parent, bank_recon_model, coa_model: ChartOfAccountsModel):
         super().__init__(parent)
@@ -79,6 +81,8 @@ class BankReconciliationScreen(QWidget):
         self._coa_model = coa_model
         self._rows: list[dict] = []
         root = QVBoxLayout(self)
+        from utils.ui_standards import add_embedded_back_button
+        add_embedded_back_button(self, root, self.close_requested.emit)
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Bank account:"))
         self.account_combo = QComboBox()

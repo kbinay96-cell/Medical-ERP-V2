@@ -5,7 +5,7 @@ import logging
 import webbrowser
 from urllib.parse import quote
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -130,9 +130,19 @@ def send_purchase_order_via_email(
 class PurchaseOrderListScreen(QWidget):
     """List/search/filter — mirrors screens/supplier_list_screen.py.
     Filters: Supplier, Status (Draft/Sent/Received/Cancelled), Date range."""
+    close_requested = Signal()
 
-    def __init__(self, parent, engine: PurchaseOrderEngine, supplier_engine, item_engine, current_user_id: int):
+    def __init__(
+        self,
+        parent,
+        engine: PurchaseOrderEngine,
+        supplier_engine,
+        item_engine,
+        current_user_id: int,
+        embedded: bool = False,
+    ):
         super().__init__(parent)
+        self._embedded = embedded
         self._engine = engine
         self._supplier_engine = supplier_engine
         self._item_engine = item_engine
@@ -147,6 +157,9 @@ class PurchaseOrderListScreen(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        if self._embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(self, root, self.close_requested.emit)
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Search:"))
@@ -186,7 +199,18 @@ class PurchaseOrderListScreen(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["PO Number", "Supplier", "Order Date", "Status", "", "", "", ""]
         )
-        self.table.horizontalHeader().setSectionResizeMode(COL_SUPPLIER, QHeaderView.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(COL_SUPPLIER, QHeaderView.Stretch)
+        for column, width in {
+            COL_PO_NUMBER: 100,
+            COL_ORDER_DATE: 92,
+            COL_STATUS: 82,
+            COL_WHATSAPP: 86,
+            COL_EMAIL: 86,
+            COL_VIEW: 86,
+            COL_CANCEL: 86,
+        }.items():
+            self.table.setColumnWidth(column, width)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         root.addWidget(self.table)

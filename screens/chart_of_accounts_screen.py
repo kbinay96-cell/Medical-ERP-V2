@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -89,6 +89,7 @@ class _AccountDialog(QDialog):
 
 class ChartOfAccountsScreen(QWidget):
     """Chart of accounts tree; persistence and hierarchy reads use the COA model."""
+    close_requested = Signal()
 
     def __init__(
         self,
@@ -102,6 +103,8 @@ class ChartOfAccountsScreen(QWidget):
         self._engine = engine
         self._financial_year_model = financial_year_model
         root = QVBoxLayout(self)
+        from utils.ui_standards import add_embedded_back_button
+        add_embedded_back_button(self, root, self.close_requested.emit)
         toolbar = QHBoxLayout()
         toolbar.addWidget(QLabel("Chart of Accounts"), 1)
         self.add_button = QPushButton("Add account")

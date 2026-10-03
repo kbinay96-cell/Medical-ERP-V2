@@ -7,6 +7,7 @@ from unittest.mock import patch
 from engines import settings_cache
 from engines.settings_validator import validate_setting_value, parse_setting_value
 import engines.settings_engine as se
+from engines import theme_engine
 
 FAKE_ROWS = [
     {
@@ -70,6 +71,7 @@ class TestSettingsCache(unittest.TestCase):
 
     def setUp(self):
         settings_cache.clear_cache()
+        se.clear_user_runtime_overrides()
 
     def test_not_loaded_initially(self):
         self.assertFalse(settings_cache.is_loaded())
@@ -172,6 +174,83 @@ class TestSettingsEngine(unittest.TestCase):
         self.assertTrue(se.requires_restart("Company"))
         self.assertFalse(se.requires_restart("General"))
         self.assertFalse(se.requires_restart("Print"))
+
+    def test_user_control_height_override_is_personal_and_parsed(self):
+        settings_cache.load_cache([
+            *FAKE_ROWS,
+            {
+                "setting_key": "ui.control_height", "setting_value": "28",
+                "setting_group": "General", "data_type": "integer",
+                "default_value": "28", "display_order": 910,
+            },
+        ])
+        with patch(
+            "models.settings_model.get_setting_by_key",
+            return_value={"setting_key": "ui.control_height", "setting_value": "36", "data_type": "integer"},
+        ):
+            self.assertEqual(se.get_user_setting(12, "ui.control_height", 28), 36)
+
+    def test_user_control_height_falls_back_to_global_default(self):
+        settings_cache.load_cache([
+            *FAKE_ROWS,
+            {
+                "setting_key": "ui.control_height", "setting_value": "28",
+                "setting_group": "General", "data_type": "integer",
+                "default_value": "28", "display_order": 910,
+            },
+        ])
+        with patch("models.settings_model.get_setting_by_key", return_value=None):
+            self.assertEqual(se.get_user_setting(12, "ui.control_height", 28), 28)
+
+    def test_apply_and_save_user_setting_does_not_change_global_value(self):
+        settings_cache.load_cache([
+            *FAKE_ROWS,
+            {
+                "setting_key": "ui.control_height", "setting_value": "28",
+                "setting_group": "General", "data_type": "integer",
+                "default_value": "28", "display_order": 910,
+            },
+        ])
+        self.assertTrue(se.apply_user_setting_temporarily(12, "ui.control_height", "40")[0])
+        self.assertEqual(se.get_user_setting(12, "ui.control_height", 28), 40)
+        self.assertEqual(se.get_setting("ui.control_height"), 28)
+        with patch("models.settings_model.save_user_setting", return_value=(True, "saved")) as save:
+            self.assertTrue(se.save_user_setting(12, "ui.control_height", "40", "user")[0])
+        save.assert_called_once_with("ui.control_height", "40", 12, "user", "")
+        self.assertEqual(se.get_setting("ui.control_height"), 28)
+
+    def test_dynamic_theme_uses_personal_height_and_standard_table_styles(self):
+        settings_cache.load_cache([
+            *FAKE_ROWS,
+            {
+                "setting_key": "ui.control_height", "setting_value": "28",
+                "setting_group": "General", "data_type": "integer",
+                "default_value": "28", "display_order": 910,
+            },
+            {
+                "setting_key": "ui.font_size", "setting_value": "10.5",
+                "setting_group": "General", "data_type": "decimal",
+                "default_value": "10.5", "display_order": 911,
+            },
+            {
+                "setting_key": "ui.font_family", "setting_value": "Segoe UI",
+                "setting_group": "General", "data_type": "string",
+                "default_value": "Segoe UI", "display_order": 912,
+            },
+        ])
+        theme_engine.set_active_user_id(12)
+        try:
+            with patch(
+                "models.settings_model.get_setting_by_key",
+                return_value={"setting_key": "ui.control_height", "setting_value": "38", "data_type": "integer"},
+            ):
+                stylesheet = theme_engine._build_dynamic_overrides()
+            self.assertIn("min-height: 36px", stylesheet)
+            self.assertIn("max-height: 36px", stylesheet)
+            self.assertIn("max-width: 144px", stylesheet)
+            self.assertIn("QTableView::item", stylesheet)
+        finally:
+            theme_engine.set_active_user_id(None)
 
     def test_export_then_import_round_trip(self):
         with tempfile.TemporaryDirectory() as tmpdir:

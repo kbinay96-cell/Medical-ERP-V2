@@ -6,7 +6,7 @@ import shutil
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QDate, QSize
+from PySide6.QtCore import Qt, QDate, QSize, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -97,6 +97,7 @@ class PurchaseInvoiceFormScreen(QDialog):
     manufacturer, but stays editable per line. Every field in a row
     except the Item combo starts disabled/blank and only becomes
     editable once an item is actually selected for that row."""
+    close_requested = Signal()
 
     def __init__(
         self,
@@ -109,14 +110,17 @@ class PurchaseInvoiceFormScreen(QDialog):
         item_free_scheme_engine: ItemFreeSchemeEngine | None = None,
         existing_invoice_id: int | None = None,
         initial_supplier_id: int | None = None,
+        embedded: bool = False,
     ):
         super().__init__(parent)
+        self._embedded = embedded
         apply_standard_window_chrome(
             self,
             width=1360,
             height=860,
             min_size=QSize(980, 680),
             start_maximized=True,
+            embedded=embedded,
         )
         self._engine = engine
         self._purchase_order_engine = purchase_order_engine
@@ -139,7 +143,8 @@ class PurchaseInvoiceFormScreen(QDialog):
         self._all_items, _ = self._item_engine.search_items(page=1, page_size=5000)
 
         self.setWindowTitle("Edit Purchase Invoice" if existing_invoice_id else "New Purchase Invoice")
-        self.setMinimumSize(980, 680)
+        if not embedded:
+            self.setMinimumSize(980, 680)
 
         self._build_ui()
         self._connect_signals()
@@ -179,6 +184,9 @@ class PurchaseInvoiceFormScreen(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        if self._embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(self, root, self.close_requested.emit)
         root.setContentsMargins(20, 18, 20, 16)
         root.setSpacing(12)
 
@@ -414,6 +422,18 @@ class PurchaseInvoiceFormScreen(QDialog):
         self.other_charges_input.valueChanged.connect(self._recalculate_all_line_previews)
         self.bill_discount_input.valueChanged.connect(self._update_grand_total_preview)
         self._update_line_count()
+
+    def accept(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().accept()
+
+    def reject(self) -> None:
+        if self._embedded:
+            self.close_requested.emit()
+            return
+        super().reject()
 
     def _populate_supplier_combo(self) -> None:
         suppliers, _ = self._supplier_engine.search_suppliers(page=1, page_size=1000)

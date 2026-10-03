@@ -19,7 +19,7 @@ form unexpectedly.
 =========================================================
 """
 
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import Qt, QTimer, QSize, Signal
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -47,16 +47,18 @@ STATUS_FILTER_OPTIONS = [("All", None), ("Active", True), ("Inactive", False)]
 
 
 class CustomerListScreen(QMainWindow):
+    close_requested = Signal()
 
-    def __init__(self, login_result, parent=None):
+    def __init__(self, login_result, parent=None, embedded: bool = False):
         super().__init__(parent)
 
         self.login_result = login_result
+        self._embedded = embedded
         self.lookup_data = customer_engine.get_lookup_data()
         self._rows: list[dict] = []
 
         self.setWindowTitle("Customers - Medical ERP")
-        apply_standard_window_chrome(self, width=1360, height=760)
+        apply_standard_window_chrome(self, width=1360, height=760, embedded=embedded)
         standardize_action_buttons(self)
 
         self._search_timer = QTimer(self)
@@ -75,8 +77,8 @@ class CustomerListScreen(QMainWindow):
         self.setCentralWidget(central)
 
         root = QVBoxLayout(central)
-        root.setContentsMargins(20, 16, 20, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(8)
 
         root.addWidget(self._build_header())
         root.addWidget(self._build_filter_bar())
@@ -87,7 +89,13 @@ class CustomerListScreen(QMainWindow):
         self.table = QTableWidget()
         self.table.setColumnCount(len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for column, width in {
+            0: 60, 2: 80, 3: 65, 4: 65, 5: 65,
+            6: 80, 7: 72, 8: 68, 9: 120,
+        }.items():
+            self.table.setColumnWidth(column, width)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -108,6 +116,10 @@ class CustomerListScreen(QMainWindow):
         header = QWidget()
         row = QHBoxLayout(header)
         row.setContentsMargins(0, 0, 0, 0)
+
+        if self._embedded:
+            from utils.ui_standards import add_embedded_back_button
+            add_embedded_back_button(header, row, self.close_requested.emit)
 
         icon_label = QLabel()
         icon_label.setPixmap(themed_icon("customer").pixmap(QSize(22, 22)))
@@ -366,8 +378,8 @@ class CustomerListScreen(QMainWindow):
     def _build_actions_widget(self, row_data: dict) -> QWidget:
         container = QWidget()
         row = QHBoxLayout(container)
-        row.setContentsMargins(4, 2, 4, 2)
-        row.setSpacing(4)
+        row.setContentsMargins(2, 1, 2, 1)
+        row.setSpacing(2)
 
         customer_id = row_data["customer_id"]
         is_active = bool(row_data.get("is_active"))
@@ -375,6 +387,10 @@ class CustomerListScreen(QMainWindow):
 
         if is_deleted:
             btn_restore = QPushButton("Restore")
+            btn_restore.setIcon(themed_icon("restore"))
+            btn_restore.setText("")
+            btn_restore.setIconSize(QSize(16, 16))
+            btn_restore.setAccessibleName("Restore customer")
             btn_restore.setProperty("cssClass", "rowIconBtn")
             btn_restore.setToolTip("Restore this deleted customer back to Active")
             btn_restore.clicked.connect(lambda: self._handle_restore(customer_id))
@@ -382,12 +398,20 @@ class CustomerListScreen(QMainWindow):
             return container
 
         btn_edit = QPushButton("Edit")
+        btn_edit.setIcon(themed_icon("edit"))
+        btn_edit.setText("")
+        btn_edit.setIconSize(QSize(16, 16))
+        btn_edit.setAccessibleName("Edit customer")
         btn_edit.setProperty("cssClass", "rowIconBtn")
         btn_edit.setToolTip("Edit this customer's details")
         btn_edit.clicked.connect(lambda: self._open_form(customer_id))
         row.addWidget(btn_edit)
 
         btn_toggle = QPushButton("Deactivate" if is_active else "Activate")
+        btn_toggle.setIcon(themed_icon("toggle_active"))
+        btn_toggle.setText("")
+        btn_toggle.setIconSize(QSize(16, 16))
+        btn_toggle.setAccessibleName("Deactivate customer" if is_active else "Activate customer")
         btn_toggle.setProperty("cssClass", "rowIconBtn")
         btn_toggle.setToolTip(
             "Mark this customer Inactive (hidden from Sales entry)" if is_active
@@ -397,6 +421,10 @@ class CustomerListScreen(QMainWindow):
         row.addWidget(btn_toggle)
 
         btn_delete = QPushButton("Delete")
+        btn_delete.setIcon(themed_icon("delete"))
+        btn_delete.setText("")
+        btn_delete.setIconSize(QSize(16, 16))
+        btn_delete.setAccessibleName("Delete customer")
         btn_delete.setProperty("cssClass", "rowIconBtn")
         btn_delete.setToolTip("Soft-delete this customer (can be restored later)")
         btn_delete.clicked.connect(lambda: self._handle_delete(customer_id))
