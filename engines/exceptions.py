@@ -15,9 +15,9 @@ class EngineError(Exception):
 class ValidationError(EngineError):
     """Raised when input fails business validation. Carries the full error list."""
 
-    def __init__(self, errors: list[str]):
-        self.errors = errors
-        super().__init__("; ".join(errors) if errors else "Validation failed.")
+    def __init__(self, errors: list[str] | str):
+        self.errors = [errors] if isinstance(errors, str) else errors
+        super().__init__("; ".join(self.errors) if self.errors else "Validation failed.")
 
 
 class RecordNotFoundError(EngineError):

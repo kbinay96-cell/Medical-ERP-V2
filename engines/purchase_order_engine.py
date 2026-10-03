@@ -84,8 +84,8 @@ class PurchaseOrderEngine:
         from engines.settings_engine import get_setting
 
         prefix = get_setting("purchase.po_prefix", "PO-")
-        next_seq = self._model.get_next_po_sequence()
-        return f"{prefix}{next_seq:04d}"
+        last_seq = self._model.get_last_po_number_sequence(prefix)
+        return f"{prefix}{last_seq + 1:04d}"
 
     # -- low stock suggestions -------------------------------------------
 
@@ -203,7 +203,10 @@ class PurchaseOrderEngine:
         )
 
         for line in lines:
-            self._model.insert_order_item(purchase_order_id=new_po_id, line=asdict(line))
+            self._model.insert_order_item(
+                purchase_order_id=new_po_id,
+                data=asdict(line),
+            )
 
         return PurchaseOrderDTO(
             purchase_order_id=new_po_id,
@@ -228,6 +231,10 @@ class PurchaseOrderEngine:
         order = self.get_purchase_order(purchase_order_id)
 
         supplier_name = self._model.get_supplier_name(order.supplier_id)
+        if not supplier_name:
+            raise RecordNotFoundError(
+                f"Supplier {order.supplier_id} for purchase order {order.po_number} not found."
+            )
         company_name = get_setting("company.name", "")
 
         item_lines = []
@@ -273,39 +280,59 @@ class PurchaseOrderEngine:
         if sent_via not in ("whatsapp", "email"):
             raise ValidationError("sent_via must be 'whatsapp' or 'email'.")
 
-        order = self._model.get_order_by_id(purchase_order_id, include_deleted=False)
+        order = self._model.get_by_id(purchase_order_id, include_deleted=False)
         if order is None:
             raise RecordNotFoundError(f"Purchase order {purchase_order_id} not found.")
 
         if order["status"] == "Draft":
-            self._model.update_order_status(
+            now_ad = datetime.now(timezone.utc)
+            try:
+                from engines.date_engine import ad_to_bs
+
+                now_bs = ad_to_bs(now_ad.date())
+            except Exception:
+                logger.exception("Could not resolve BS date for purchase order status update")
+                now_bs = None
+            self._model.mark_status(
                 purchase_order_id=purchase_order_id,
                 status="Sent",
                 sent_via=sent_via,
-                current_user_id=current_user_id,
+                updated_by=current_user_id,
+                updated_at_ad=now_ad,
+                updated_at_bs=now_bs,
             )
 
     def mark_received(self, purchase_order_id: int, current_user_id: int) -> None:
         """Called by PurchaseEngine.create_purchase_invoice() when an
         invoice references this PO. Sets status='Received' — whole PO,
         no partial tracking (confirmed scope)."""
-        order = self._model.get_order_by_id(purchase_order_id, include_deleted=False)
+        order = self._model.get_by_id(purchase_order_id, include_deleted=False)
         if order is None:
             raise RecordNotFoundError(f"Purchase order {purchase_order_id} not found.")
 
-        self._model.update_order_status(
+        now_ad = datetime.now(timezone.utc)
+        try:
+            from engines.date_engine import ad_to_bs
+
+            now_bs = ad_to_bs(now_ad.date())
+        except Exception:
+            logger.exception("Could not resolve BS date for purchase order status update")
+            now_bs = None
+        self._model.mark_status(
             purchase_order_id=purchase_order_id,
             status="Received",
             sent_via=order.get("sent_via"),
-            current_user_id=current_user_id,
+            updated_by=current_user_id,
+            updated_at_ad=now_ad,
+            updated_at_bs=now_bs,
         )
 
     def get_purchase_order(self, purchase_order_id: int, include_deleted: bool = False) -> PurchaseOrderDTO:
-        row = self._model.get_order_by_id(purchase_order_id, include_deleted=include_deleted)
+        row = self._model.get_by_id(purchase_order_id, include_deleted=include_deleted)
         if row is None:
             raise RecordNotFoundError(f"Purchase order {purchase_order_id} not found.")
 
-        line_rows = self._model.get_order_items(purchase_order_id)
+        line_rows = self._model.get_items_by_order(purchase_order_id)
         lines = [
             PurchaseOrderLineDTO(
                 item_id=r["item_id"],
@@ -369,12 +396,28 @@ class PurchaseOrderEngine:
         from engines.permission_enforcer import check_permission
         check_permission("Purchase Order", "can_cancel")
 
-        order = self._model.get_order_by_id(purchase_order_id, include_deleted=False)
+        order = self._model.get_by_id(purchase_order_id, include_deleted=False)
         if order is None:
             raise RecordNotFoundError(f"Purchase order {purchase_order_id} not found.")
 
-        self._model.soft_delete_order(
-            purchase_order_id=purchase_order_id, current_user_id=current_user_id
+        if order["status"] not in ("Draft", "Sent"):
+            raise ValidationError(
+                f"Purchase order in '{order['status']}' status cannot be cancelled."
+            )
+
+        now_ad = datetime.now(timezone.utc)
+        try:
+            from engines.date_engine import ad_to_bs
+
+            now_bs = ad_to_bs(now_ad.date())
+        except Exception:
+            logger.exception("Could not resolve BS date for purchase order deletion audit stamp")
+            now_bs = None
+        self._model.soft_delete(
+            purchase_order_id=purchase_order_id,
+            deleted_by=current_user_id,
+            deleted_at_ad=now_ad,
+            deleted_at_bs=now_bs,
         )
 
 

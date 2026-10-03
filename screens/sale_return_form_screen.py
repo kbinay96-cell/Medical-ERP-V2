@@ -4,34 +4,24 @@ screens/sale_return_form_screen.py
 Sale Return Form Screen — create a new Sale Return against a posted Sale Invoice,
 or view (read-only) an existing one.
 
-Rewritten against CONFIRMED real signatures (verified via Cline against the actual repo):
+Wired against the current Sale and Sale Return engine/model contracts:
     - engines.sale_return_engine.SaleReturnEngine.create_return(
           sale_invoice_id, customer_id, return_date_ad, return_reason, refund_mode,
           return_lines: list[dict] (each: {"sale_invoice_item_id", "return_qty", "remarks"?}),
           created_by, remarks=None, status="Posted"
       ) -> SaleReturnDTO   [raises RecordNotFoundError, ValidationError]
     - engines.sale_return_engine.SaleReturnEngine.get_by_id(sale_return_id) -> Optional[SaleReturnDTO]
-    - engines.sale_return_engine.SaleReturnEngine.get_returnable_lines(sale_invoice_id) -> list[dict]
-          (each dict confirmed to include "remaining_returnable_qty"; other keys assumed by
-          convention — item_name, batch_no, sale_invoice_item_id, rate, discount_percent,
-          cc_percent — STILL NEEDS CONFIRMATION, see SALE_RETURN_WIRING_NOTES.md Step 2)
+    - engines.sale_return_engine.SaleReturnEngine.update_draft_return(...)
+          edits a Draft return or posts it after validation.
     - engines.sale_return_engine.SaleReturnEngine.cancel_return(
           sale_return_id, cancellation_reason, updated_by) -> SaleReturnDTO
     - engines.sale_engine.SaleEngine.search_sale_invoices(search_text=..., ...) ->
-          tuple[list[SaleInvoiceDTO], int]   (there is NO get_by_invoice_number on SaleEngine)
+          tuple[list[SaleInvoiceDTO], int]
     - engines.exceptions: ValidationError, RecordNotFoundError
     - utils.message: show_error(message, title=...), show_info(message, title=...)
     - widgets.bs_calendar_date_picker.BSCalendarDatePicker
     - screens.cancellation_reason_dialog.CancellationReasonDialog.get_reason() -> Optional[str]
     - engines.customer_engine.get_active_customers() -> list[dict] (customer_id/customer_code/customer_name)
-
-KNOWN GAP (flagged, not silently assumed): the real SaleReturnEngine has no update/edit method
-for an existing Draft — only create_return / get_by_id / search / get_returnable_lines /
-cancel_return / delete_draft. So this screen supports exactly two modes:
-    1. CREATE  — pick an invoice, enter return lines, Save as Draft or Post directly.
-    2. VIEW    — read-only display of an existing return, with a Cancel action if Posted.
-There is no "edit an existing Draft" mode until Cline confirms whether an update method
-exists elsewhere. See SALE_RETURN_WIRING_NOTES.md Step 2 for the exact follow-up question.
 
 Naming convention: btnX / txtX / lblX / tblX / cmbX / dtX / grpX per project standard.
 """
@@ -40,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -131,6 +121,7 @@ class SaleReturnFormScreen(QWidget):
         self._sale_invoice_id: Optional[int] = None
         self._customer_id: Optional[int] = None
         self._status: str = "Draft"
+        self._editing_draft = False
         self._lines: list[_ReturnableLine] = []
         self._customer_names: dict[int, str] = {}
 
@@ -203,13 +194,7 @@ class SaleReturnFormScreen(QWidget):
         self._refresh_invoice_options()
 
     def _refresh_invoice_options(self) -> None:
-        """
-        Repopulates cmbInvoiceNumber with posted invoices for the selected customer,
-        filtered by the From/To date range (client-side — search_sale_invoices has no
-        confirmed date-range parameter, so this filters the returned page in Python using
-        each invoice's `invoice_date_ad` attribute; ASSUMED attribute name — verify against
-        the real SaleInvoiceDTO, see SALE_RETURN_WIRING_NOTES.md).
-        """
+        """Loads posted invoices for the selected customer and BS date range."""
         customer_id = self.cmbCustomer.currentData()
         current_text = self.cmbInvoiceNumber.currentText()
         self.cmbInvoiceNumber.blockSignals(True)
@@ -219,28 +204,25 @@ class SaleReturnFormScreen(QWidget):
             self.cmbInvoiceNumber.blockSignals(False)
             return
 
+        from_bs = self.dtFromDate.get_bs_date_string()
+        to_bs = self.dtToDate.get_bs_date_string()
         try:
+            from_date = bs_to_ad(from_bs).isoformat() if from_bs else None
+            to_date = bs_to_ad(to_bs).isoformat() if to_bs else None
             results, _total = self._sale_engine.search_sale_invoices(
-                customer_id=customer_id, status=POSTED_INVOICE_STATUS, page_size=200
+                customer_id=customer_id,
+                status=POSTED_INVOICE_STATUS,
+                date_from_ad=from_date,
+                date_to_ad=to_date,
+                page_size=200,
             )
+            for invoice in results:
+                invoice_number = getattr(invoice, "invoice_number", str(invoice.sale_invoice_id))
+                self.cmbInvoiceNumber.addItem(invoice_number, invoice.sale_invoice_id)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to load invoices for customer %s", customer_id)
             self.cmbInvoiceNumber.blockSignals(False)
             return
-
-        from_bs = self.dtFromDate.get_bs_date_string()
-        to_bs = self.dtToDate.get_bs_date_string()
-        from_date = bs_to_ad(from_bs) if from_bs else None
-        to_date = bs_to_ad(to_bs) if to_bs else None
-
-        for invoice in results:
-            invoice_date = getattr(invoice, "invoice_date_ad", None)
-            if from_date and invoice_date and invoice_date < from_date:
-                continue
-            if to_date and invoice_date and invoice_date > to_date:
-                continue
-            invoice_number = getattr(invoice, "invoice_number", str(invoice.sale_invoice_id))
-            self.cmbInvoiceNumber.addItem(invoice_number, invoice.sale_invoice_id)
 
         self.cmbInvoiceNumber.setCurrentText(current_text)
         self.cmbInvoiceNumber.blockSignals(False)
@@ -284,11 +266,13 @@ class SaleReturnFormScreen(QWidget):
         custRow.addWidget(QLabel("From:"))
         self.dtFromDate = BSCalendarDatePicker(self)
         self.dtFromDate.setMinimumWidth(130)
+        self.dtFromDate.set_bs_date_string(ad_to_bs(date.today() - timedelta(days=30)))
         custRow.addWidget(self.dtFromDate)
         custRow.addSpacing(12)
         custRow.addWidget(QLabel("To:"))
         self.dtToDate = BSCalendarDatePicker(self)
         self.dtToDate.setMinimumWidth(130)
+        self.dtToDate.set_bs_date_string(ad_to_bs(date.today()))
         custRow.addWidget(self.dtToDate)
         custRow.addStretch(1)
         invLayout.addLayout(custRow)
@@ -488,25 +472,62 @@ class SaleReturnFormScreen(QWidget):
             return
 
         self._status = dto.status
+        self._sale_invoice_id = dto.sale_invoice_id
+        self._customer_id = dto.customer_id
         self.lblTitle.setText(f"Sale Return #{dto.sale_return_id}")
         self.lblStatus.setText(dto.status)
+        self.dtReturnDate.set_bs_date_string(dto.return_date_bs)
         customer_index = self.cmbCustomer.findData(dto.customer_id)
         if customer_index >= 0:
             self.cmbCustomer.setCurrentIndex(customer_index)
         self.cmbInvoiceNumber.clear()
-        self.cmbInvoiceNumber.addItem(str(dto.sale_invoice_id), dto.sale_invoice_id)
+        try:
+            invoice = self._sale_engine.get_sale_invoice(dto.sale_invoice_id)
+            invoice_number = invoice.invoice_number
+        except Exception:
+            logger.exception(
+                "Failed to load source invoice %s for return %s",
+                dto.sale_invoice_id,
+                sale_return_id,
+            )
+            invoice_number = str(dto.sale_invoice_id)
+        self.cmbInvoiceNumber.addItem(invoice_number, dto.sale_invoice_id)
         self.cmbRefundMode.setCurrentText(dto.refund_mode)
         self.txtReturnReason.setText(getattr(dto, "return_reason", "") or "")
         self.lblGrandTotal.setText(f"{float(dto.grand_total):.2f}")
 
-        items = getattr(dto, "items", []) or []
+        try:
+            original_lines = self._sale_return_engine.get_returnable_lines(
+                dto.sale_invoice_id,
+                exclude_return_id=dto.sale_return_id if dto.status == "Draft" else None,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to load source invoice lines for return %s", sale_return_id
+            )
+            msg.show_error("Could not load the original invoice items for this return.")
+            self.close_requested.emit()
+            return
+        original_by_id = {
+            row["sale_invoice_item_id"]: row for row in original_lines
+        }
+        items = dto.lines or []
         self._lines = [
             _ReturnableLine(
                 sale_invoice_item_id=item.sale_invoice_item_id,
-                item_name=getattr(item, "item_name", ""),
+                item_name=original_by_id.get(item.sale_invoice_item_id, {}).get("item_name", ""),
                 batch_no=getattr(item, "batch_no", ""),
-                original_qty=float(getattr(item, "return_qty", 0)),
-                remaining_returnable_qty=float(getattr(item, "return_qty", 0)),
+                original_qty=float(
+                    original_by_id.get(item.sale_invoice_item_id, {}).get("qty", item.return_qty)
+                ),
+                remaining_returnable_qty=max(
+                    float(
+                        original_by_id.get(item.sale_invoice_item_id, {}).get(
+                            "remaining_returnable_qty", 0
+                        )
+                    ),
+                    float(item.return_qty),
+                ),
                 rate=float(getattr(item, "rate", 0)),
                 discount_percent=float(getattr(item, "discount_percent", 0)),
                 cc_percent=float(getattr(item, "cc_percent", 0)),
@@ -520,7 +541,18 @@ class SaleReturnFormScreen(QWidget):
                 spin.setValue(float(getattr(item, "return_qty", 0)))
         self._recalculate_totals()
 
-        self._set_editable(False)
+        self._editing_draft = self._status == "Draft"
+        self._set_editable(self._editing_draft)
+        self.cmbArea.setEnabled(False)
+        self.cmbCustomer.setEnabled(False)
+        self.dtFromDate.setEnabled(False)
+        self.dtToDate.setEnabled(False)
+        self.cmbInvoiceNumber.setEnabled(False)
+        self.btnLoadInvoice.setEnabled(False)
+        self.btnSaveDraft.setVisible(self._editing_draft)
+        self.btnPost.setVisible(self._editing_draft)
+        if self._editing_draft:
+            self.btnSaveDraft.setText("Update Draft")
         self.btnCancelReturn.setVisible(self._status == "Posted")
 
     def _set_editable(self, editable: bool) -> None:
@@ -566,16 +598,30 @@ class SaleReturnFormScreen(QWidget):
             return
 
         try:
-            self._sale_return_engine.create_return(
-                sale_invoice_id=self._sale_invoice_id,
-                customer_id=self._customer_id,
-                return_date_ad=bs_to_ad(self.dtReturnDate.get_bs_date_string()),
-                return_reason=return_reason,
-                refund_mode=self.cmbRefundMode.currentText(),
-                return_lines=return_lines,
-                created_by=self._current_user_id,
-                status=status,
-            )
+            return_date_ad = bs_to_ad(self.dtReturnDate.get_bs_date_string())
+            if self._editing_draft:
+                self._sale_return_engine.update_draft_return(
+                    sale_return_id=self._sale_return_id,
+                    sale_invoice_id=self._sale_invoice_id,
+                    customer_id=self._customer_id,
+                    return_date_ad=return_date_ad,
+                    return_reason=return_reason,
+                    refund_mode=self.cmbRefundMode.currentText(),
+                    return_lines=return_lines,
+                    updated_by=self._current_user_id,
+                    status=status,
+                )
+            else:
+                self._sale_return_engine.create_return(
+                    sale_invoice_id=self._sale_invoice_id,
+                    customer_id=self._customer_id,
+                    return_date_ad=return_date_ad,
+                    return_reason=return_reason,
+                    refund_mode=self.cmbRefundMode.currentText(),
+                    return_lines=return_lines,
+                    created_by=self._current_user_id,
+                    status=status,
+                )
         except ValidationError as exc:
             msg.show_error(str(exc))
             return

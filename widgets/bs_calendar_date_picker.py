@@ -20,6 +20,7 @@ from PySide6.QtCore import Qt, QPoint, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QDialog,
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -30,7 +31,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from engines.date_engine import DateEngineError, ad_to_bs, get_bs_month_days
+from engines.date_engine import (
+    MONTH_NAMES_EN,
+    DateEngineError,
+    ad_to_bs,
+    get_bs_month_days,
+)
 
 _WEEKDAY_HEADERS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 _DAY_BUTTON_SIZE = (30, 32)   # explicit per-button size, not a guessed popup size
@@ -38,6 +44,8 @@ _NAV_BUTTON_SIZE = 20
 _GRID_ROWS = 6                # always render 6 rows so popup size never jumps month-to-month
 _DEFAULT_BS_YEAR = 2082
 _DEFAULT_BS_MONTH = 1
+_MIN_BS_YEAR = 1900
+_MAX_BS_YEAR = 2200
 
 
 class BSCalendarPopup(QDialog):
@@ -84,18 +92,29 @@ class BSCalendarPopup(QDialog):
         nav_row.setSpacing(3)
         self.btnPrevYear = self._make_nav_button("«", "Previous Year", self._go_prev_year)
         self.btnPrevMonth = self._make_nav_button("‹", "Previous Month", self._go_prev_month)
-        self.lblMonthYear = QLabel()
-        self.lblMonthYear.setObjectName("lblBsCalendarMonthYear")
-        self.lblMonthYear.setProperty("cssClass", "bsCalendarMonthLabel")
-        self.lblMonthYear.setAlignment(Qt.AlignCenter)
+        self.cmbMonth = QComboBox()
+        self.cmbMonth.setObjectName("cmbBsCalendarMonth")
+        self.cmbMonth.setProperty("cssClass", "bsCalendarDropdown")
+        self.cmbMonth.setFixedWidth(92)
+        self.cmbMonth.addItems(MONTH_NAMES_EN)
+        self.cmbYear = QComboBox()
+        self.cmbYear.setObjectName("cmbBsCalendarYear")
+        self.cmbYear.setProperty("cssClass", "bsCalendarDropdown")
+        self.cmbYear.setFixedWidth(64)
+        self.cmbYear.addItems(
+            [str(year) for year in range(_MIN_BS_YEAR, _MAX_BS_YEAR + 1)]
+        )
         self.btnNextMonth = self._make_nav_button("›", "Next Month", self._go_next_month)
         self.btnNextYear = self._make_nav_button("»", "Next Year", self._go_next_year)
         nav_row.addWidget(self.btnPrevYear)
         nav_row.addWidget(self.btnPrevMonth)
-        nav_row.addWidget(self.lblMonthYear, 1)
+        nav_row.addWidget(self.cmbMonth, 1)
+        nav_row.addWidget(self.cmbYear)
         nav_row.addWidget(self.btnNextMonth)
         nav_row.addWidget(self.btnNextYear)
         root.addLayout(nav_row)
+        self.cmbMonth.currentIndexChanged.connect(self._on_month_selected)
+        self.cmbYear.currentIndexChanged.connect(self._on_year_selected)
 
         weekday_row = QHBoxLayout()
         weekday_row.setSpacing(2)
@@ -151,6 +170,34 @@ class BSCalendarPopup(QDialog):
         self._bs_year += 1
         self._render_month()
 
+    def _on_month_selected(self, month_index: int) -> None:
+        if month_index >= 0:
+            self._bs_month = month_index + 1
+            self._render_month()
+
+    def _on_year_selected(self, _year_index: int) -> None:
+        year_text = self.cmbYear.currentText()
+        if year_text.isdigit():
+            self._bs_year = int(year_text)
+            self._render_month()
+
+    def _sync_month_year_controls(self) -> None:
+        month_index = self._bs_month - 1
+        if self.cmbMonth.currentIndex() != month_index:
+            self.cmbMonth.blockSignals(True)
+            self.cmbMonth.setCurrentIndex(month_index)
+            self.cmbMonth.blockSignals(False)
+
+        year_text = str(self._bs_year)
+        year_index = self.cmbYear.findText(year_text)
+        if year_index < 0:
+            self.cmbYear.addItem(year_text)
+            year_index = self.cmbYear.findText(year_text)
+        if self.cmbYear.currentIndex() != year_index:
+            self.cmbYear.blockSignals(True)
+            self.cmbYear.setCurrentIndex(year_index)
+            self.cmbYear.blockSignals(False)
+
     def _clear_grid(self) -> None:
         while self.grid.count():
             item = self.grid.takeAt(0)
@@ -160,6 +207,7 @@ class BSCalendarPopup(QDialog):
 
     def _render_month(self) -> None:
         self._clear_grid()
+        self._sync_month_year_controls()
 
         try:
             days = get_bs_month_days(self._bs_year, self._bs_month)
@@ -167,11 +215,13 @@ class BSCalendarPopup(QDialog):
             days = []
 
         if not days:
-            self.lblMonthYear.setText(f"{self._bs_year}-{self._bs_month:02d} (no data)")
+            self.cmbMonth.setToolTip("No calendar data for this month.")
+            self.cmbYear.setToolTip("No calendar data for this year.")
             self._fill_empty_grid()
             return
 
-        self.lblMonthYear.setText(f"{days[0]['monthnameen']} {self._bs_year}")
+        self.cmbMonth.setToolTip("")
+        self.cmbYear.setToolTip("")
 
         first_weekday = days[0]["weekdayno"]
         occupied_cells: set[tuple[int, int]] = set()

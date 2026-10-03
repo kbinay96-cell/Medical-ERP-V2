@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS purchase_invoice (
     updated_at_bs         VARCHAR(10),
     deleted_by            INTEGER,
     deleted_at_ad         TIMESTAMP,
-    deleted_at_bs         VARCHAR(10)
+    deleted_at_bs         VARCHAR(10),
+    cancellation_reason   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_purchase_invoice_supplier_id ON purchase_invoice (supplier_id);

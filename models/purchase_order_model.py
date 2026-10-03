@@ -76,6 +76,15 @@ class PurchaseOrderModel:
                 cur.execute(sql, (purchase_order_id,))
                 return cur.fetchall()
 
+    def get_supplier_name(self, supplier_id: int) -> Optional[str]:
+        get_connection = _get_connection()
+        sql = "SELECT supplier_name FROM supplier WHERE supplier_id = %s"
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (supplier_id,))
+                row = cur.fetchone()
+                return row[0] if row else None
+
     def get_open_order_items_for_item_ids(self, item_ids: List[int]) -> List[dict]:
         """Return open (Draft/Sent) PO rows for the provided item_ids across suppliers."""
         if not item_ids:
@@ -157,12 +166,42 @@ class PurchaseOrderModel:
                 rows = cur.fetchall()
                 return rows, total
 
-    def mark_status(self, purchase_order_id: int, status: str, updated_by: int, updated_at_ad, updated_at_bs: str) -> None:
+    def mark_status(
+        self,
+        purchase_order_id: int,
+        status: str,
+        updated_by: int,
+        updated_at_ad,
+        updated_at_bs: Optional[str],
+        sent_via: Optional[str] = None,
+    ) -> None:
         get_connection = _get_connection()
-        sql = "UPDATE purchase_order SET status = %s, updated_by = %s, updated_at_ad = %s, updated_at_bs = %s WHERE purchase_order_id = %s"
+        sql = """
+            UPDATE purchase_order
+            SET status = %s,
+                sent_via = COALESCE(%s, sent_via),
+                sent_at_ad = CASE WHEN %s = 'Sent' THEN %s ELSE sent_at_ad END,
+                updated_by = %s,
+                updated_at_ad = %s,
+                updated_at_bs = %s
+            WHERE purchase_order_id = %s
+              AND is_deleted = FALSE
+        """
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (status, updated_by, updated_at_ad, updated_at_bs, purchase_order_id))
+                cur.execute(
+                    sql,
+                    (
+                        status,
+                        sent_via,
+                        status,
+                        updated_at_ad,
+                        updated_by,
+                        updated_at_ad,
+                        updated_at_bs,
+                        purchase_order_id,
+                    ),
+                )
                 conn.commit()
 
     def soft_delete(self, purchase_order_id: int, deleted_by: int, deleted_at_ad, deleted_at_bs: str) -> None:

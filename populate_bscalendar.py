@@ -2,9 +2,12 @@ import datetime
 import nepali_datetime
 from database.db import get_connection
 
-# 2000 BS se 2100 BS tak (~50+ saal aage tak) generate karega
+# Generate from 2000 BS through the last year supported by the
+# verified nepali_datetime calendar data (currently BS 2100).
 START_AD = datetime.date(1943, 4, 14)   # roughly 2000 BS ke shuruaat ke aas-paas
-END_AD = datetime.date(2033, 4, 13)     # roughly 2090 BS tak (50 saal se zyada aage)
+END_AD = nepali_datetime.date(
+    nepali_datetime.MAXYEAR, 12, 30
+).to_datetime_date()
 
 MONTH_NAMES_EN = [
     "Baishakh", "Jestha", "Ashadh", "Shrawan", "Bhadra", "Ashwin",

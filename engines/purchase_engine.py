@@ -88,6 +88,7 @@ class PurchaseEngine:
         purchase_order_engine,
         discount_engine=None,
         payment_engine=None,   
+        accounting_engine=None,
     ) -> None:
         """item_engine: an ItemEngine instance — Purchase Engine delegates
         all stock/batch writes to it, never touches item_batch/stock_ledger
@@ -105,6 +106,7 @@ class PurchaseEngine:
         self._purchase_order_engine = purchase_order_engine
         self._discount_engine = discount_engine
         self._payment_engine = payment_engine   
+        self._accounting_engine = accounting_engine
 
     # -- numbering ----------------------------------------------------------
 
@@ -448,6 +450,20 @@ class PurchaseEngine:
         if purchase_order_id:
             self._purchase_order_engine.mark_received(purchase_order_id, current_user_id)
 
+        if self._accounting_engine is not None:
+            self._accounting_engine.post_purchase_invoice_journal(
+                {
+                    "purchase_invoice_id": new_invoice_id,
+                    "internal_ref_number": internal_ref_number,
+                    "invoice_number": payload["invoice_number"],
+                    "supplier_id": payload["supplier_id"],
+                    "invoice_date_ad": invoice_date_ad,
+                    "grand_total": round(grand_total, 4),
+                    "tax_amount": round(total_cc_amount, 4),
+                },
+                current_user_id,
+            )
+
         return PurchaseInvoiceDTO(
             purchase_invoice_id=new_invoice_id,
             internal_ref_number=internal_ref_number,
@@ -716,7 +732,7 @@ class PurchaseEngine:
                 sale_rate=r["sale_rate"],
                 discount_amount=r["discount_amount"],
                 cc_amount=r["cc_amount"],
-                freight_allocated=r.get("freight_allocated", 0.0),
+                freight_allocated=r.get("freight_amount_allocated", 0.0),
                 other_charges_allocated=r.get("other_charges_allocated", 0.0),
                 landing_cost_per_unit=r["landing_cost_per_unit"],
                 item_batch_id=r.get("item_batch_id"),
@@ -752,11 +768,15 @@ class PurchaseEngine:
         page_size: int = 50,
         order_by: Optional[str] = None,
         order_dir: str = "ASC",
+        date_from_ad: Optional[str] = None,
+        date_to_ad: Optional[str] = None,
     ) -> tuple[list[PurchaseInvoiceDTO], int]:
         filters = PurchaseInvoiceSearchFilters(
             search_text=search_text,
             supplier_id=supplier_id,
             status=status,
+            date_from_ad=date_from_ad,
+            date_to_ad=date_to_ad,
             include_deleted=include_deleted,
             page=page,
             page_size=page_size,
@@ -792,12 +812,27 @@ class PurchaseEngine:
         if not reason or not reason.strip():
             raise ValidationError("A cancellation reason is required.")
 
-        existing = self._model.get_invoice_by_id(purchase_invoice_id, include_deleted=False)
+        existing = self._model.get_by_id(purchase_invoice_id, include_deleted=False)
         if existing is None:
             raise RecordNotFoundError(f"Purchase invoice {purchase_invoice_id} not found.")
 
-        self._model.soft_delete_invoice(
+        now_ad = datetime.now(timezone.utc)
+        from engines.date_engine import ad_to_bs, DateEngineError
+
+        try:
+            now_bs = ad_to_bs(now_ad.date())
+        except DateEngineError:
+            logger.exception("Could not resolve BS date for purchase invoice cancellation audit stamp")
+            now_bs = None
+
+        cancelled = self._model.soft_delete(
             purchase_invoice_id=purchase_invoice_id,
-            current_user_id=current_user_id,
-            reason=reason,
+            deleted_by=current_user_id,
+            deleted_at_ad=now_ad,
+            deleted_at_bs=now_bs,
+            reason=reason.strip(),
         )
+        if not cancelled:
+            raise RecordNotFoundError(
+                f"Purchase invoice {purchase_invoice_id} is already cancelled or unavailable."
+            )

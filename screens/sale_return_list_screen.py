@@ -76,6 +76,7 @@ class SaleReturnListScreen(QWidget):
     close_requested = Signal()
     form_requested = Signal(object)
     view_requested = Signal(int)
+    edit_requested = Signal(int)
 
     def __init__(
         self,
@@ -150,11 +151,13 @@ class SaleReturnListScreen(QWidget):
         actions = QHBoxLayout()
         actions.addStretch(1)
         self.btnView = QPushButton("View")
+        self.btnEditDraft = QPushButton("Edit Draft")
         self.btnCancelReturn = QPushButton("Cancel Return")
         self.btnCancelReturn.setObjectName("dangerButton")
         self.btnDelete = QPushButton("Delete Draft")
         self.btnDelete.setObjectName("dangerButton")
         actions.addWidget(self.btnView)
+        actions.addWidget(self.btnEditDraft)
         actions.addWidget(self.btnCancelReturn)
         actions.addWidget(self.btnDelete)
         root.addLayout(actions)
@@ -167,6 +170,7 @@ class SaleReturnListScreen(QWidget):
         self.btnRefresh.clicked.connect(self._refresh)
         self.txtSearch.returnPressed.connect(self._refresh)
         self.btnView.clicked.connect(self._on_view)
+        self.btnEditDraft.clicked.connect(self._on_edit_draft)
         self.btnCancelReturn.clicked.connect(self._on_cancel)
         self.btnDelete.clicked.connect(self._on_delete)
         self.tblReturns.itemDoubleClicked.connect(lambda _item: self._on_view())
@@ -238,6 +242,16 @@ class SaleReturnListScreen(QWidget):
             msg.show_error("Please select a sale return first.")
             return
         self.view_requested.emit(sale_return_id)
+
+    def _on_edit_draft(self) -> None:
+        sale_return_id = self._selected_return_id()
+        if sale_return_id is None:
+            msg.show_error("Please select a sale return first.")
+            return
+        if self._selected_status() != "Draft":
+            msg.show_error("Only a Draft sale return can be edited.")
+            return
+        self.edit_requested.emit(sale_return_id)
 
     def _on_cancel(self) -> None:
         sale_return_id = self._selected_return_id()

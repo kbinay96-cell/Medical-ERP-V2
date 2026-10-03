@@ -26,6 +26,10 @@ COA_COLUMNS = (
     "account_code", "account_name", "account_group", "parent_account_id",
     "is_control_account", "normal_balance", "is_active", "remarks",
 )
+COA_UPDATE_COLUMNS = frozenset({
+    "account_code", "account_name", "account_group", "parent_account_id",
+    "normal_balance", "is_active", "remarks",
+})
 
 
 class ChartOfAccountsModel:
@@ -100,6 +104,9 @@ class ChartOfAccountsModel:
                updated_at_ad: Any, updated_at_bs: str) -> None:
         if not changed_fields:
             return
+        invalid_columns = set(changed_fields) - COA_UPDATE_COLUMNS
+        if invalid_columns:
+            raise ValueError(f"Unsupported chart-of-accounts fields: {', '.join(sorted(invalid_columns))}")
         set_clause = ", ".join(f"{col} = %({col})s" for col in changed_fields)
         sql = f"""
             UPDATE chart_of_accounts
@@ -114,5 +121,27 @@ class ChartOfAccountsModel:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(sql, params)
+        finally:
+            conn.close()
+
+    def soft_delete(self, account_id: int, updated_by: int, updated_at_ad: Any, updated_at_bs: str) -> None:
+        sql = """
+            UPDATE chart_of_accounts
+            SET is_deleted = TRUE, is_active = FALSE, updated_by = %(updated_by)s,
+                updated_at_ad = %(updated_at_ad)s, updated_at_bs = %(updated_at_bs)s
+            WHERE account_id = %(account_id)s AND is_deleted = FALSE;
+        """
+        conn = _get_connection()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, {
+                        "account_id": account_id,
+                        "updated_by": updated_by,
+                        "updated_at_ad": updated_at_ad,
+                        "updated_at_bs": updated_at_bs,
+                    })
+                    if cur.rowcount != 1:
+                        raise ValueError("Account was not found or is already deleted.")
         finally:
             conn.close()

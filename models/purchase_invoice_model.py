@@ -266,10 +266,32 @@ class PurchaseInvoiceModel:
                 rows = cur.fetchall()
                 return rows, total
 
-    def soft_delete(self, purchase_invoice_id: int, deleted_by: int, deleted_at_ad: str, deleted_at_bs: str) -> None:
+    def soft_delete(
+        self,
+        purchase_invoice_id: int,
+        deleted_by: int,
+        deleted_at_ad,
+        deleted_at_bs: Optional[str],
+        reason: str,
+    ) -> bool:
         get_connection = _get_connection()
-        sql = "UPDATE purchase_invoice SET is_deleted = TRUE, deleted_by = %s, deleted_at_ad = %s, deleted_at_bs = %s WHERE purchase_invoice_id = %s"
+        sql = """
+            UPDATE purchase_invoice
+            SET status = 'Cancelled',
+                is_deleted = TRUE,
+                cancellation_reason = %s,
+                deleted_by = %s,
+                deleted_at_ad = %s,
+                deleted_at_bs = %s
+            WHERE purchase_invoice_id = %s
+              AND is_deleted = FALSE
+        """
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (deleted_by, deleted_at_ad, deleted_at_bs, purchase_invoice_id))
+                cur.execute(
+                    sql,
+                    (reason, deleted_by, deleted_at_ad, deleted_at_bs, purchase_invoice_id),
+                )
+                updated = cur.rowcount > 0
                 conn.commit()
+                return updated

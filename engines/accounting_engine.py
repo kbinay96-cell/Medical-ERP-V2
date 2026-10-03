@@ -26,13 +26,15 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.journal_validator import JournalValidator
 from models.auto_accounting_rule_model import AutoAccountingRuleModel
 from models.chart_of_accounts_model import ChartOfAccountsModel
+from models.financial_year_model import FinancialYearModel
 from models.journal_model import JournalModel, JournalSearchFilters
+from models.opening_balance_model import OpeningBalanceModel
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,10 @@ class AccountingEngine:
         rule_model: Optional[AutoAccountingRuleModel] = None,
         period_model=None,          # models.accounting_period_model.AccountingPeriodModel -- REQUIRED, injected
         bank_recon_model=None,      # models.bank_reconciliation_model.BankReconciliationModel -- REQUIRED, injected
+        financial_year_model: Optional[FinancialYearModel] = None,
+        opening_balance_model: Optional[OpeningBalanceModel] = None,
+        role_permission_model=None,
+        role_lookup_fn: Optional[Callable[[int], Optional[str]]] = None,
         date_engine: Optional[Any] = None,
         validator: Optional[JournalValidator] = None,
     ) -> None:
@@ -117,8 +123,22 @@ class AccountingEngine:
         self._rule_model = rule_model or AutoAccountingRuleModel()
         self._period_model = period_model
         self._bank_recon_model = bank_recon_model
+        self._financial_year_model = financial_year_model or FinancialYearModel()
+        self._opening_balance_model = opening_balance_model or OpeningBalanceModel()
+        self._role_permission_model = role_permission_model
+        self._role_lookup_fn = role_lookup_fn
         self._date_engine = date_engine if date_engine is not None else _load_date_engine()
         self._validator = validator or JournalValidator(period_lookup_fn=self._period_model.get_period_for_date)
+
+    def _require_permission(self, user_id: int, permission: str) -> None:
+        if self._role_permission_model is None or self._role_lookup_fn is None:
+            return
+        role_name = self._role_lookup_fn(user_id)
+        if not role_name:
+            raise ValidationError(f"Could not resolve an accounting role for user {user_id}.")
+        permissions = self._role_permission_model.get_permissions_for_role(role_name)
+        if not permissions.get(permission, False):
+            raise ValidationError(f"Role '{role_name}' does not have the '{permission}' accounting permission.")
 
     # ------------------------------------------------------------------ #
     # INTERNAL HELPERS
@@ -142,8 +162,14 @@ class AccountingEngine:
                 next_seq = 1
         return f"{DEFAULT_JOURNAL_PREFIX}{next_seq:0{DEFAULT_JOURNAL_PADDING}d}"
 
-    def _build_lines_from_rule(self, transaction_type: str, role_amounts: dict[str, float],
-                                sub_ledger_type: Optional[str], sub_ledger_id: Optional[int]) -> list[dict]:
+    def _build_lines_from_rule(
+        self,
+        transaction_type: str,
+        role_amounts: dict[str, float],
+        sub_ledger_type: Optional[str],
+        sub_ledger_id: Optional[int],
+        account_overrides: Optional[dict[str, int]] = None,
+    ) -> list[dict]:
         """
         Reads auto_accounting_rule rows for `transaction_type`, and for
         each rule whose `line_role` has a non-zero entry in
@@ -160,7 +186,7 @@ class AccountingEngine:
                 continue
             is_sub_ledger = rule["is_sub_ledger_line"]
             lines.append({
-                "account_id": rule["account_id"],
+                "account_id": (account_overrides or {}).get(rule["line_role"], rule["account_id"]),
                 "debit_amount": amount if rule["side"] == "Debit" else 0,
                 "credit_amount": amount if rule["side"] == "Credit" else 0,
                 "sub_ledger_type": sub_ledger_type if is_sub_ledger else None,
@@ -172,6 +198,14 @@ class AccountingEngine:
                 "line_order": order,
             })
         return lines
+
+    def _cash_bank_account_override(self, payment_mode: Optional[str]) -> dict[str, int]:
+        if (payment_mode or "").strip().casefold() == "cash":
+            return {}
+        bank_account = self._coa_model.get_by_code("1210")
+        if bank_account is None or not bank_account["is_active"]:
+            raise ValidationError("Configure an active bank ledger account 1210 before posting bank transactions.")
+        return {"Cash/Bank": bank_account["account_id"]}
 
     def _post_journal(
         self,
@@ -238,10 +272,12 @@ class AccountingEngine:
     # _build_lines_from_rule() + _post_journal()
     # ------------------------------------------------------------------ #
     def post_sale_invoice_journal(self, sale_invoice: dict, created_by: int) -> JournalDTO:
+        tax_amount = float(sale_invoice.get("tax_amount") or 0)
+        invoice_total = float(sale_invoice["grand_total"])
         role_amounts = {
-            "Customer Receivable": float(sale_invoice["grand_total"]),
-            "Sales": float(sale_invoice["subtotal_amount"]),
-            "Output VAT": float(sale_invoice.get("tax_amount") or 0),
+            "Customer Receivable": invoice_total,
+            "Sales": invoice_total - tax_amount,
+            "Output VAT": tax_amount,
         }
         lines = self._build_lines_from_rule(
             "Sale Invoice", role_amounts, sub_ledger_type="Customer", sub_ledger_id=sale_invoice["customer_id"]
@@ -256,10 +292,12 @@ class AccountingEngine:
         )
 
     def post_purchase_invoice_journal(self, purchase_invoice: dict, created_by: int) -> JournalDTO:
+        tax_amount = float(purchase_invoice.get("tax_amount") or 0)
+        invoice_total = float(purchase_invoice["grand_total"])
         role_amounts = {
-            "Supplier Payable": float(purchase_invoice["grand_total"]),
-            "Purchase": float(purchase_invoice["subtotal_amount"]),
-            "Input VAT": float(purchase_invoice.get("tax_amount") or 0),
+            "Supplier Payable": invoice_total,
+            "Purchase": invoice_total - tax_amount,
+            "Input VAT": tax_amount,
         }
         lines = self._build_lines_from_rule(
             "Purchase Invoice", role_amounts, sub_ledger_type="Supplier", sub_ledger_id=purchase_invoice["supplier_id"]
@@ -274,10 +312,12 @@ class AccountingEngine:
         )
 
     def post_sale_return_journal(self, sale_return: dict, created_by: int) -> JournalDTO:
+        tax_amount = float(sale_return.get("total_tax_amount") or 0)
+        return_total = float(sale_return["grand_total"])
         role_amounts = {
-            "Sales Return": float(sale_return["total_gross_amount"] - sale_return["total_discount_amount"]),
-            "Output VAT Reversal": float(sale_return.get("total_tax_amount") or 0),
-            "Customer Receivable Reversal": float(sale_return["grand_total"]),
+            "Sales Return": return_total - tax_amount,
+            "Output VAT Reversal": tax_amount,
+            "Customer Receivable Reversal": return_total,
         }
         lines = self._build_lines_from_rule(
             "Sale Return", role_amounts, sub_ledger_type="Customer", sub_ledger_id=sale_return["customer_id"]
@@ -292,10 +332,12 @@ class AccountingEngine:
         )
 
     def post_purchase_return_journal(self, purchase_return: dict, created_by: int) -> JournalDTO:
+        tax_amount = float(purchase_return.get("total_cc_amount") or 0)
+        return_total = float(purchase_return["grand_total"])
         role_amounts = {
-            "Purchase Return": float(purchase_return["total_gross_amount"] - purchase_return["total_discount_amount"]),
-            "Input VAT Reversal": float(purchase_return.get("total_cc_amount") or 0),
-            "Supplier Payable Reversal": float(purchase_return["grand_total"]),
+            "Purchase Return": return_total - tax_amount,
+            "Input VAT Reversal": tax_amount,
+            "Supplier Payable Reversal": return_total,
         }
         lines = self._build_lines_from_rule(
             "Purchase Return", role_amounts, sub_ledger_type="Supplier", sub_ledger_id=purchase_return["supplier_id"]
@@ -322,7 +364,8 @@ class AccountingEngine:
             "Customer Advance": float(receipt["advance_amount"]),
         }
         lines = self._build_lines_from_rule(
-            "Receipt", role_amounts, sub_ledger_type="Customer", sub_ledger_id=receipt["customer_id"]
+            "Receipt", role_amounts, sub_ledger_type="Customer", sub_ledger_id=receipt["customer_id"],
+            account_overrides=self._cash_bank_account_override(receipt.get("payment_mode")),
         )
         return self._post_journal(
             journal_date_ad=receipt["receipt_date_ad"],
@@ -336,11 +379,15 @@ class AccountingEngine:
     def post_payment_journal(self, payment: dict, created_by: int) -> JournalDTO:
         role_amounts = {
             "Cash/Bank": float(payment["amount"]),
-            "Supplier Payable": float(payment["allocated_amount"]),
+            "Supplier Payable": (
+                float(payment["allocated_amount"])
+                + float(payment.get("opening_balance_allocated_amount") or 0)
+            ),
             "Supplier Advance": float(payment["advance_amount"]),
         }
         lines = self._build_lines_from_rule(
-            "Payment", role_amounts, sub_ledger_type="Supplier", sub_ledger_id=payment["supplier_id"]
+            "Payment", role_amounts, sub_ledger_type="Supplier", sub_ledger_id=payment["supplier_id"],
+            account_overrides=self._cash_bank_account_override(payment.get("payment_mode")),
         )
         return self._post_journal(
             journal_date_ad=payment["payment_date_ad"],
@@ -362,6 +409,11 @@ class AccountingEngine:
         financial year's opening balances posted as ONE balanced journal
         (Debit=Credit across the whole set, same as any other journal).
         """
+        existing = self.get_journals_for_document("Opening Balance", financial_year_id)
+        if existing:
+            raise ValidationError("Opening balances have already been posted for this financial year.")
+        if not opening_rows:
+            raise ValidationError("At least one opening balance is required.")
         lines = [
             {
                 "account_id": row["account_id"],
@@ -375,12 +427,41 @@ class AccountingEngine:
             }
             for index, row in enumerate(opening_rows, start=1)
         ]
-        return self._post_journal(
+        journal = self._post_journal(
             journal_date_ad=journal_date_ad,
             source_document_type="Opening Balance",
             source_document_id=financial_year_id,
             narration=f"Opening Balances for Financial Year {financial_year_id}",
             line_rows=lines,
+            created_by=created_by,
+        )
+        now_ad = datetime.now(timezone.utc)
+        now_bs = self._stamp_bs_date(now_ad.date())
+        self._opening_balance_model.insert_batch([
+            {
+                **row,
+                "financial_year_id": financial_year_id,
+                "posted_journal_entry_id": journal.journal_entry_id,
+                "created_by": created_by,
+                "created_at_bs": now_bs,
+            }
+            for row in opening_rows
+        ])
+        return journal
+
+    def post_manual_journal(self, journal_date_ad: date, narration: str,
+                            line_rows: list[dict], created_by: int) -> JournalDTO:
+        """Post a user-entered journal through the same validation choke point."""
+        self._require_permission(created_by, "Create")
+        self._require_permission(created_by, "Post")
+        if not (narration or "").strip():
+            raise ValidationError("Journal narration is required.")
+        return self._post_journal(
+            journal_date_ad=journal_date_ad,
+            source_document_type="Manual",
+            source_document_id=None,
+            narration=narration.strip(),
+            line_rows=line_rows,
             created_by=created_by,
         )
 
@@ -412,6 +493,7 @@ class AccountingEngine:
     # REVERSE -- new opposite journal, original marked Reversed, never edited
     # ------------------------------------------------------------------ #
     def reverse_journal(self, journal_entry_id: int, reason: str, reversed_by: int) -> JournalDTO:
+        self._require_permission(reversed_by, "Reverse")
         original = self._journal_model.get_by_id(journal_entry_id)
         if original is None:
             raise RecordNotFoundError(f"Journal {journal_entry_id} not found.")
@@ -460,9 +542,12 @@ class AccountingEngine:
     # CANCEL -- status-only, for a same-day mistake (never economically reversed)
     # ------------------------------------------------------------------ #
     def cancel_journal(self, journal_entry_id: int, reason: str, cancelled_by: int) -> JournalDTO:
+        self._require_permission(cancelled_by, "Cancel")
         existing = self._journal_model.get_by_id(journal_entry_id)
         if existing is None:
             raise RecordNotFoundError(f"Journal {journal_entry_id} not found.")
+        if existing["source_document_type"] != "Manual":
+            raise ValidationError("Auto-posted journals cannot be cancelled directly; correct the source transaction.")
         if existing["status"] not in ("Draft", "Posted"):
             raise ValidationError("Only a Draft or Posted journal can be Cancelled.")
 
@@ -476,6 +561,17 @@ class AccountingEngine:
             updated_by=cancelled_by, updated_at_ad=now_ad, updated_at_bs=self._stamp_bs_date(now_ad.date()),
         )
         return self.get_by_id(journal_entry_id)
+
+    def lock_period(self, accounting_period_id: int, locked_by: int) -> None:
+        self._require_permission(locked_by, "Post")
+        self._period_model.lock_period(accounting_period_id, locked_by)
+
+    def reopen_period(self, accounting_period_id: int, reason: str, reopened_by: int) -> None:
+        self._require_permission(reopened_by, "Period Unlock")
+        result = self._validator.validate_reason(reason, action_label="Period Reopen")
+        if not result.is_valid:
+            raise ValidationError(result.errors)
+        self._period_model.reopen_period(accounting_period_id, reopened_by, reason)
 
     # ------------------------------------------------------------------ #
     # YEAR END CLOSING
@@ -499,8 +595,107 @@ class AccountingEngine:
         (compute -> build 2-line closing journal -> post -> lock -> mark
         closed), not the aggregation itself.
         """
-        raise NotImplementedError(
-            "Orchestration shape defined; wires to FinancialYearModel.get_net_profit_for_year() "
-            "in Part 3 once that aggregate query is finalized against the Reports module's own "
-            "P&L calculation, so the two never disagree."
+        self._require_permission(closed_by, "Approve")
+        financial_year = self._financial_year_model.get_by_id(financial_year_id)
+        if financial_year is None:
+            raise RecordNotFoundError(f"Financial year {financial_year_id} not found.")
+        if financial_year["status"] != "Open":
+            raise ValidationError("Only an open financial year can be closed.")
+        if self.get_journals_for_document("Year End Closing", financial_year_id):
+            raise ValidationError("Year-end closing has already been posted for this financial year.")
+
+        net_profit = round(self._financial_year_model.get_net_profit_for_year(financial_year_id), 2)
+        accounts_by_code = {
+            row["account_code"]: row
+            for row in self._coa_model.get_hierarchy()
+        }
+        current_year_result = accounts_by_code.get("3400")
+        retained_earnings = accounts_by_code.get("3300")
+        if current_year_result is None or retained_earnings is None:
+            raise ValidationError("Chart of Accounts must contain accounts 3300 and 3400.")
+
+        pnl_accounts = [
+            row for row in accounts_by_code.values()
+            if row["account_group"] in ("Revenue", "Cost of Goods", "Operating Expenses")
+            and row["parent_account_id"] is not None
+        ]
+        lines: list[dict[str, Any]] = []
+        debit_total = 0.0
+        credit_total = 0.0
+        for account in pnl_accounts:
+            account_lines = self._journal_model.get_account_ledger(
+                account["account_id"],
+                date_from_ad=financial_year["start_date_ad"],
+                date_to_ad=financial_year["end_date_ad"],
+            )
+            debit = round(sum(float(row["debit_amount"] or 0) for row in account_lines), 2)
+            credit = round(sum(float(row["credit_amount"] or 0) for row in account_lines), 2)
+            balance = round(credit - debit if account["normal_balance"] == "Credit" else debit - credit, 2)
+            if balance == 0:
+                continue
+            if account["normal_balance"] == "Credit":
+                debit_amount, credit_amount = max(balance, 0), max(-balance, 0)
+            else:
+                debit_amount, credit_amount = max(-balance, 0), max(balance, 0)
+            lines.append({
+                "account_id": account["account_id"],
+                "debit_amount": debit_amount,
+                "credit_amount": credit_amount,
+                "sub_ledger_type": None,
+                "sub_ledger_id": None,
+                "branch_id": None,
+                "department_id": None,
+                "cost_center_id": None,
+                "line_narration": "Year-end P&L close",
+                "line_order": len(lines) + 1,
+            })
+            debit_total += debit_amount
+            credit_total += credit_amount
+
+        transfer = abs(net_profit)
+        if transfer > 0:
+            # Close the income/expense balances to Current Year P&L, then
+            # transfer the resulting balance to Retained Earnings.
+            lines.extend([
+                {
+                    "account_id": current_year_result["account_id"],
+                    "debit_amount": transfer if net_profit > 0 else 0,
+                    "credit_amount": transfer if net_profit < 0 else 0,
+                    "sub_ledger_type": None, "sub_ledger_id": None,
+                    "branch_id": None, "department_id": None, "cost_center_id": None,
+                    "line_narration": "Current year result",
+                    "line_order": len(lines) + 1,
+                },
+                {
+                    "account_id": retained_earnings["account_id"],
+                    "debit_amount": transfer if net_profit < 0 else 0,
+                    "credit_amount": transfer if net_profit > 0 else 0,
+                    "sub_ledger_type": None, "sub_ledger_id": None,
+                    "branch_id": None, "department_id": None, "cost_center_id": None,
+                    "line_narration": "Transfer to retained earnings",
+                    "line_order": len(lines) + 2,
+                },
+            ])
+            debit_total += transfer
+            credit_total += transfer
+
+        if not lines:
+            raise ValidationError("No posted profit-and-loss activity was found for this financial year.")
+        if round(debit_total, 2) != round(credit_total, 2):
+            raise ValidationError("Year-end P&L balances do not reconcile; financial year was not closed.")
+
+        if not self._period_model.list_periods(financial_year_id):
+            raise ValidationError("No accounting periods are defined for this financial year.")
+        closing_date = financial_year["end_date_ad"]
+        closing_journal = self._post_journal(
+            journal_date_ad=closing_date,
+            source_document_type="Year End Closing",
+            source_document_id=financial_year_id,
+            narration=f"Year-end closing for {financial_year['fy_label']}",
+            line_rows=lines,
+            created_by=closed_by,
         )
+        self._financial_year_model.close_year(
+            financial_year_id, closing_journal.journal_entry_id, closed_by
+        )
+        return closing_journal

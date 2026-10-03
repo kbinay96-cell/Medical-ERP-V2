@@ -115,10 +115,69 @@ class SaleReturnModel:
         finally:
             conn.close()
 
+    def update_draft_with_items(
+        self,
+        sale_return_id: int,
+        header_data: dict[str, Any],
+        item_rows: list[dict[str, Any]],
+    ) -> bool:
+        """Atomically replace a Draft return's header and lines."""
+        allowed_header_columns = (
+            set(SALE_RETURN_COLUMNS) - {"return_number"}
+        ) | {"updated_by", "updated_at_ad", "updated_at_bs"}
+        if not header_data or not set(header_data).issubset(allowed_header_columns):
+            raise ValueError("Invalid Sale Return draft header fields.")
+
+        set_clause = ", ".join(
+            f"{column} = %({column})s" for column in header_data
+        )
+        update_sql = f"""
+            UPDATE sale_return
+            SET {set_clause}
+            WHERE sale_return_id = %(sale_return_id)s
+              AND status = 'Draft'
+              AND is_deleted = FALSE
+            RETURNING sale_return_id;
+        """
+        item_columns = ["sale_return_id"] + list(SALE_RETURN_ITEM_COLUMNS)
+        item_sql = (
+            f"INSERT INTO sale_return_item ({', '.join(item_columns)}) "
+            f"VALUES ({', '.join(f'%({column})s' for column in item_columns)});"
+        )
+
+        conn = _get_connection()
+        try:
+            with conn:
+                with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                    params = dict(header_data)
+                    params["sale_return_id"] = sale_return_id
+                    cur.execute(update_sql, params)
+                    if cur.fetchone() is None:
+                        return False
+
+                    cur.execute(
+                        "DELETE FROM sale_return_item WHERE sale_return_id = %s",
+                        (sale_return_id,),
+                    )
+                    for item_row in item_rows:
+                        row = dict(item_row)
+                        row["sale_return_id"] = sale_return_id
+                        cur.execute(item_sql, row)
+            return True
+        except Exception:
+            logger.exception("update_draft_with_items failed for sale_return_id=%s", sale_return_id)
+            raise
+        finally:
+            conn.close()
+
     # ------------------------------------------------------------------ #
     # VALIDATION SUPPORT -- cumulative returned qty per original invoice line
     # ------------------------------------------------------------------ #
-    def get_returned_qty_for_invoice_item(self, sale_invoice_item_id: int) -> float:
+    def get_returned_qty_for_invoice_item(
+        self,
+        sale_invoice_item_id: int,
+        exclude_return_id: Optional[int] = None,
+    ) -> float:
         """
         Returns SUM(return_qty) across every sale_return_item row that
         references this sale_invoice_item_id, counting ONLY returns whose
@@ -132,12 +191,19 @@ class SaleReturnModel:
             JOIN sale_return sr ON sr.sale_return_id = sri.sale_return_id
             WHERE sri.sale_invoice_item_id = %(sale_invoice_item_id)s
               AND sr.status != 'Cancelled'
-              AND sr.is_deleted = FALSE;
+              AND sr.is_deleted = FALSE
+              AND (%(exclude_return_id)s IS NULL OR sr.sale_return_id != %(exclude_return_id)s);
         """
         conn = _get_connection()
         try:
             with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
-                cur.execute(sql, {"sale_invoice_item_id": sale_invoice_item_id})
+                cur.execute(
+                    sql,
+                    {
+                        "sale_invoice_item_id": sale_invoice_item_id,
+                        "exclude_return_id": exclude_return_id,
+                    },
+                )
                 return float(cur.fetchone()["returned_qty"])
         finally:
             conn.close()

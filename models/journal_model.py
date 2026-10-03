@@ -184,6 +184,27 @@ class JournalModel:
         if filters.status:
             conditions.append("je.status = %(status)s")
             params["status"] = filters.status
+        if filters.account_id:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM journal_entry_line filter_line "
+                "WHERE filter_line.journal_entry_id = je.journal_entry_id "
+                "AND filter_line.account_id = %(account_id)s)"
+            )
+            params["account_id"] = filters.account_id
+        if filters.sub_ledger_type:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM journal_entry_line filter_line "
+                "WHERE filter_line.journal_entry_id = je.journal_entry_id "
+                "AND filter_line.sub_ledger_type = %(sub_ledger_type)s)"
+            )
+            params["sub_ledger_type"] = filters.sub_ledger_type
+        if filters.sub_ledger_id:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM journal_entry_line filter_line "
+                "WHERE filter_line.journal_entry_id = je.journal_entry_id "
+                "AND filter_line.sub_ledger_id = %(sub_ledger_id)s)"
+            )
+            params["sub_ledger_id"] = filters.sub_ledger_id
         if filters.date_from_ad:
             conditions.append("je.journal_date_ad >= %(date_from_ad)s")
             params["date_from_ad"] = filters.date_from_ad

@@ -44,10 +44,18 @@ class DashboardData:
 # (per get_accessible_menus) OR is Administrator (sees all).
 SIDEBAR_MODULES = {
     "Masters": ["Company", "Supplier", "Manufacturer", "Customer", "Item", "Supplier-Mfg Discount", "Country Tax"],
-    "Purchase": ["Purchase", "Purchase Order", "Purchase Return"],
+    "Purchase": ["Purchase", "Purchase Order", "Purchase Invoice List", "Purchase Return"],
     "Sales": ["New Sale", "Sale List", "Sale Free Scheme", "Sale Return"],
     "Inventory": ["Stock Ledger", "Stock Master"],
-    "Accounts": ["Payment", "Receipt"],
+    "Accounts": [
+        "Payment",
+        "Receipt",
+        "Chart of Accounts",
+        "Journal Voucher",
+        "Account Ledger",
+        "Period Lock",
+        "Bank Reconciliation",
+    ],
     "Reports": ["Management Dashboard", "Reports", "Audit Log"],
     "Settings": ["Settings", "User Master", "Password Reset Requests", "Change Password"],
 }
@@ -114,6 +122,4 @@ def _build_alerts(data: DashboardData) -> list[str]:
         logger.exception(f"_build_alerts: subscription check failed: {e}")
 
     return alerts
-
-
 

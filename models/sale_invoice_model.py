@@ -22,6 +22,7 @@ def _dict_cursor_factory():
 class SaleInvoiceSearchFilters:
     search_text: Optional[str] = None
     customer_id: Optional[int] = None
+    area_id: Optional[int] = None
     status: Optional[str] = None
     sale_mode: Optional[str] = None
     date_from_ad: Optional[str] = None
@@ -97,7 +98,11 @@ class SaleInvoiceModel:
                 cur.execute(sql, (sale_invoice_id,))
                 return [dict(r) for r in cur.fetchall()]
 
-    def get_returnable_items(self, sale_invoice_id: int) -> list[dict]:
+    def get_returnable_items(
+        self,
+        sale_invoice_id: int,
+        exclude_return_id: Optional[int] = None,
+    ) -> list[dict]:
         """
         Returns every sale_invoice_item row for a posted invoice, joined with
         already-returned quantity, so the Engine/Screen can compute remaining
@@ -107,7 +112,11 @@ class SaleInvoiceModel:
             SELECT
                 sii.*,
                 i.item_name,
-                COALESCE(SUM(sri.return_qty) FILTER (WHERE sr.status != 'Cancelled' AND sr.is_deleted = FALSE), 0) AS already_returned_qty
+                COALESCE(SUM(sri.return_qty) FILTER (
+                    WHERE sr.status != 'Cancelled'
+                      AND sr.is_deleted = FALSE
+                      AND (%(exclude_return_id)s IS NULL OR sr.sale_return_id != %(exclude_return_id)s)
+                ), 0) AS already_returned_qty
             FROM sale_invoice_item sii
             LEFT JOIN item i ON i.item_id = sii.item_id
             LEFT JOIN sale_return_item sri ON sri.sale_invoice_item_id = sii.sale_invoice_item_id
@@ -118,8 +127,30 @@ class SaleInvoiceModel:
         """
         with _get_connection() as conn:
             with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
-                cur.execute(sql, {"sale_invoice_id": sale_invoice_id})
+                cur.execute(
+                    sql,
+                    {
+                        "sale_invoice_id": sale_invoice_id,
+                        "exclude_return_id": exclude_return_id,
+                    },
+                )
                 return [dict(r) for r in cur.fetchall()]
+
+    def has_receipt_allocations(self, sale_invoice_id: int) -> bool:
+        sql = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM receipt_allocation ra
+                JOIN receipt r ON r.receipt_id = ra.receipt_id
+                WHERE ra.sale_invoice_id = %s
+                  AND r.status != 'Cancelled'
+                  AND r.is_deleted = FALSE
+            ) AS has_allocations;
+        """
+        with _get_connection() as conn:
+            with conn.cursor(cursor_factory=_dict_cursor_factory()) as cur:
+                cur.execute(sql, (sale_invoice_id,))
+                return bool(cur.fetchone()["has_allocations"])
 
     def get_last_invoice_sequence(self, prefix: str) -> int:
         sql = """
@@ -287,6 +318,10 @@ class SaleInvoiceModel:
         if filters.customer_id:
             where_clauses.append("si.customer_id = %s")
             params.append(filters.customer_id)
+
+        if filters.area_id:
+            where_clauses.append("si.area_id = %s")
+            params.append(filters.area_id)
 
         if filters.status:
             where_clauses.append("si.status = %s")

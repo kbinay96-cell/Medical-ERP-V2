@@ -89,7 +89,12 @@ class SaleReturnValidator:
             result.add(f"Return Number '{number}' already exists.")
         return result
 
-    def validate_lines(self, line_rows: list[dict], invoice_item_lookup: dict[int, dict]) -> ValidationResult:
+    def validate_lines(
+        self,
+        line_rows: list[dict],
+        invoice_item_lookup: dict[int, dict],
+        exclude_return_id: Optional[int] = None,
+    ) -> ValidationResult:
         """
         Validates the whole return-line list at once against the original
         invoice's lines. `invoice_item_lookup` maps
@@ -130,7 +135,10 @@ class SaleReturnValidator:
                 result.add(f"{prefix}: Return Qty must be a valid number.")
                 continue
 
-            already_returned = self._returned_qty_fn(invoice_item_id)
+            if exclude_return_id is None:
+                already_returned = self._returned_qty_fn(invoice_item_id)
+            else:
+                already_returned = self._returned_qty_fn(invoice_item_id, exclude_return_id)
             original_qty = float(original.get("qty", 0))
             remaining = original_qty - already_returned
 

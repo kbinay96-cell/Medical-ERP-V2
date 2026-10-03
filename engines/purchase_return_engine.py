@@ -123,6 +123,7 @@ class PurchaseReturnEngine:
         item_engine=None,                 # engines.item_engine.ItemEngine -- REQUIRED, injected (shared instance)
         date_engine: Optional[Any] = None,
         validator: Optional[PurchaseReturnValidator] = None,
+        accounting_engine=None,
     ) -> None:
         if purchase_invoice_model is None:
             raise ValueError("PurchaseReturnEngine requires a purchase_invoice_model instance (shared with the Purchase module).")
@@ -132,6 +133,7 @@ class PurchaseReturnEngine:
         self._model = model or PurchaseReturnModel()
         self._purchase_invoice_model = purchase_invoice_model
         self._item_engine = item_engine
+        self._accounting_engine = accounting_engine
         self._date_engine = date_engine if date_engine is not None else _load_date_engine()
         self._validator = validator or PurchaseReturnValidator(
             return_number_exists_fn=self._return_number_exists,
@@ -308,6 +310,16 @@ class PurchaseReturnEngine:
                     transaction_type="PURCHASE_RETURN",
                     reference_id=purchase_return_id,
                     created_by=created_by,
+                )
+
+            if self._accounting_engine is not None:
+                self._accounting_engine.post_purchase_return_journal(
+                    {
+                        **header_data,
+                        "purchase_return_id": purchase_return_id,
+                        "supplier_id": supplier_id,
+                    },
+                    created_by,
                 )
 
         return self.get_by_id(purchase_return_id)

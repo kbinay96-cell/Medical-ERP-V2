@@ -22,11 +22,7 @@ Responsibilities (and ONLY these -- "No SQL. No business logic."):
       exists.
     - On item selection / qty change / entry-mode toggle: calls
       engine.compute_line() (a PREVIEW call, not a save) to auto-fill
-      Batch/Expiry (read-only cells), current_rate/rate, mrp, and -- in
-      Wholesale mode -- the "Scheme: X+Y" tooltip badge on the Free Qty
-      cell, sourced directly from ItemFreeSchemeEngine.get_scheme_for_item()
-      since compute_line() itself only returns the resolved free_qty, not
-      the ratio.
+      Batch/Expiry (read-only cells), current_rate/rate, and mrp.
     - Per-row toggle between Free Qty mode and Net Rate mode (confirmed
       requirement) -- a small combo per row; switching modes re-triggers
       the engine preview and resets any manual rate/free_qty override for
@@ -73,11 +69,11 @@ from screens.sale_invoice_view_dialog import SaleInvoiceViewDialog
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QTimer, QTime, QDate
+from PySide6.QtCore import Qt, Signal, QTimer, QTime, QDate, QSize
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QCompleter, QDialog,
-    QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
 from engines.exceptions import DuplicateRecordError, ValidationError
@@ -131,7 +127,7 @@ COLUMN_HEADERS = [
 ENTRY_MODE_OPTIONS = [("Free Qty", "free_qty"), ("Net Rate", "net_rate")]
 
 PAYMENT_TYPE_OPTIONS = [
-    ("(Credit -- not paid now)", None),
+    ("Credit", None),
     ("Cash", "Cash"),
     ("Bank", "Bank"),
     ("eSewa", "eSewa"),
@@ -190,7 +186,15 @@ class SaleInvoiceFormScreen(QDialog):
     ) -> None:
         super().__init__(parent)
         self._embedded = embedded
-        apply_standard_window_chrome(self, width=1300, height=800, start_maximized=True, embedded=embedded)
+        self.setObjectName("saleInvoiceFormScreen")
+        apply_standard_window_chrome(
+            self,
+            width=1440,
+            height=900,
+            min_size=QSize(1120, 720),
+            start_maximized=True,
+            embedded=embedded,
+        )
 
         self._engine = engine
         self._customer_engine = customer_engine
@@ -251,159 +255,222 @@ class SaleInvoiceFormScreen(QDialog):
     # ------------------------------------------------------------------ #
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(10, 7, 10, 7)
+        root.setSpacing(6)
 
-        # HEADER: Back button + title + Invoice No + Date (all one row now)
-        header_row = QHBoxLayout()
+        header = QHBoxLayout()
+        header.setSpacing(8)
         if self._embedded:
-            self.btnBack = QPushButton("← Back", self)
+            self.btnBack = QPushButton("Back", self)
             self.btnBack.setCursor(Qt.PointingHandCursor)
-            self.btnBack.setFlat(True)
-            self.btnBack.setStyleSheet(
-                "QPushButton { border: none; background: transparent; padding: 4px 8px; }"
-                "QPushButton:hover { background: rgba(127,127,127,40); border-radius: 4px; }"
-            )
+            self.btnBack.setObjectName("saleSecondaryButton")
             self.btnBack.clicked.connect(self.reject)
-            header_row.addWidget(self.btnBack)
-        header_title = QLabel("New Sale Invoice")
-        header_title.setStyleSheet("font-weight: bold; font-size: 16px;")
-        header_row.addWidget(header_title)
-        header_row.addSpacing(24)
-        header_row.addWidget(QLabel("Invoice No:"))
+            header.addWidget(self.btnBack)
+        self.form_title_label = QLabel("New Sale Invoice")
+        self.form_title_label.setObjectName("saleFormTitle")
+        header.addWidget(self.form_title_label)
+        header.addStretch(1)
+        invoice_meta = QVBoxLayout()
+        invoice_meta.setSpacing(0)
+        invoice_label = QLabel("INVOICE NUMBER")
+        invoice_label.setObjectName("saleFieldCaption")
         self.invoice_no_label = QLabel("(auto-generated)")
-        self.invoice_no_label.setStyleSheet("color: #666; font-style: italic;")
-        header_row.addWidget(self.invoice_no_label)
-        header_row.addSpacing(24)
-        header_row.addWidget(QLabel("Date:"))
+        self.invoice_no_label.setObjectName("saleInvoiceNumber")
+        invoice_meta.addWidget(invoice_label)
+        invoice_meta.addWidget(self.invoice_no_label)
+        header.addLayout(invoice_meta)
+        date_panel = QVBoxLayout()
+        date_panel.setSpacing(0)
+        date_label = QLabel("INVOICE DATE (BS)")
+        date_label.setObjectName("saleFieldCaption")
+        date_panel.addWidget(date_label)
         self.invoice_date_input = BSCalendarDatePicker()
-        header_row.addWidget(self.invoice_date_input)
-        header_row.addStretch()
-        root.addLayout(header_row)
+        self.invoice_date_input.setFixedWidth(145)
+        date_panel.addWidget(self.invoice_date_input)
+        header.addLayout(date_panel)
+        root.addLayout(header)
 
-        top_row = QHBoxLayout()
+        details_row = QHBoxLayout()
+        details_row.setSpacing(6)
 
-        # LEFT: customer selection
-        left_form = QFormLayout()
+        customer_group = QGroupBox("Customer & Payment")
+        customer_group.setObjectName("saleSectionCard")
+        customer_grid = QGridLayout(customer_group)
+        customer_grid.setContentsMargins(8, 14, 8, 7)
+        customer_grid.setHorizontalSpacing(7)
+        customer_grid.setVerticalSpacing(2)
+
+        def add_field(layout, text: str, widget, row: int, column: int) -> None:
+            caption = QLabel(text)
+            caption.setObjectName("saleFieldCaption")
+            layout.addWidget(caption, row, column)
+            layout.addWidget(widget, row + 1, column)
+
         self.area_combo = QComboBox()
-        self.area_combo.setMinimumWidth(200)
-        left_form.addRow("Area:", self.area_combo)
-
+        self.area_combo.setMinimumWidth(80)
+        add_field(customer_grid, "Area", self.area_combo, 0, 0)
         self.customer_combo = QComboBox()
-        self.customer_combo.setMinimumWidth(240)
-        left_form.addRow("Customer:", self.customer_combo)
-
+        self.customer_combo.setMinimumWidth(120)
+        add_field(customer_grid, "Customer", self.customer_combo, 0, 1)
         self.payment_type_combo = QComboBox()
         for label, data in PAYMENT_TYPE_OPTIONS:
             self.payment_type_combo.addItem(label, data)
-        left_form.addRow("Payment Type:", self.payment_type_combo)
-
-        top_row.addLayout(left_form)
-
-        # Customer Info panel -- Contact No / Price Level / Credit Limit /
-        # Customer Balance (outstanding) / Sale Mode. Read-only, purely
-        # displays what customer_engine.get_customer() + SaleEngine's
-        # get_customer_outstanding() already return.
-        info_form = QFormLayout()
+        add_field(customer_grid, "Payment type", self.payment_type_combo, 2, 0)
+        customer_snapshot = QWidget()
+        info_grid = QGridLayout(customer_snapshot)
+        info_grid.setContentsMargins(0, 3, 0, 0)
+        info_grid.setHorizontalSpacing(8)
+        info_grid.setVerticalSpacing(1)
         self.contact_no_label = QLabel("-")
-        info_form.addRow("Contact No.:", self.contact_no_label)
+        add_field(info_grid, "Contact no.", self.contact_no_label, 0, 0)
         self.price_level_label = QLabel("-")
-        info_form.addRow("Price Level:", self.price_level_label)
+        add_field(info_grid, "Price level", self.price_level_label, 0, 1)
         self.credit_limit_label = QLabel("-")
-        info_form.addRow("Credit Limit:", self.credit_limit_label)
+        add_field(info_grid, "Credit limit", self.credit_limit_label, 0, 2)
         self.outstanding_label = QLabel("-")
-        self.outstanding_label.setStyleSheet("font-weight: bold; color: #8e44ad;")
-        info_form.addRow("Customer Balance:", self.outstanding_label)
+        self.outstanding_label.setObjectName("saleOutstandingValue")
+        add_field(info_grid, "Outstanding", self.outstanding_label, 2, 0)
         self.mode_label = QLabel("Wholesale" if self._is_wholesale else "Retail")
-        self.mode_label.setStyleSheet("font-weight: bold;")
-        info_form.addRow("Sale Mode:", self.mode_label)
-        top_row.addLayout(info_form)
+        self.mode_label.setObjectName("saleModeValue")
+        add_field(info_grid, "Sale mode", self.mode_label, 2, 1)
+        info_grid.setColumnStretch(0, 1)
+        info_grid.setColumnStretch(1, 1)
+        info_grid.setColumnStretch(2, 1)
+        customer_grid.addWidget(customer_snapshot, 4, 0, 1, 2)
+        customer_grid.setColumnStretch(0, 2)
+        customer_grid.setColumnStretch(1, 3)
+        details_row.addWidget(customer_group, 6)
 
-        # RIGHT: amount details panel (paid / bill discount / grand total / due)
-        amount_panel = QFormLayout()
+        amount_group = QGroupBox("Invoice Summary")
+        amount_group.setObjectName("saleSectionCard")
+        amount_panel = QGridLayout(amount_group)
+        amount_panel.setContentsMargins(8, 14, 8, 7)
+        amount_panel.setHorizontalSpacing(6)
+        amount_panel.setVerticalSpacing(2)
         self.amount_paid_input = _make_blank_until_typed_spin(maximum=100_000_000)
-        amount_panel.addRow("Amount Paid Now:", self.amount_paid_input)
-
+        self.amount_paid_input.setPrefix("Rs. ")
+        self.amount_paid_input.setFixedWidth(118)
+        add_field(amount_panel, "Paid now", self.amount_paid_input, 0, 0)
         self.bill_discount_mode_combo = QComboBox()
         self.bill_discount_mode_combo.addItems(["Flat", "%"])
+        self.bill_discount_mode_combo.setFixedWidth(54)
         self.bill_discount_input = _make_blank_until_typed_spin(maximum=100_000_000)
+        self.bill_discount_input.setFixedWidth(104)
         discount_row = QHBoxLayout()
+        discount_row.setContentsMargins(0, 0, 0, 0)
+        discount_row.setSpacing(3)
         discount_row.addWidget(self.bill_discount_mode_combo)
         discount_row.addWidget(self.bill_discount_input)
-        amount_panel.addRow("Bill Discount:", discount_row)
-
-        self.grand_total_label = QLabel("Grand Total (preview): 0.00")
-        self.grand_total_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-        amount_panel.addRow(self.grand_total_label)
-
+        discount_widget = QWidget()
+        discount_widget.setLayout(discount_row)
+        add_field(amount_panel, "Bill discount", discount_widget, 0, 1)
+        self.grand_total_label = QLabel("Total: 0.00")
+        self.grand_total_label.setObjectName("saleGrandTotal")
+        self.grand_total_label.setWordWrap(True)
+        self.grand_total_label.setMaximumWidth(230)
+        amount_panel.addWidget(self.grand_total_label, 2, 0, 1, 2)
         self.due_label = QLabel("Due: 0.00")
-        self.due_label.setStyleSheet("font-weight: bold; color: #c0392b;")
-        amount_panel.addRow(self.due_label)
+        self.due_label.setObjectName("saleDueTotal")
+        amount_panel.addWidget(self.due_label, 3, 0, 1, 2)
+        amount_panel.setColumnStretch(0, 1)
+        amount_panel.setColumnStretch(1, 1)
+        details_row.addWidget(amount_group, 4)
 
-        top_row.addLayout(amount_panel)
+        root.addLayout(details_row)
 
-        # Equal-width 3-column split (Customer / Info / Amount panels) --
-        # replaces the old addStretch()-based layout where the amount
-        # panel only took its content width and left space unused.
-        top_row.setStretchFactor(left_form, 1)
-        top_row.setStretchFactor(info_form, 1)
-        top_row.setStretchFactor(amount_panel, 1)
-
-        root.addLayout(top_row)
-
-        # Barcode scan row -- typing/scanning a barcode + Enter looks up
-        # the matching item_batch and selects that item on a row. Works
-        # identically with a hardware scanner or a phone scanner-app,
-        # since both just type text + Enter into whichever field has focus.
-        scan_row = QHBoxLayout()
-        scan_row.addWidget(QLabel("Scan Barcode:"))
+        item_group = QGroupBox("Invoice Items")
+        item_group.setObjectName("saleSectionCard")
+        item_layout = QVBoxLayout(item_group)
+        item_layout.setContentsMargins(8, 14, 8, 7)
+        item_layout.setSpacing(4)
+        item_toolbar = QHBoxLayout()
+        item_toolbar.setSpacing(5)
+        self.line_count_label = QLabel("0 items")
+        self.line_count_label.setObjectName("saleLineCount")
+        item_toolbar.addWidget(self.line_count_label)
+        item_toolbar.addSpacing(5)
         self.barcode_scan_input = QLineEdit()
-        self.barcode_scan_input.setPlaceholderText("Scan or type a batch barcode, then Enter")
-        self.barcode_scan_input.setMaximumWidth(260)
+        self.barcode_scan_input.setPlaceholderText("Scan barcode")
+        self.barcode_scan_input.setClearButtonEnabled(True)
+        self.barcode_scan_input.setMaximumWidth(210)
         self.barcode_scan_input.returnPressed.connect(self._on_barcode_scanned)
-        scan_row.addWidget(self.barcode_scan_input)
-        self.connect_mobile_button = QPushButton("📱 Connect Mobile")
+        item_toolbar.addWidget(self.barcode_scan_input)
+        self.connect_mobile_button = QPushButton("Mobile")
+        self.connect_mobile_button.setObjectName("saleSecondaryButton")
+        self.connect_mobile_button.setToolTip("Connect mobile scanner")
         self.connect_mobile_button.clicked.connect(self._on_connect_mobile_clicked)
-        scan_row.addWidget(self.connect_mobile_button)
-        scan_row.addStretch()
-        root.addLayout(scan_row)
+        item_toolbar.addWidget(self.connect_mobile_button)
+        item_toolbar.addStretch(1)
+        self.remove_line_button = QPushButton("Remove")
+        self.remove_line_button.setObjectName("saleSecondaryButton")
+        item_toolbar.addWidget(self.remove_line_button)
+        self.add_line_button = QPushButton("+ Item")
+        self.add_line_button.setObjectName("saleSecondaryButton")
+        item_toolbar.addWidget(self.add_line_button)
+        item_layout.addLayout(item_toolbar)
 
         self.table = QTableWidget(0, COLUMN_COUNT)
+        self.table.setObjectName("saleInvoiceLines")
         self.table.setHorizontalHeaderLabels(COLUMN_HEADERS)
-        self.table.horizontalHeader().setSectionResizeMode(COL_ITEM, QHeaderView.Stretch)
-        self.table.setColumnWidth(COL_BATCH_NO, 100)
-        self.table.setColumnWidth(COL_EXPIRY, 90)
-        self.table.setColumnWidth(COL_PACKING, 80)
-        self.table.setColumnWidth(COL_ENTRY_MODE, 100)
-        self.table.setColumnWidth(COL_QTY, 70)
-        self.table.setColumnWidth(COL_FREE_QTY, 70)
-        self.table.setColumnWidth(COL_RATE, 90)
-        self.table.setColumnWidth(COL_DISCOUNT_PCT, 70)
-        self.table.setColumnWidth(COL_MRP, 90)
-        self.table.setColumnWidth(COL_TAX_PCT, 60)
-        self.table.setColumnWidth(COL_TAX_AMOUNT, 90)
-        self.table.setColumnWidth(COL_AMOUNT, 100)
-        self.table.verticalHeader().setDefaultSectionSize(34)
+        table_header = self.table.horizontalHeader()
+        table_header.setSectionResizeMode(COL_ITEM, QHeaderView.Stretch)
+        table_header.setMinimumSectionSize(68)
+        table_header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        for column in (
+            COL_EXPIRY, COL_ENTRY_MODE, COL_QTY, COL_FREE_QTY, COL_RATE,
+            COL_DISCOUNT_PCT, COL_MRP, COL_TAX_PCT, COL_TAX_AMOUNT, COL_AMOUNT,
+        ):
+            self.table.horizontalHeaderItem(column).setTextAlignment(
+                Qt.AlignCenter | Qt.AlignVCenter
+            )
+        self.table.setColumnWidth(COL_BATCH_NO, 78)
+        self.table.setColumnWidth(COL_EXPIRY, 72)
+        self.table.setColumnWidth(COL_PACKING, 58)
+        self.table.setColumnWidth(COL_ENTRY_MODE, 78)
+        self.table.setColumnWidth(COL_QTY, 56)
+        self.table.setColumnWidth(COL_FREE_QTY, 56)
+        self.table.setColumnWidth(COL_RATE, 68)
+        self.table.setColumnWidth(COL_DISCOUNT_PCT, 54)
+        self.table.setColumnWidth(COL_MRP, 66)
+        self.table.setColumnWidth(COL_TAX_PCT, 48)
+        self.table.setColumnWidth(COL_TAX_AMOUNT, 64)
+        self.table.setColumnWidth(COL_AMOUNT, 78)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        root.addWidget(self.table, stretch=1)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        item_layout.addWidget(self.table, stretch=1)
+        root.addWidget(item_group)
 
         self._apply_column_visibility()
 
-        # FOOTER: Remarks (narrow) + Total Qty/Free + Remove Row + Save/Cancel -- all one row
         footer_row = QHBoxLayout()
-        footer_row.addWidget(QLabel("Remarks:"))
+        footer_row.setSpacing(8)
+        remarks_panel = QVBoxLayout()
+        remarks_panel.setSpacing(1)
+        remarks_label = QLabel("REMARKS")
+        remarks_label.setObjectName("saleFieldCaption")
+        remarks_panel.addWidget(remarks_label)
         self.remarks_input = QLineEdit()
-        self.remarks_input.setPlaceholderText("Optional notes")
-        self.remarks_input.setMaximumWidth(220)
-        footer_row.addWidget(self.remarks_input)
-        footer_row.addSpacing(16)
+        self.remarks_input.setPlaceholderText("Remarks")
+        self.remarks_input.setMaximumWidth(280)
+        remarks_panel.addWidget(self.remarks_input)
+        footer_row.addLayout(remarks_panel, stretch=2)
         self.total_qty_label = QLabel("Total Qty: 0")
+        self.total_qty_label.setObjectName("saleFooterMetric")
         footer_row.addWidget(self.total_qty_label)
         self.total_free_qty_label = QLabel("Total Free: 0")
+        self.total_free_qty_label.setObjectName("saleFooterMetric")
         footer_row.addWidget(self.total_free_qty_label)
-        footer_row.addStretch()
-        self.remove_line_button = QPushButton("Remove Selected Row")
-        footer_row.addWidget(self.remove_line_button)
+        footer_row.addStretch(1)
         self.save_button = QPushButton("Save")
+        self.save_button.setObjectName("salePrimaryButton")
         self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setObjectName("saleSecondaryButton")
+        self.save_button.setFixedWidth(82)
+        self.cancel_button.setFixedWidth(72)
         footer_row.addWidget(self.save_button)
         footer_row.addWidget(self.cancel_button)
         root.addLayout(footer_row)
@@ -447,6 +514,7 @@ class SaleInvoiceFormScreen(QDialog):
 
     def _connect_signals(self) -> None:
         self.remove_line_button.clicked.connect(self._on_remove_selected_row)
+        self.add_line_button.clicked.connect(self._add_line_row)
         self.save_button.clicked.connect(self._on_save_clicked)
         self.cancel_button.clicked.connect(self.reject)
         self.area_combo.currentIndexChanged.connect(
@@ -578,6 +646,15 @@ class SaleInvoiceFormScreen(QDialog):
         self._row_free_qty_overridden[row] = False
 
         self._apply_column_visibility()
+        self._update_line_count()
+
+    def _update_line_count(self) -> None:
+        count = sum(
+            1
+            for row in range(self.table.rowCount())
+            if self.table.cellWidget(row, COL_ITEM).currentData() is not None
+        )
+        self.line_count_label.setText(f"{count} item{'s' if count != 1 else ''}")
 
     def _load_existing_invoice(self, invoice_id: int) -> None:
         try:
@@ -589,6 +666,7 @@ class SaleInvoiceFormScreen(QDialog):
 
         self._editing_invoice_id = invoice_id
         self.setWindowTitle(f"Edit Sale Invoice — {dto.invoice_number}")
+        self.form_title_label.setText("Edit Sale Invoice")
         self.invoice_no_label.setText(dto.invoice_number)
 
         area_idx = self.area_combo.findData(dto.area_id)
@@ -659,7 +737,9 @@ class SaleInvoiceFormScreen(QDialog):
             "discount_percent": line.discount_percent,
         }
         try:
-            computed = self._engine.compute_line(line_input, self._is_wholesale)
+            computed = self._engine.compute_line(
+                line_input, self._is_wholesale, self._free_scheme_enabled
+            )
             self._apply_computed_line_to_row(row, computed)
         except Exception:
             logger.exception("Failed to recompute preview for existing line item_id=%s", line.item_id)
@@ -672,6 +752,7 @@ class SaleInvoiceFormScreen(QDialog):
             for r in sorted((k for k in store if k > row)):
                 store[r - 1] = store.pop(r)
             store.pop(row, None)
+        self._update_line_count()
         self._update_totals_preview()
 
     def _on_remove_selected_row(self) -> None:
@@ -748,7 +829,9 @@ class SaleInvoiceFormScreen(QDialog):
             line_input["free_qty"] = self.table.cellWidget(row, COL_FREE_QTY).value()
 
         try:
-            computed = self._engine.compute_line(line_input, self._is_wholesale)
+            computed = self._engine.compute_line(
+                line_input, self._is_wholesale, self._free_scheme_enabled
+            )
         except ValidationError as exc:
             QMessageBox.warning(self, "Cannot Add Item", "\n".join(exc.errors))
             item_combo = self.table.cellWidget(row, COL_ITEM)
@@ -770,33 +853,37 @@ class SaleInvoiceFormScreen(QDialog):
         self._update_totals_preview()
 
     def _apply_computed_line_to_row(self, row: int, computed: dict) -> None:
-        self.table.item(row, COL_BATCH_NO).setText(str(computed.get("batch_no") or ""))
+        batch_item = self.table.item(row, COL_BATCH_NO)
+        batch_item.setText(str(computed.get("batch_no") or ""))
+        batch_item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
         expiry_month = computed.get("expiry_month")
         expiry_year = computed.get("expiry_year")
         expiry_text = f"{expiry_month:02d}/{expiry_year}" if expiry_month and expiry_year else ""
-        self.table.item(row, COL_EXPIRY).setText(expiry_text)
-        self.table.item(row, COL_PACKING).setText(str(computed.get("packing") or ""))
-        self.table.item(row, COL_MRP).setText(f"{computed.get('mrp', 0):.2f}")
-        self.table.item(row, COL_TAX_PCT).setText(f"{computed.get('tax_percent', 0):.2f}")
-        self.table.item(row, COL_TAX_AMOUNT).setText(f"{computed.get('tax_amount', 0):.2f}")
-        self.table.item(row, COL_AMOUNT).setText(f"{computed.get('amount', 0):.2f}")
+        expiry_item = self.table.item(row, COL_EXPIRY)
+        expiry_item.setText(expiry_text)
+        expiry_item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+        packing_item = self.table.item(row, COL_PACKING)
+        packing_item.setText(str(computed.get("packing") or ""))
+        packing_item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+        mrp_item = self.table.item(row, COL_MRP)
+        mrp_item.setText(f"{computed.get('mrp', 0):.2f}")
+        mrp_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        tax_percent_item = self.table.item(row, COL_TAX_PCT)
+        tax_percent_item.setText(f"{computed.get('tax_percent', 0):.2f}")
+        tax_percent_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        tax_amount_item = self.table.item(row, COL_TAX_AMOUNT)
+        tax_amount_item.setText(f"{computed.get('tax_amount', 0):.2f}")
+        tax_amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        amount_item = self.table.item(row, COL_AMOUNT)
+        amount_item.setText(f"{computed.get('amount', 0):.2f}")
+        amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         if not self._row_rate_overridden.get(row):
             self._set_spin_value_silently(self.table.cellWidget(row, COL_RATE), computed.get("rate", 0))
         if not self._row_free_qty_overridden.get(row):
             self._set_spin_value_silently(self.table.cellWidget(row, COL_FREE_QTY), computed.get("free_qty", 0))
 
-        free_qty_spin = self.table.cellWidget(row, COL_FREE_QTY)
-        if self._free_scheme_enabled:
-            item_id = self.table.cellWidget(row, COL_ITEM).currentData()
-            scheme = self._item_free_scheme_engine.get_scheme_for_item(item_id) if item_id else None
-            if scheme is not None:
-                scheme_qty, scheme_free = scheme
-                free_qty_spin.setToolTip(f"Scheme: {scheme_qty:g}+{scheme_free:g}")
-            else:
-                free_qty_spin.setToolTip("No free scheme configured for this item.")
-        else:
-            free_qty_spin.setToolTip("")
+        self._update_line_count()
 
     def _on_row_entry_mode_toggled(self, row: int) -> None:
         """Free Qty mode <-> Net Rate mode switch for one row; clears any
@@ -848,7 +935,9 @@ class SaleInvoiceFormScreen(QDialog):
         gross = qty * rate
         discount_amount = gross * discount_percent / 100
         amount = gross - discount_amount
-        self.table.item(row, COL_AMOUNT).setText(f"{amount:.2f}")
+        amount_item = self.table.item(row, COL_AMOUNT)
+        amount_item.setText(f"{amount:.2f}")
+        amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._update_totals_preview()
 
     def _update_totals_preview(self) -> None:
@@ -882,7 +971,7 @@ class SaleInvoiceFormScreen(QDialog):
 
         self.total_qty_label.setText(f"Total Qty: {total_qty:g}")
         self.total_free_qty_label.setText(f"Total Free: {total_free_qty:g}")
-        self.grand_total_label.setText(f"Grand Total (preview): {grand_total_after_discount:,.2f}")
+        self.grand_total_label.setText(f"Total: {grand_total_after_discount:,.2f}")
         paid = self.amount_paid_input.value() if self.amount_paid_input.text().strip() else 0.0
         due = grand_total_after_discount - paid
         self.due_label.setText(f"Due: {due:,.2f}")

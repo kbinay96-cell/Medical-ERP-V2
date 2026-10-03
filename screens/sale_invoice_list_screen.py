@@ -25,18 +25,17 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QDate, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDateEdit, QDialog, QFormLayout,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QGridLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from engines.exceptions import RecordNotFoundError
 from engines.exceptions import RecordNotFoundError, ValidationError
 from engines.permission_enforcer import PermissionDeniedError
 from engines.sale_engine import SaleEngine, SaleInvoiceDTO
+from screens.cancellation_reason_dialog import CancellationReasonDialog
 from screens.sale_invoice_form_screen import SaleInvoiceFormScreen
 from screens.sale_invoice_view_dialog import SaleInvoiceViewDialog
 
@@ -55,8 +54,7 @@ COL_DATE = 3
 COL_MODE = 4
 COL_GRAND_TOTAL = 5
 COL_STATUS = 6
-COL_ACTIONS = 7
-COLUMN_COUNT = 8
+COLUMN_COUNT = 7
 
 
 class SaleInvoiceListScreen(QWidget):
@@ -78,6 +76,7 @@ class SaleInvoiceListScreen(QWidget):
     ) -> None:
         super().__init__(parent)
         self._embedded = embedded
+        self.setObjectName("saleInvoiceListScreen")
         self._engine = engine
         self._customer_engine = customer_engine
         self._item_engine = item_engine
@@ -99,73 +98,133 @@ class SaleInvoiceListScreen(QWidget):
     # ------------------------------------------------------------------ #
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(6)
 
+        header = QHBoxLayout()
+        header.setSpacing(8)
         if self._embedded:
-            back_row = QHBoxLayout()
-            self.back_button = QPushButton("\u25c0 Back")
+            self.back_button = QPushButton("Back")
+            self.back_button.setObjectName("saleSecondaryButton")
             self.back_button.clicked.connect(self.close_requested.emit)
-            back_row.addWidget(self.back_button)
-            back_row.addStretch()
-            root.addLayout(back_row)
+            header.addWidget(self.back_button)
+        title = QLabel("Sale Invoices")
+        title.setObjectName("saleListTitle")
+        header.addWidget(title)
+        self.result_count_label = QLabel("0 invoices")
+        self.result_count_label.setObjectName("saleListCount")
+        header.addStretch(1)
+        header.addWidget(self.result_count_label)
+        self.new_button = QPushButton("+ New Invoice")
+        self.new_button.setObjectName("salePrimaryButton")
+        self.new_button.setMinimumWidth(150)
+        self.new_button.setMaximumWidth(180)
+        header.addWidget(self.new_button)
+        root.addLayout(header)
 
-        filter_row = QHBoxLayout()
-        filter_row.addWidget(QLabel("Search:"))
+        filter_group = QGroupBox("Search & filters")
+        filter_group.setObjectName("saleSectionCard")
+        filter_grid = QGridLayout(filter_group)
+        filter_grid.setContentsMargins(8, 13, 8, 7)
+        filter_grid.setHorizontalSpacing(8)
+        filter_grid.setVerticalSpacing(3)
+
+        def add_filter_field(label: str, widget, row: int, column: int, span: int = 1) -> None:
+            caption = QLabel(label)
+            caption.setObjectName("saleFieldCaption")
+            filter_grid.addWidget(caption, row, column, 1, span)
+            filter_grid.addWidget(widget, row + 1, column, 1, span)
+
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Invoice number or customer...")
-        filter_row.addWidget(self.search_input)
-
-        filter_row.addWidget(QLabel("Area:"))
+        self.search_input.setClearButtonEnabled(True)
+        add_filter_field("Search", self.search_input, 0, 0, 2)
         self.area_filter_combo = QComboBox()
-        filter_row.addWidget(self.area_filter_combo)
-
-        filter_row.addWidget(QLabel("Status:"))
+        add_filter_field("Area", self.area_filter_combo, 0, 2)
         self.status_filter_combo = QComboBox()
         self.status_filter_combo.addItems(STATUS_OPTIONS)
-        filter_row.addWidget(self.status_filter_combo)
-
-        filter_row.addWidget(QLabel("Mode:"))
+        add_filter_field("Status", self.status_filter_combo, 0, 3)
         self.sale_mode_filter_combo = QComboBox()
         self.sale_mode_filter_combo.addItems(SALE_MODE_OPTIONS)
-        filter_row.addWidget(self.sale_mode_filter_combo)
+        add_filter_field("Sale mode", self.sale_mode_filter_combo, 0, 4)
 
-        filter_row.addWidget(QLabel("From:"))
+        self.date_filter_checkbox = QCheckBox("Date range")
+        self.date_filter_checkbox.setToolTip("Restrict results to the selected invoice date range.")
+        filter_grid.addWidget(self.date_filter_checkbox, 2, 0, 1, 1, Qt.AlignVCenter)
         self.date_from = QDateEdit()
         self.date_from.setCalendarPopup(True)
-        filter_row.addWidget(self.date_from)
-
-        filter_row.addWidget(QLabel("To:"))
+        self.date_from.setDisplayFormat("dd MMM yyyy")
+        self.date_from.setDate(QDate.currentDate().addMonths(-1))
+        self.date_from.setEnabled(False)
+        add_filter_field("From", self.date_from, 2, 1)
         self.date_to = QDateEdit()
         self.date_to.setCalendarPopup(True)
-        filter_row.addWidget(self.date_to)
-
+        self.date_to.setDisplayFormat("dd MMM yyyy")
+        self.date_to.setDate(QDate.currentDate())
+        self.date_to.setEnabled(False)
+        add_filter_field("To", self.date_to, 2, 2)
         self.search_button = QPushButton("Filter")
-        filter_row.addWidget(self.search_button)
-
-        self.new_button = QPushButton("+ New Sale Invoice")
-        filter_row.addStretch()
-        filter_row.addWidget(self.new_button)
-
-        root.addLayout(filter_row)
+        self.search_button.setObjectName("saleSecondaryButton")
+        self.search_button.setMinimumWidth(120)
+        filter_grid.addWidget(self.search_button, 3, 3, 1, 2, Qt.AlignRight | Qt.AlignBottom)
+        for column in range(5):
+            filter_grid.setColumnStretch(column, 1)
+        filter_grid.setColumnStretch(0, 2)
+        root.addWidget(filter_group)
 
         self.table = QTableWidget(0, COLUMN_COUNT)
+        self.table.setObjectName("saleInvoiceListTable")
         self.table.setHorizontalHeaderLabels(
-            ["Invoice No.", "Customer", "Area", "Date", "Mode", "Grand Total", "Status", ""]
+            ["Invoice No.", "Customer", "Area", "Date", "Mode", "Grand Total", "Status"]
         )
-        self.table.horizontalHeader().setSectionResizeMode(COL_CUSTOMER, QHeaderView.Stretch)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(COL_CUSTOMER, QHeaderView.Stretch)
+        header.setMinimumSectionSize(80)
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.table.setColumnWidth(COL_INVOICE_NO, 110)
+        self.table.setColumnWidth(COL_AREA, 100)
+        self.table.setColumnWidth(COL_DATE, 82)
+        self.table.setColumnWidth(COL_MODE, 78)
+        self.table.setColumnWidth(COL_GRAND_TOTAL, 96)
+        self.table.setColumnWidth(COL_STATUS, 82)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
         root.addWidget(self.table)
 
         pagination_row = QHBoxLayout()
+        pagination_row.setSpacing(5)
+        self.view_button = QPushButton("View")
+        self.view_button.setObjectName("saleSecondaryButton")
+        self.view_button.setToolTip("View the selected invoice.")
+        self.view_button.setEnabled(False)
+        pagination_row.addWidget(self.view_button)
+        self.edit_button = QPushButton("Edit")
+        self.edit_button.setObjectName("saleSecondaryButton")
+        self.edit_button.setToolTip("Edit the selected invoice.")
+        self.edit_button.setEnabled(False)
+        pagination_row.addWidget(self.edit_button)
+        self.cancel_invoice_button = QPushButton("Cancel")
+        self.cancel_invoice_button.setObjectName("saleSecondaryButton")
+        self.cancel_invoice_button.setToolTip("Cancel the selected Posted invoice.")
+        self.cancel_invoice_button.setEnabled(False)
+        pagination_row.addWidget(self.cancel_invoice_button)
+        pagination_row.addSpacing(10)
         self.prev_page_button = QPushButton("\u25c0 Prev")
+        self.prev_page_button.setObjectName("saleSecondaryButton")
         pagination_row.addWidget(self.prev_page_button)
         self.page_label = QLabel("Page 1")
         pagination_row.addWidget(self.page_label)
         self.next_page_button = QPushButton("Next \u25b6")
+        self.next_page_button.setObjectName("saleSecondaryButton")
         pagination_row.addWidget(self.next_page_button)
-        pagination_row.addStretch()
         self.page_total_label = QLabel("Page Total: 0.00")
-        self.page_total_label.setStyleSheet("font-weight: bold;")
+        self.page_total_label.setObjectName("saleListPageTotal")
+        pagination_row.addStretch()
         pagination_row.addWidget(self.page_total_label)
         root.addLayout(pagination_row)
 
@@ -176,10 +235,17 @@ class SaleInvoiceListScreen(QWidget):
         self.sale_mode_filter_combo.currentIndexChanged.connect(self._reload_first_page)
         self.date_from.dateChanged.connect(self._reload_first_page)
         self.date_to.dateChanged.connect(self._reload_first_page)
+        self.date_filter_checkbox.toggled.connect(self.date_from.setEnabled)
+        self.date_filter_checkbox.toggled.connect(self.date_to.setEnabled)
+        self.date_filter_checkbox.toggled.connect(self._reload_first_page)
         self.search_button.clicked.connect(self._reload_first_page)
         self.new_button.clicked.connect(self._on_new_clicked)
         self.prev_page_button.clicked.connect(self._on_prev_page)
         self.next_page_button.clicked.connect(self._on_next_page)
+        self.table.itemSelectionChanged.connect(self._update_selection_actions)
+        self.view_button.clicked.connect(self._on_view_selected)
+        self.edit_button.clicked.connect(self._on_edit_selected)
+        self.cancel_invoice_button.clicked.connect(self._on_cancel_selected)
         self.table.itemDoubleClicked.connect(self._on_row_double_clicked)
 
     def _populate_area_filter(self) -> None:
@@ -201,22 +267,33 @@ class SaleInvoiceListScreen(QWidget):
         mode_text = self.sale_mode_filter_combo.currentText()
         sale_mode = None if mode_text == "All" else mode_text
 
-        # NOTE: Area/Date-range filters are not sent -- the real
-        # SaleEngine.search_sale_invoices() does not accept area_id,
-        # date_from_ad, or date_to_ad (only search_text, customer_id,
-        # status, sale_mode, include_deleted, page, page_size, order_by,
-        # order_dir). The Area combo and date pickers stay in the UI but
-        # currently have no filtering effect -- wire them up once/if the
-        # engine adds support, or filter client-side on self._rows if
-        # needed sooner.
+        area_id = self.area_filter_combo.currentData()
+        date_from_ad = (
+            self.date_from.date().toString(Qt.ISODate)
+            if self.date_filter_checkbox.isChecked()
+            else None
+        )
+        date_to_ad = (
+            self.date_to.date().toString(Qt.ISODate)
+            if self.date_filter_checkbox.isChecked()
+            else None
+        )
         self._rows, total_count = self._engine.search_sale_invoices(
             search_text=search_text,
+            area_id=area_id,
             status=status,
             sale_mode=sale_mode,
+            date_from_ad=date_from_ad,
+            date_to_ad=date_to_ad,
+            include_deleted=status in (None, "Cancelled"),
             page=self._current_page,
             page_size=PAGE_SIZE,
         )
         self._populate_table()
+        self._update_selection_actions()
+        self.result_count_label.setText(
+            f"{total_count:,} invoice{'s' if total_count != 1 else ''}"
+        )
 
         total_pages = max((total_count + PAGE_SIZE - 1) // PAGE_SIZE, 1)
         self.page_label.setText(f"Page {self._current_page} of {total_pages}")
@@ -227,33 +304,73 @@ class SaleInvoiceListScreen(QWidget):
         self.page_total_label.setText(f"Page Total: {page_total:,.2f}")
 
     def _populate_table(self) -> None:
+        self.table.clearSpans()
         self.table.setRowCount(0)
+        if not self._rows:
+            self.table.insertRow(0)
+            empty_item = QTableWidgetItem("No sale invoices match these filters")
+            empty_item.setTextAlignment(Qt.AlignCenter)
+            empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsSelectable)
+            self.table.setItem(0, COL_INVOICE_NO, empty_item)
+            self.table.setSpan(0, 0, 1, COLUMN_COUNT)
+            self.table.setRowHeight(0, 64)
+            self._update_selection_actions()
+            return
+
         for dto in self._rows:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            self.table.setItem(row, COL_INVOICE_NO, QTableWidgetItem(dto.invoice_number))
+            invoice_item = QTableWidgetItem(dto.invoice_number)
+            invoice_item.setData(Qt.UserRole, dto.sale_invoice_id)
+            invoice_item.setFont(self.font())
+            invoice_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.table.setItem(row, COL_INVOICE_NO, invoice_item)
             self.table.setItem(row, COL_CUSTOMER, QTableWidgetItem(dto.customer_name or ""))
             self.table.setItem(row, COL_AREA, QTableWidgetItem(dto.area_name or ""))
-            self.table.setItem(row, COL_DATE, QTableWidgetItem(dto.invoice_date_bs or ""))
-            self.table.setItem(row, COL_MODE, QTableWidgetItem(dto.sale_mode))
-            self.table.setItem(row, COL_GRAND_TOTAL, QTableWidgetItem(f"{dto.grand_total:,.2f}"))
-            self.table.setItem(row, COL_STATUS, QTableWidgetItem(dto.status))
+            date_item = QTableWidgetItem(dto.invoice_date_bs or "")
+            date_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, COL_DATE, date_item)
+            mode_item = QTableWidgetItem(dto.sale_mode)
+            mode_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, COL_MODE, mode_item)
+            total_item = QTableWidgetItem(f"{dto.grand_total:,.2f}")
+            total_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.table.setItem(row, COL_GRAND_TOTAL, total_item)
+            status_item = QTableWidgetItem(dto.status)
+            status_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, COL_STATUS, status_item)
+        self.table.clearSelection()
+        self.table.setCurrentCell(-1, -1)
+        self._update_selection_actions()
 
-            action_widget = QWidget()
-            action_layout = QHBoxLayout(action_widget)
-            action_layout.setContentsMargins(2, 2, 2, 2)
-            view_button = QPushButton("View")
-            view_button.setToolTip("View / print this invoice (read-only).")
-            view_button.clicked.connect(lambda _, sid=dto.sale_invoice_id: self._on_view_clicked(sid))
-            action_layout.addWidget(view_button)
+    def _selected_invoice(self) -> Optional[SaleInvoiceDTO]:
+        if not self.table.selectionModel().hasSelection():
+            return None
+        row = self.table.currentRow()
+        if 0 <= row < len(self._rows):
+            return self._rows[row]
+        return None
 
-            edit_button = QPushButton("Edit")
-            edit_button.setToolTip("Edit this invoice (stock is adjusted automatically for any changes).")
-            edit_button.setEnabled(dto.status != "Cancelled")
-            edit_button.clicked.connect(lambda _, sid=dto.sale_invoice_id: self._on_edit_clicked(sid))
-            action_layout.addWidget(edit_button)
+    def _update_selection_actions(self) -> None:
+        dto = self._selected_invoice()
+        self.view_button.setEnabled(dto is not None)
+        self.edit_button.setEnabled(dto is not None and dto.status != "Cancelled")
+        self.cancel_invoice_button.setEnabled(dto is not None and dto.status == "Posted")
 
-            self.table.setCellWidget(row, COL_ACTIONS, action_widget)
+    def _on_view_selected(self) -> None:
+        dto = self._selected_invoice()
+        if dto is not None:
+            self._on_view_clicked(dto.sale_invoice_id)
+
+    def _on_edit_selected(self) -> None:
+        dto = self._selected_invoice()
+        if dto is not None and dto.status != "Cancelled":
+            self._on_edit_clicked(dto.sale_invoice_id)
+
+    def _on_cancel_selected(self) -> None:
+        dto = self._selected_invoice()
+        if dto is not None and dto.status == "Posted":
+            self._on_cancel_clicked(dto.sale_invoice_id)
 
     def _on_prev_page(self) -> None:
         if self._current_page > 1:
@@ -304,6 +421,31 @@ class SaleInvoiceListScreen(QWidget):
             self._engine.is_free_scheme_enabled(),
         )
         dialog.exec()
+
+    def _on_cancel_clicked(self, sale_invoice_id: int) -> None:
+        dialog = CancellationReasonDialog(
+            self,
+            "Enter why this Sale Invoice is being cancelled. Its stock will be restored.",
+        )
+        if not dialog.exec():
+            return
+        reason = dialog.get_reason()
+        if not reason:
+            return
+
+        try:
+            self._engine.cancel_sale_invoice(
+                sale_invoice_id=sale_invoice_id,
+                current_user_id=self._current_user_id,
+                reason=reason,
+            )
+        except (PermissionDeniedError, RecordNotFoundError, ValidationError) as exc:
+            message = "; ".join(exc.errors) if isinstance(exc, ValidationError) else str(exc)
+            QMessageBox.warning(self, "Unable to Cancel Sale Invoice", message)
+            return
+
+        QMessageBox.information(self, "Sale Invoice Cancelled", "The invoice was cancelled and its stock was restored.")
+        self._reload_first_page()
 
     
 

@@ -98,10 +98,12 @@ class PaymentEngine:
         model: Optional[PaymentModel] = None,
         date_engine: Optional[Any] = None,
         validator: Optional[PaymentValidator] = None,
+        accounting_engine=None,
     ) -> None:
         self._model = model or PaymentModel()
         self._date_engine = date_engine if date_engine is not None else _load_date_engine()
         self._validator = validator or PaymentValidator(payment_number_exists_fn=self._payment_number_exists)
+        self._accounting_engine = accounting_engine
 
     # ------------------------------------------------------------------ #
     # INTERNAL HELPERS
@@ -251,6 +253,15 @@ class PaymentEngine:
             }
 
         payment_id = self._model.insert_with_allocations(header_data, allocation_rows, opening_balance_allocation)
+        if self._accounting_engine is not None and status == "Posted":
+            self._accounting_engine.post_payment_journal(
+                {
+                    **header_data,
+                    "payment_id": payment_id,
+                    "opening_balance_allocated_amount": ob_allocated,
+                },
+                created_by,
+            )
         return self.get_by_id(payment_id)
 
     # ------------------------------------------------------------------ #

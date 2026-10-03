@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDateEdit,
     QHBoxLayout,
@@ -22,10 +24,13 @@ from PySide6.QtWidgets import (
 )
 
 from engines.exceptions import RecordNotFoundError, ValidationError
+from engines.date_engine import DateEngineError, ad_to_bs, bs_to_ad
 from engines.purchase_engine import PurchaseEngine
 
 from utils.window_chrome import apply_standard_window_chrome
 from screens.purchase_invoice_view_dialog import PurchaseInvoiceViewDialog
+from widgets.bs_calendar_date_picker import BSCalendarDatePicker
+from widgets.purchase_invoice_calendar import PurchaseInvoiceCalendar
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +43,10 @@ COL_INVOICE_DATE = 3
 COL_GRAND_TOTAL = 4
 COL_STATUS = 5
 COL_VIEW = 6
-COL_CANCEL = 7
-COL_PRINT = 8
-COLUMN_COUNT = 9
+COL_EDIT = 7
+COL_CANCEL = 8
+COL_PRINT = 9
+COLUMN_COUNT = 10
 
 
 class PurchaseInvoiceListScreen(QWidget):
@@ -60,6 +66,7 @@ class PurchaseInvoiceListScreen(QWidget):
         self._current_invoices: list = []
         self._sort_key = None
         self._sort_ascending = True
+        self._date_filter_applied = False
 
         self._build_ui()
         self._connect_signals()
@@ -88,13 +95,37 @@ class PurchaseInvoiceListScreen(QWidget):
 
         filter_row.addWidget(QLabel("From:"))
         self.date_from = QDateEdit()
+        self.date_from.setObjectName("purchaseDateFrom")
         self.date_from.setCalendarPopup(True)
+        self.date_from.setDisplayFormat("dd MMM yyyy")
+        self.date_from.setDate(QDate.currentDate().addMonths(-1))
+        self.date_from.setCalendarWidget(PurchaseInvoiceCalendar(self.date_from))
         filter_row.addWidget(self.date_from)
 
         filter_row.addWidget(QLabel("To:"))
         self.date_to = QDateEdit()
+        self.date_to.setObjectName("purchaseDateTo")
         self.date_to.setCalendarPopup(True)
+        self.date_to.setDisplayFormat("dd MMM yyyy")
+        self.date_to.setDate(QDate.currentDate())
+        self.date_to.setCalendarWidget(PurchaseInvoiceCalendar(self.date_to))
         filter_row.addWidget(self.date_to)
+
+        self.bs_date_from = BSCalendarDatePicker(self)
+        self.bs_date_from.setMinimumWidth(130)
+        self.bs_date_from.hide()
+        filter_row.addWidget(self.bs_date_from)
+
+        self.bs_date_to = BSCalendarDatePicker(self)
+        self.bs_date_to.setMinimumWidth(130)
+        self.bs_date_to.hide()
+        filter_row.addWidget(self.bs_date_to)
+
+        self.bs_date_mode_checkbox = QCheckBox("Use BS dates")
+        self.bs_date_mode_checkbox.setToolTip(
+            "Switch both date filters between AD and Bikram Sambat calendars."
+        )
+        filter_row.addWidget(self.bs_date_mode_checkbox)
 
         self.search_button = QPushButton("Filter")
         filter_row.addWidget(self.search_button)
@@ -107,7 +138,10 @@ class PurchaseInvoiceListScreen(QWidget):
 
         self.table = QTableWidget(0, COLUMN_COUNT)
         self.table.setHorizontalHeaderLabels(
-            ["Ref No.", "Invoice No.", "Supplier", "Date", "Grand Total", "Status", "", "", ""]
+            [
+                "Ref No.", "Invoice No.", "Supplier", "Date", "Grand Total",
+                "Status", "View", "Edit", "Cancel", "",
+            ]
         )
         self.table.horizontalHeader().setSectionResizeMode(COL_SUPPLIER, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionsClickable(True)
@@ -136,8 +170,71 @@ class PurchaseInvoiceListScreen(QWidget):
         self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         self.prev_page_button.clicked.connect(self._on_prev_page_clicked)
         self.next_page_button.clicked.connect(self._on_next_page_clicked)
+        self.status_filter_combo.currentIndexChanged.connect(self._on_status_filter_changed)
+        self.bs_date_mode_checkbox.toggled.connect(self._on_bs_date_mode_toggled)
+
+    @staticmethod
+    def _qdate_to_date(value: QDate) -> date:
+        return date(value.year(), value.month(), value.day())
+
+    def _on_bs_date_mode_toggled(self, use_bs: bool) -> None:
+        try:
+            if use_bs:
+                from_bs = ad_to_bs(self._qdate_to_date(self.date_from.date()))
+                to_bs = ad_to_bs(self._qdate_to_date(self.date_to.date()))
+                self.bs_date_from.set_bs_date_string(from_bs)
+                self.bs_date_to.set_bs_date_string(to_bs)
+            else:
+                from_ad = bs_to_ad(self.bs_date_from.get_bs_date_string())
+                to_ad = bs_to_ad(self.bs_date_to.get_bs_date_string())
+                self.date_from.setDate(QDate(from_ad.year, from_ad.month, from_ad.day))
+                self.date_to.setDate(QDate(to_ad.year, to_ad.month, to_ad.day))
+        except DateEngineError as exc:
+            self.bs_date_mode_checkbox.blockSignals(True)
+            self.bs_date_mode_checkbox.setChecked(not use_bs)
+            self.bs_date_mode_checkbox.blockSignals(False)
+            QMessageBox.warning(
+                self,
+                "Calendar conversion unavailable",
+                str(exc),
+            )
+            return
+
+        self.date_from.setVisible(not use_bs)
+        self.date_to.setVisible(not use_bs)
+        self.bs_date_from.setVisible(use_bs)
+        self.bs_date_to.setVisible(use_bs)
 
     def _on_filter_clicked(self) -> None:
+        try:
+            from_date, to_date = self._get_filter_dates_ad()
+        except DateEngineError as exc:
+            QMessageBox.warning(self, "Calendar conversion unavailable", str(exc))
+            return
+
+        if from_date > to_date:
+            QMessageBox.warning(
+                self,
+                "Invalid date range",
+                "The From date must be on or before the To date.",
+            )
+            return
+        self._current_page = 1
+        self._date_filter_applied = True
+        self.refresh()
+
+    def _get_filter_dates_ad(self) -> tuple[date, date]:
+        if self.bs_date_mode_checkbox.isChecked():
+            return (
+                bs_to_ad(self.bs_date_from.get_bs_date_string()),
+                bs_to_ad(self.bs_date_to.get_bs_date_string()),
+            )
+        return (
+            self._qdate_to_date(self.date_from.date()),
+            self._qdate_to_date(self.date_to.date()),
+        )
+
+    def _on_status_filter_changed(self, _index: int) -> None:
         self._current_page = 1
         self.refresh()
 
@@ -155,14 +252,29 @@ class PurchaseInvoiceListScreen(QWidget):
         )
 
     def refresh(self) -> None:
-        status = self.status_filter_combo.currentText()
+        status = self.status_filter_combo.currentData()
+        if status is None:
+            status = self.status_filter_combo.currentText()
         status_filter = None if status == "All" else status
+
+        date_from_ad = None
+        date_to_ad = None
+        if self._date_filter_applied:
+            try:
+                from_date, to_date = self._get_filter_dates_ad()
+            except DateEngineError as exc:
+                QMessageBox.warning(self, "Calendar conversion unavailable", str(exc))
+                return
+            date_from_ad = from_date.isoformat()
+            date_to_ad = to_date.isoformat()
 
         invoices, total_count = self._engine.search_purchase_invoices(
             search_text=self.search_input.text().strip() or None,
             supplier_id=self.supplier_filter_combo.currentData(),
             status=status_filter,
-            include_deleted=False,
+            date_from_ad=date_from_ad,
+            date_to_ad=date_to_ad,
+            include_deleted=status_filter == "Cancelled",
             page=self._current_page,
             page_size=self._page_size,
             order_by=self._sort_key,
@@ -225,7 +337,11 @@ class PurchaseInvoiceListScreen(QWidget):
         ref_item = self.table.item(row, COL_INTERNAL_REF)
         if ref_item is None:
             return
-        self._on_view_clicked(ref_item.data(Qt.UserRole))
+        status_item = self.table.item(row, COL_STATUS)
+        self._on_view_clicked(
+            ref_item.data(Qt.UserRole),
+            include_deleted=bool(status_item and status_item.text() == "Cancelled"),
+        )
 
     def _add_row(self, invoice) -> None:
         row = self.table.rowCount()
@@ -246,7 +362,8 @@ class PurchaseInvoiceListScreen(QWidget):
         view_button = QPushButton("View")
         view_button.setToolTip("View / print this invoice (read-only).")
         view_button.clicked.connect(
-            lambda _, pid=invoice.purchase_invoice_id: self._on_view_clicked(pid)
+            lambda _, pid=invoice.purchase_invoice_id, cancelled=invoice.status == "Cancelled":
+            self._on_view_clicked(pid, include_deleted=cancelled)
         )
         self.table.setCellWidget(row, COL_VIEW, view_button)
 
@@ -264,7 +381,14 @@ class PurchaseInvoiceListScreen(QWidget):
         edit_button.clicked.connect(
             lambda _, pid=invoice.purchase_invoice_id: self._on_edit_clicked(pid)
         )
-        self.table.setCellWidget(row, COL_CANCEL, edit_button)
+        self.table.setCellWidget(row, COL_EDIT, edit_button)
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setEnabled(invoice.status != "Cancelled")
+        cancel_button.clicked.connect(
+            lambda _, pid=invoice.purchase_invoice_id: self._on_cancel_clicked(pid)
+        )
+        self.table.setCellWidget(row, COL_CANCEL, cancel_button)
 
     # -- actions ------------------------------------------------------------
 
@@ -295,9 +419,12 @@ class PurchaseInvoiceListScreen(QWidget):
         dialog.exec()
         self.refresh()
 
-    def _on_view_clicked(self, purchase_invoice_id: int) -> None:
+    def _on_view_clicked(self, purchase_invoice_id: int, include_deleted: bool = False) -> None:
         try:
-            invoice = self._engine.get_purchase_invoice(purchase_invoice_id)
+            invoice = self._engine.get_purchase_invoice(
+                purchase_invoice_id,
+                include_deleted=include_deleted,
+            )
         except RecordNotFoundError as exc:
             QMessageBox.warning(self, "Not Found", str(exc))
             return
@@ -311,5 +438,43 @@ class PurchaseInvoiceListScreen(QWidget):
             supplier_engine=self._supplier_engine,
         )
         dialog.exec()
+
+    def _on_cancel_clicked(self, purchase_invoice_id: int) -> None:
+        reason, accepted = QInputDialog.getText(
+            self,
+            "Cancel Purchase Invoice",
+            "Cancellation reason:",
+        )
+        if not accepted:
+            return
+        if not reason.strip():
+            QMessageBox.warning(self, "Reason Required", "Please enter a cancellation reason.")
+            return
+
+        if QMessageBox.question(
+            self,
+            "Confirm Cancellation",
+            "Cancel this purchase invoice? Its stock remains in the ledger; use Purchase Return "
+            "to reverse received goods.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) != QMessageBox.Yes:
+            return
+
+        try:
+            self._engine.cancel_purchase_invoice(
+                purchase_invoice_id,
+                current_user_id=self._current_user_id,
+                reason=reason,
+            )
+        except (RecordNotFoundError, ValidationError) as exc:
+            QMessageBox.warning(self, "Cannot Cancel", str(exc))
+            return
+        except Exception:
+            logger.exception("Failed to cancel purchase invoice %s", purchase_invoice_id)
+            QMessageBox.critical(self, "Error", "Could not cancel the purchase invoice.")
+            return
+
+        self.refresh()
 
     

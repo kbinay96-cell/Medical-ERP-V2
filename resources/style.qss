@@ -145,10 +145,13 @@ QToolButton[cssClass="bsCalendarNavButton"] {
 QToolButton[cssClass="bsCalendarNavButton"]:hover {
     background-color: #EEF3FC;
 }
-QLabel[cssClass="bsCalendarMonthLabel"] {
+QComboBox[cssClass="bsCalendarDropdown"] {
     font-weight: bold;
-    font-size: 12pt;
     color: #1B2430;
+    background-color: #FFFFFF;
+    border: 1px solid #C7CEDA;
+    border-radius: 4px;
+    padding: 2px 5px;
 }
 QLabel[cssClass="bsCalendarWeekdayLabel"] {
     font-weight: bold;
@@ -238,6 +241,390 @@ QFrame[cssClass="kpiCard"] QLabel[cssClass="kpiValue"] {
     color: #1F2A44;
     font-weight: 700;
     font-size: 16pt;
+}
+
+/* ---------- Dashboard home ---------- */
+QFrame#dashboardWelcomeCard {
+    background-color: #1F2A44;
+    border-radius: 10px;
+}
+QLabel#dashboardGreeting {
+    background: transparent;
+    color: #FFFFFF;
+    font-size: 18pt;
+    font-weight: 700;
+}
+QLabel#dashboardDate {
+    background: transparent;
+    color: #C7D4EA;
+    font-size: 9.5pt;
+}
+QPushButton#dashboardRefreshButton {
+    background-color: #FFFFFF;
+    color: #1F2A44;
+    border: 1px solid #D6DEEA;
+    border-radius: 5px;
+    padding: 8px 16px;
+    font-weight: 600;
+}
+QPushButton#dashboardRefreshButton:hover {
+    background-color: #EEF3FC;
+}
+QGroupBox#grpKpiCards, QGroupBox#grpQuickActions, QGroupBox#grpActivityArea {
+    border: none;
+    margin-top: 12px;
+    padding: 0;
+}
+QGroupBox#grpKpiCards::title, QGroupBox#grpQuickActions::title,
+QGroupBox#grpActivityArea::title {
+    left: 0;
+    padding: 0 0 8px 0;
+    background: transparent;
+    color: #1F2A44;
+    font-size: 12pt;
+    font-weight: 700;
+}
+QFrame[cssClass="dashboardMetricCard"] {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E6ED;
+    border-left: 4px solid #2F6FED;
+    border-radius: 8px;
+}
+QFrame[cssClass="dashboardMetricCard"][metricTone="purchase"] { border-left-color: #8B5CF6; }
+QFrame[cssClass="dashboardMetricCard"][metricTone="stock"] { border-left-color: #0E9F6E; }
+QFrame[cssClass="dashboardMetricCard"][metricTone="warning"] { border-left-color: #E09A24; }
+QFrame[cssClass="dashboardMetricCard"][metricTone="expiry"] { border-left-color: #E05A67; }
+QFrame[cssClass="dashboardMetricCard"][metricTone="payments"] { border-left-color: #D97706; }
+QFrame[cssClass="dashboardMetricCard"][metricTone="receipts"] { border-left-color: #0891B2; }
+QFrame[cssClass="dashboardMetricCard"][metricTone="users"] { border-left-color: #64748B; }
+QLabel[cssClass="dashboardMetricTitle"] {
+    color: #667085;
+    font-size: 9pt;
+    font-weight: 600;
+}
+QLabel[cssClass="dashboardMetricValue"] {
+    color: #1F2A44;
+    font-size: 17pt;
+    font-weight: 700;
+}
+QPushButton[cssClass="dashboardActionButton"] {
+    background-color: #FFFFFF;
+    color: #344054;
+    border: 1px solid #E2E6ED;
+    border-radius: 6px;
+    padding: 8px 12px;
+    text-align: left;
+    font-weight: 600;
+}
+QPushButton[cssClass="dashboardActionButton"]:hover {
+    background-color: #F7F9FC;
+    border-color: #B9C9E2;
+}
+QPushButton[cssClass="dashboardActionButton"][actionTone="primary"] {
+    background-color: #2F6FED;
+    color: #FFFFFF;
+    border-color: #2F6FED;
+}
+QPushButton[cssClass="dashboardActionButton"][actionTone="primary"]:hover {
+    background-color: #1E52C4;
+}
+QPushButton[cssClass="dashboardActionButton"][actionTone="purchase"] {
+    background-color: #1F6F5C;
+    color: #FFFFFF;
+    border-color: #1F6F5C;
+}
+QPushButton[cssClass="dashboardActionButton"][actionTone="purchase"]:hover {
+    background-color: #185B4B;
+}
+QPushButton[cssClass="dashboardActionButton"][actionTone="quiet"] {
+    background-color: #EEF3FC;
+    color: #344054;
+}
+QGroupBox#grpAlerts, QGroupBox#grpRecentActivity,
+QGroupBox#grpFavorites, QGroupBox#grpRecentlyOpened {
+    background-color: #FFFFFF;
+    border: 1px solid #E2E6ED;
+    border-radius: 8px;
+    margin-top: 8px;
+    padding: 14px 10px 10px 10px;
+}
+QGroupBox#grpAlerts::title, QGroupBox#grpRecentActivity::title,
+QGroupBox#grpFavorites::title, QGroupBox#grpRecentlyOpened::title {
+    left: 12px;
+    padding: 0 5px;
+    background-color: #FFFFFF;
+    color: #1F2A44;
+    font-size: 10pt;
+    font-weight: 700;
+}
+QCalendarWidget#purchaseInvoiceCalendar {
+    background-color: #FFFFFF;
+    color: #1B2430;
+    border: 1px solid #D8DEE8;
+    border-radius: 6px;
+    min-width: 248px;
+    max-width: 248px;
+    min-height: 210px;
+    max-height: 210px;
+}
+QWidget#purchaseCalendarNavigation {
+    background-color: #F4F6F9;
+}
+QToolButton#purchaseCalendarNavigationButton {
+    background-color: #EEF3FC;
+    color: #244B8F;
+    border: 1px solid #D8E2F3;
+    border-radius: 4px;
+    min-width: 14px;
+    min-height: 22px;
+    padding: 0;
+    font-weight: 700;
+}
+QToolButton#purchaseCalendarNavigationButton:hover {
+    background-color: #DCE8FA;
+}
+QComboBox#purchaseCalendarMonth, QComboBox#purchaseCalendarYear {
+    background-color: #FFFFFF;
+    color: #1B2430;
+    border: 1px solid #C7CEDA;
+    border-radius: 4px;
+    min-height: 24px;
+    padding: 1px 12px 1px 3px;
+    font-size: 9pt;
+}
+QComboBox#purchaseCalendarMonth::drop-down, QComboBox#purchaseCalendarYear::drop-down {
+    border: none;
+    width: 10px;
+}
+QComboBox#purchaseCalendarMonth::down-arrow, QComboBox#purchaseCalendarYear::down-arrow {
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #52627A;
+}
+QCalendarWidget#purchaseInvoiceCalendar QAbstractItemView {
+    background-color: #FFFFFF;
+    color: #1B2430;
+    selection-background-color: #2F6FED;
+    selection-color: #FFFFFF;
+    outline: 0;
+}
+QCalendarWidget#purchaseInvoiceCalendar QAbstractItemView:enabled {
+    alternate-background-color: #F7F9FC;
+}
+QCalendarWidget#purchaseInvoiceCalendar QAbstractItemView::item {
+    padding: 1px;
+}
+QListWidget#dashboardAlerts, QListWidget#dashboardActivityList,
+QListWidget#dashboardFavoritesList, QListWidget#dashboardRecentlyOpenedList {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+QListWidget#dashboardAlerts::item, QListWidget#dashboardActivityList::item,
+QListWidget#dashboardFavoritesList::item, QListWidget#dashboardRecentlyOpenedList::item {
+    padding: 8px;
+    border-bottom: 1px solid #EEF1F5;
+}
+QListWidget#dashboardAlerts::item:selected, QListWidget#dashboardActivityList::item:selected,
+QListWidget#dashboardFavoritesList::item:selected, QListWidget#dashboardRecentlyOpenedList::item:selected {
+    background-color: #EEF3FC;
+    color: #1F2A44;
+}
+
+/* ---------- Purchase invoice entry ---------- */
+QFrame#purchaseInvoiceCard {
+    background-color: #FFFFFF;
+    color: #1B2430;
+    border: 1px solid #E2E6ED;
+    border-radius: 8px;
+}
+QFrame#purchaseInvoiceCard QLabel, QWidget#purchaseInvoiceContent {
+    background: transparent;
+}
+QLabel#purchaseFormTitle {
+    color: #1F2A44;
+    font-size: 18pt;
+    font-weight: 700;
+}
+QLabel#purchaseSectionTitle {
+    color: #1F2A44;
+    font-size: 11.5pt;
+    font-weight: 700;
+}
+QLabel#purchaseSectionDescription, QLabel#purchaseAttachmentStatus, QLabel#purchaseRoundOff {
+    color: #687386;
+    font-size: 9pt;
+}
+QLabel#purchaseAttachmentStatus[attachmentState="attached"] {
+    color: #1F6F5C;
+    font-weight: 600;
+}
+QLabel#purchaseLineCount {
+    color: #1F2A44;
+    font-weight: 700;
+}
+QLabel#purchaseGrandTotal {
+    color: #1F2A44;
+    font-size: 20pt;
+    font-weight: 700;
+}
+QLabel#purchaseFooterTotal {
+    color: #1F2A44;
+    font-size: 12pt;
+    font-weight: 700;
+}
+QPushButton#purchasePrimaryButton {
+    background-color: #1F6F5C;
+    color: #FFFFFF;
+    border-radius: 5px;
+    padding: 8px 18px;
+    font-weight: 700;
+}
+QPushButton#purchasePrimaryButton:hover {
+    background-color: #27866E;
+}
+QPushButton#purchaseSecondaryButton {
+    background-color: #EEF3FC;
+    color: #244B8F;
+    border: 1px solid #D8E2F3;
+    border-radius: 5px;
+    padding: 7px 12px;
+}
+QPushButton#purchaseSecondaryButton:hover {
+    background-color: #E2EBFB;
+}
+QTableWidget#purchaseInvoiceLines {
+    border: 1px solid #E2E6ED;
+    border-radius: 5px;
+    gridline-color: #E8ECF2;
+}
+QTableWidget#purchaseInvoiceLines QHeaderView::section {
+    padding: 8px 6px;
+}
+QTableWidget#purchaseInvoiceLines QLineEdit,
+QTableWidget#purchaseInvoiceLines QComboBox,
+QTableWidget#purchaseInvoiceLines QSpinBox,
+QTableWidget#purchaseInvoiceLines QDoubleSpinBox,
+QTableWidget#purchaseInvoiceLines QDateEdit {
+    padding: 3px 5px;
+    border-radius: 3px;
+}
+
+/* ---------- Sale invoice screens ---------- */
+QGroupBox#saleSectionCard {
+    background-color: #FFFFFF;
+    color: #1B2430;
+    border: 1px solid #E2E6ED;
+    border-radius: 8px;
+    margin-top: 4px;
+    padding-top: 2px;
+}
+QGroupBox#saleSectionCard::title {
+    color: #1F2A44;
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 5px;
+    font-weight: 700;
+}
+QLabel#saleFormTitle, QLabel#saleListTitle {
+    color: #1F2A44;
+    font-size: 13pt;
+    font-weight: 700;
+}
+QLabel#saleFormSubtitle, QLabel#saleFieldCaption {
+    color: #667085;
+    font-size: 9pt;
+}
+QLabel#saleFieldCaption { font-weight: 600; }
+QLabel#saleInvoiceNumber, QLabel#saleListCount {
+    color: #1F2A44;
+    font-weight: 700;
+}
+QLabel#saleGrandTotal {
+    color: #1F2A44;
+    font-size: 15pt;
+    font-weight: 700;
+    padding-top: 5px;
+}
+QLabel#saleDueTotal {
+    color: #B54708;
+    font-weight: 700;
+}
+QLabel#saleOutstandingValue, QLabel#saleModeValue, QLabel#saleLineCount,
+QLabel#saleFooterMetric, QLabel#saleListPageTotal {
+    color: #1F2A44;
+    font-weight: 700;
+}
+QPushButton#salePrimaryButton {
+    background-color: #1F6F5C;
+    color: #FFFFFF;
+    border: 1px solid #1F6F5C;
+    border-radius: 5px;
+    padding: 4px 9px;
+    font-weight: 700;
+}
+QPushButton#salePrimaryButton:hover { background-color: #27866E; }
+QPushButton#saleSecondaryButton {
+    background-color: #EEF3FC;
+    color: #244B8F;
+    border: 1px solid #D8E2F3;
+    border-radius: 5px;
+    padding: 3px 7px;
+}
+QPushButton#saleSecondaryButton:hover {
+    background-color: #E2EBFB;
+}
+QTableWidget#saleInvoiceLines, QTableWidget#saleInvoiceListTable {
+    background-color: #FFFFFF;
+    color: #1B2430;
+    border: 1px solid #E2E6ED;
+    border-radius: 6px;
+    gridline-color: #E8ECF2;
+    alternate-background-color: #F7F8FA;
+}
+QTableWidget#saleInvoiceLines QHeaderView::section,
+QTableWidget#saleInvoiceListTable QHeaderView::section {
+    background-color: #EEF1F6;
+    color: #1F2A44;
+    padding: 4px 5px;
+    border: none;
+    border-bottom: 1px solid #DDE3EC;
+    font-weight: 700;
+}
+QTableWidget#saleInvoiceLines QDoubleSpinBox,
+QTableWidget#saleInvoiceLines QComboBox {
+    padding: 1px 3px;
+    border-radius: 3px;
+    font-size: 9pt;
+}
+QDialog#saleInvoiceFormScreen QLineEdit,
+QDialog#saleInvoiceFormScreen QComboBox,
+QDialog#saleInvoiceFormScreen QDoubleSpinBox,
+QDialog#saleInvoiceFormScreen QDateEdit,
+QWidget#saleInvoiceListScreen QLineEdit,
+QWidget#saleInvoiceListScreen QComboBox,
+QWidget#saleInvoiceListScreen QDateEdit {
+    padding: 2px 5px;
+    min-height: 20px;
+    font-size: 9pt;
+}
+QDialog#saleInvoiceFormScreen QPushButton,
+QWidget#saleInvoiceListScreen QPushButton {
+    padding: 3px 7px;
+    min-height: 21px;
+    font-size: 9pt;
+}
+QDialog#saleInvoiceFormScreen QCheckBox,
+QWidget#saleInvoiceListScreen QCheckBox {
+    font-size: 9pt;
+}
+QTableWidget#saleInvoiceLines QTableCornerButton::section,
+QTableWidget#saleInvoiceListTable QTableCornerButton::section {
+    background-color: #EEF1F6;
+    border: none;
 }
 
 /* ---------- Lists / Trees / Tables ---------- */

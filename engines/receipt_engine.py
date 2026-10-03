@@ -103,10 +103,12 @@ class ReceiptEngine:
         model: Optional[ReceiptModel] = None,
         date_engine: Optional[Any] = None,
         validator: Optional[ReceiptValidator] = None,
+        accounting_engine=None,
     ) -> None:
         self._model = model or ReceiptModel()
         self._date_engine = date_engine if date_engine is not None else _load_date_engine()
         self._validator = validator or ReceiptValidator(receipt_number_exists_fn=self._receipt_number_exists)
+        self._accounting_engine = accounting_engine
 
     # ------------------------------------------------------------------ #
     # INTERNAL HELPERS
@@ -231,6 +233,11 @@ class ReceiptEngine:
         })
 
         receipt_id = self._model.insert_with_allocations(header_data, allocation_rows)
+        if self._accounting_engine is not None and status == "Posted":
+            self._accounting_engine.post_receipt_journal(
+                {**header_data, "receipt_id": receipt_id},
+                created_by,
+            )
         return self.get_by_id(receipt_id)
 
     # ------------------------------------------------------------------ #

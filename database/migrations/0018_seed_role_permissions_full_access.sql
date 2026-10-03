@@ -23,6 +23,7 @@ CROSS JOIN (VALUES
     ('Company'),
     ('Purchase'),
     ('Purchase Order'),
+    ('Purchase Invoice List'),
     ('User Master')
 ) AS s(screenname)
 ON CONFLICT (roleid, screenname) DO NOTHING;

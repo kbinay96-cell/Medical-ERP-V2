@@ -6,7 +6,7 @@ import shutil
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import Qt, QDate, QSize
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -14,13 +14,15 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -36,6 +38,8 @@ from engines.item_free_scheme_engine import ItemFreeSchemeEngine
 from engines.item_lookup_registry import manufacturer_engine
 from engines import settings_engine
 from utils.searchable_combo_helper import populate_searchable_combo
+from widgets.bs_calendar_date_picker import BSCalendarDatePicker
+from widgets.purchase_invoice_calendar import PurchaseInvoiceCalendar
 
 logger = logging.getLogger(__name__)
 
@@ -62,58 +66,6 @@ COLUMN_HEADERS = [
     "Item", "Batch No", "Expiry", "Qty", "Free Qty", "Amount",
     "Current Stock", "Purchase Rate", "Disc %", "Super Disc %", "MRP", "Sale Rate",
 ]
-
-
-class _BsDatePicker(QWidget):
-    """Minimal BS (Bikram Sambat) date entry — three plain number boxes
-    (Year-Month-Day) rather than a calendar popup, since no BS-calendar
-    widget exists anywhere in this project yet and BS month lengths vary
-    by year (no safe day-range table to validate against here). Promote
-    this to its own shared widgets file later if other modules need a
-    BS date picker too."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.year_spin = QSpinBox()
-        self.year_spin.setRange(2070, 2150)
-        self.year_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-
-        self.month_spin = QSpinBox()
-        self.month_spin.setRange(1, 12)
-        self.month_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-
-        self.day_spin = QSpinBox()
-        self.day_spin.setRange(1, 32)
-        self.day_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-
-        layout.addWidget(self.year_spin)
-        layout.addWidget(QLabel("-"))
-        layout.addWidget(self.month_spin)
-        layout.addWidget(QLabel("-"))
-        layout.addWidget(self.day_spin)
-
-        # Best-effort default to today's BS date — never blocks the
-        # widget from working if the Date Engine isn't reachable.
-        try:
-            from engines.date_engine import ad_to_bs
-            self.set_bs_date_string(ad_to_bs(date.today()))
-        except Exception:
-            logger.warning("Could not default BS date picker to today's date.")
-
-    def set_bs_date_string(self, bs_date_str: str) -> None:
-        try:
-            y, m, d = bs_date_str.split("-")
-            self.year_spin.setValue(int(y))
-            self.month_spin.setValue(int(m))
-            self.day_spin.setValue(int(d))
-        except Exception:
-            pass
-
-    def get_bs_date_string(self) -> str:
-        return f"{self.year_spin.value():04d}-{self.month_spin.value():02d}-{self.day_spin.value():02d}"
 
 
 def _make_blank_until_typed_spin(decimals: int = 2, maximum: float = 10_000_000) -> QDoubleSpinBox:
@@ -159,7 +111,13 @@ class PurchaseInvoiceFormScreen(QDialog):
         initial_supplier_id: int | None = None,
     ):
         super().__init__(parent)
-        apply_standard_window_chrome(self, width=1200, height=800, start_maximized=True)
+        apply_standard_window_chrome(
+            self,
+            width=1360,
+            height=860,
+            min_size=QSize(980, 680),
+            start_maximized=True,
+        )
         self._engine = engine
         self._purchase_order_engine = purchase_order_engine
         self._supplier_engine = supplier_engine
@@ -181,7 +139,7 @@ class PurchaseInvoiceFormScreen(QDialog):
         self._all_items, _ = self._item_engine.search_items(page=1, page_size=5000)
 
         self.setWindowTitle("Edit Purchase Invoice" if existing_invoice_id else "New Purchase Invoice")
-        self.setMinimumSize(1300, 720)
+        self.setMinimumSize(980, 680)
 
         self._build_ui()
         self._connect_signals()
@@ -194,130 +152,252 @@ class PurchaseInvoiceFormScreen(QDialog):
 
     # -- UI construction ------------------------------------------------
 
+    @staticmethod
+    def _make_section_card(
+        parent: QWidget,
+        title: str,
+        description: str = "",
+    ) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame(parent)
+        card.setObjectName("purchaseInvoiceCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(12)
+
+        heading = QVBoxLayout()
+        heading.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setObjectName("purchaseSectionTitle")
+        heading.addWidget(title_label)
+        if description:
+            description_label = QLabel(description)
+            description_label.setObjectName("purchaseSectionDescription")
+            description_label.setWordWrap(True)
+            heading.addWidget(description_label)
+        layout.addLayout(heading)
+        return card, layout
+
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 16)
+        root.setSpacing(12)
 
-        # ---- Header: two field-groups on the left, 3 stacked buttons on the right ----
-        top_row = QHBoxLayout()
+        header = QHBoxLayout()
+        title_stack = QVBoxLayout()
+        self.form_title_label = QLabel(
+            "Edit Purchase Invoice" if self._existing_invoice_id else "New Purchase Invoice"
+        )
+        self.form_title_label.setObjectName("purchaseFormTitle")
+        title_stack.addWidget(self.form_title_label)
+        subtitle = QLabel("Record supplier bill, batch details, and received stock in one place.")
+        subtitle.setObjectName("purchaseSectionDescription")
+        title_stack.addWidget(subtitle)
+        header.addLayout(title_stack)
+        header.addStretch(1)
+        self.purchase_list_button = QPushButton("View Purchase Invoices")
+        self.purchase_list_button.setObjectName("purchaseSecondaryButton")
+        header.addWidget(self.purchase_list_button)
+        root.addLayout(header)
 
-        left_form = QFormLayout()
+        scroll = QScrollArea(self)
+        scroll.setObjectName("purchaseInvoiceScrollArea")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content.setObjectName("purchaseInvoiceContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 4)
+        content_layout.setSpacing(12)
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)
+
+        details_card, details_layout = self._make_section_card(
+            content,
+            "Supplier & invoice details",
+        )
+        details_grid = QGridLayout()
+        details_grid.setHorizontalSpacing(18)
+        details_grid.setVerticalSpacing(10)
+        details_grid.setColumnStretch(0, 2)
+        details_grid.setColumnStretch(1, 3)
+        details_grid.setColumnStretch(2, 1)
+        details_grid.setColumnStretch(3, 2)
         self.supplier_combo = QComboBox()
-        self.supplier_combo.setMinimumWidth(240)
-        left_form.addRow("Supplier:", self.supplier_combo)
+        self.supplier_combo.setMinimumWidth(220)
+        self.supplier_combo.setEditable(True)
+        self.supplier_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.supplier_combo.setPlaceholderText("Select supplier")
+        details_grid.addWidget(QLabel("Supplier *"), 0, 0)
+        details_grid.addWidget(self.supplier_combo, 1, 0)
 
         self.invoice_number_input = QLineEdit()
-        left_form.addRow("Invoice Number:", self.invoice_number_input)
-        top_row.addLayout(left_form)
+        self.invoice_number_input.setMaximumWidth(190)
+        self.invoice_number_input.setPlaceholderText("Supplier's bill number")
+        details_grid.addWidget(QLabel("Supplier invoice no. *"), 0, 1)
+        self.attach_bill_button = QPushButton("Attach bill")
+        self.attach_bill_button.setObjectName("purchaseSecondaryButton")
+        self.attach_bill_button.setToolTip("Attach the supplier's original bill (image or PDF).")
+        self.attach_bill_label = QLabel("No file attached")
+        self.attach_bill_label.setObjectName("purchaseAttachmentStatus")
+        self.attach_bill_label.setMaximumWidth(150)
+        invoice_number_row = QHBoxLayout()
+        invoice_number_row.setContentsMargins(0, 0, 0, 0)
+        invoice_number_row.setSpacing(8)
+        invoice_number_row.addWidget(self.invoice_number_input)
+        invoice_number_row.addWidget(self.attach_bill_button)
+        invoice_number_row.addWidget(self.attach_bill_label, 1)
+        invoice_number_widget = QWidget()
+        invoice_number_widget.setLayout(invoice_number_row)
+        details_grid.addWidget(invoice_number_widget, 1, 1)
 
-        mid_form = QFormLayout()
-        self.invoice_date_input = _BsDatePicker()
-        mid_form.addRow("Invoice Date (BS):", self.invoice_date_input)
+        self.invoice_date_input = BSCalendarDatePicker()
+        self.invoice_date_input.setMinimumWidth(160)
+        details_grid.addWidget(QLabel("Invoice date (BS) *"), 0, 2)
+        details_grid.addWidget(self.invoice_date_input, 1, 2)
 
         self.link_po_combo = QComboBox()
-        self.link_po_combo.setMinimumWidth(200)
+        self.link_po_combo.setMinimumWidth(220)
         self.link_po_combo.addItem("(No linked Purchase Order)", None)
         self.link_po_combo.setToolTip(
-            "Optional. If you already sent this supplier a Purchase Order, "
-            "link it here to auto-fill this invoice's items from that order. "
-            "Leave as '(No linked Purchase Order)' for a direct purchase."
+            "Optional. Link this invoice to a supplier Purchase Order to pre-fill its items."
         )
-        mid_form.addRow("Link to Purchase Order:", self.link_po_combo)
-        top_row.addLayout(mid_form)
+        details_grid.addWidget(QLabel("Link purchase order"), 0, 3)
+        details_grid.addWidget(self.link_po_combo, 1, 3)
 
-        top_row.addStretch()
+        details_layout.addLayout(details_grid)
+        content_layout.addWidget(details_card)
 
-        button_col = QVBoxLayout()
-        self.add_line_button = QPushButton("+ Add Item")
-        button_col.addWidget(self.add_line_button)
+        items_card, items_layout = self._make_section_card(
+            content,
+            "Received items",
+        )
+        tools_row = QHBoxLayout()
+        self.line_count_label = QLabel("0 lines")
+        self.line_count_label.setObjectName("purchaseLineCount")
+        tools_row.addWidget(self.line_count_label)
+        tools_row.addStretch(1)
 
-        self.attach_bill_button = QPushButton("📎 Attach Bill (optional)")
-        button_col.addWidget(self.attach_bill_button)
-        self.attach_bill_label = QLabel("No file attached")
-        self.attach_bill_label.setStyleSheet("color: gray; font-size: 11px;")
-        button_col.addWidget(self.attach_bill_label)
-
-        self.purchase_list_button = QPushButton("View Purchase List")
-        button_col.addWidget(self.purchase_list_button)
-        top_row.addLayout(button_col)
-
-        root.addLayout(top_row)
-
-        # ---- Row-level actions above the table ----
-        table_action_row = QHBoxLayout()
-        self.remove_line_button = QPushButton("Remove Selected Row")
-        table_action_row.addWidget(self.remove_line_button)
-        table_action_row.addSpacing(16)
-        table_action_row.addWidget(QLabel("Scan Barcode:"))
         self.barcode_scan_input = QLineEdit()
-        self.barcode_scan_input.setPlaceholderText("Scan or type a batch barcode, then Enter")
-        self.barcode_scan_input.setMaximumWidth(260)
+        self.barcode_scan_input.setPlaceholderText("Scan batch barcode and press Enter")
+        self.barcode_scan_input.setClearButtonEnabled(True)
+        self.barcode_scan_input.setMaximumWidth(300)
         self.barcode_scan_input.returnPressed.connect(self._on_barcode_scanned)
-        table_action_row.addWidget(self.barcode_scan_input)
-        self.connect_mobile_button = QPushButton("📱 Connect Mobile")
-        self.connect_mobile_button.clicked.connect(self._on_connect_mobile_clicked)
-        table_action_row.addWidget(self.connect_mobile_button)
-        table_action_row.addStretch()
-        root.addLayout(table_action_row)
+        tools_row.addWidget(self.barcode_scan_input)
 
-        # ---- Line-item grid ----
+        self.connect_mobile_button = QPushButton("Connect mobile scanner")
+        self.connect_mobile_button.setObjectName("purchaseSecondaryButton")
+        self.connect_mobile_button.clicked.connect(self._on_connect_mobile_clicked)
+        tools_row.addWidget(self.connect_mobile_button)
+
+        self.remove_line_button = QPushButton("Remove selected")
+        self.remove_line_button.setObjectName("purchaseSecondaryButton")
+        tools_row.addWidget(self.remove_line_button)
+        self.add_line_button = QPushButton("+ Add item")
+        self.add_line_button.setObjectName("purchaseSecondaryButton")
+        tools_row.addWidget(self.add_line_button)
+        items_layout.addLayout(tools_row)
+
         self.table = QTableWidget(0, COLUMN_COUNT)
-        self.table.setHorizontalHeaderLabels(COLUMN_HEADERS)
+        self.table.setObjectName("purchaseInvoiceLines")
+        self.table.setHorizontalHeaderLabels(
+            [
+                "Item", "Batch", "Expiry", "Qty", "Free Qty", "Amount",
+                "Stock", "Buy Rate", "Disc %", "Super Disc %", "MRP", "Sale Rate",
+            ]
+        )
         self.table.horizontalHeader().setSectionResizeMode(COL_ITEM, QHeaderView.Stretch)
+        self.table.horizontalHeader().setMinimumSectionSize(72)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.table.setColumnWidth(COL_BATCH_NO, 110)
-        self.table.setColumnWidth(COL_EXPIRY, 130)
+        self.table.setColumnWidth(COL_EXPIRY, 105)
         self.table.setColumnWidth(COL_QTY, 70)
         self.table.setColumnWidth(COL_FREE_QTY, 70)
         self.table.setColumnWidth(COL_AMOUNT, 100)
-        self.table.setColumnWidth(COL_CURRENT_STOCK, 90)
-        self.table.setColumnWidth(COL_PURCHASE_RATE, 100)
+        self.table.setColumnWidth(COL_CURRENT_STOCK, 76)
+        self.table.setColumnWidth(COL_PURCHASE_RATE, 90)
         self.table.setColumnWidth(COL_DISCOUNT_PCT, 70)
-        self.table.setColumnWidth(COL_SUPER_DISCOUNT_PCT, 90)
-        self.table.setColumnWidth(COL_MRP, 90)
-        self.table.setColumnWidth(COL_SALE_RATE, 90)
+        self.table.setColumnWidth(COL_SUPER_DISCOUNT_PCT, 102)
+        self.table.setColumnWidth(COL_MRP, 82)
+        self.table.setColumnWidth(COL_SALE_RATE, 82)
         self.table.setColumnHidden(COL_SALE_RATE, not self._is_wholesaler())
-        self.table.verticalHeader().setDefaultSectionSize(34)  # room so the
-        # expiry date picker (and every other row widget) never gets clipped
+        self.table.verticalHeader().setDefaultSectionSize(40)
+        self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        root.addWidget(self.table, stretch=1)  # table takes all extra vertical space
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setMinimumHeight(300)
+        items_layout.addWidget(self.table)
+        content_layout.addWidget(items_card, stretch=1)
 
-        # ---- invoice-level charges + discount + round-off ----
-        charges_form = QFormLayout()
-        self.freight_input = _make_blank_until_typed_spin()
-        charges_form.addRow("Freight Amount:", self.freight_input)
-
-        self.other_charges_input = _make_blank_until_typed_spin()
-        charges_form.addRow("Other Charges:", self.other_charges_input)
-
-        self.bill_discount_input = _make_blank_until_typed_spin(maximum=100_000_000)
-        self.bill_discount_input.setToolTip(
-            "Use this when the supplier discounts the WHOLE bill directly, "
-            "instead of item-by-item. Subtracted straight from the grand total."
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(12)
+        charges_card, charges_layout = self._make_section_card(
+            content,
+            "Charges & notes",
+            "Invoice-level amounts are allocated across the received items.",
         )
-        charges_form.addRow("Bill Discount (Amount):", self.bill_discount_input)
-
+        charges_grid = QGridLayout()
+        charges_grid.setHorizontalSpacing(14)
+        charges_grid.setVerticalSpacing(8)
+        self.freight_input = _make_blank_until_typed_spin()
+        self.freight_input.setPrefix("Rs. ")
+        charges_grid.addWidget(QLabel("Freight"), 0, 0)
+        charges_grid.addWidget(self.freight_input, 1, 0)
+        self.other_charges_input = _make_blank_until_typed_spin()
+        self.other_charges_input.setPrefix("Rs. ")
+        charges_grid.addWidget(QLabel("Other charges"), 0, 1)
+        charges_grid.addWidget(self.other_charges_input, 1, 1)
+        self.bill_discount_input = _make_blank_until_typed_spin(maximum=100_000_000)
+        self.bill_discount_input.setPrefix("Rs. ")
+        self.bill_discount_input.setToolTip(
+            "Supplier discount applied to the whole bill, not individual items."
+        )
+        charges_grid.addWidget(QLabel("Bill discount"), 0, 2)
+        charges_grid.addWidget(self.bill_discount_input, 1, 2)
         self.remarks_input = QLineEdit()
-        self.remarks_input.setPlaceholderText("Optional notes about this invoice")
-        charges_form.addRow("Remarks:", self.remarks_input)
+        self.remarks_input.setPlaceholderText("Optional notes for this invoice")
+        charges_grid.addWidget(QLabel("Remarks"), 2, 0)
+        charges_grid.addWidget(self.remarks_input, 3, 0, 1, 3)
+        charges_layout.addLayout(charges_grid)
+        bottom_row.addWidget(charges_card, 3)
 
-        root.addLayout(charges_form)
+        totals_card, totals_layout = self._make_section_card(
+            content,
+            "Invoice total",
+            "The Purchase Engine calculates the final amount when saved.",
+        )
+        self.round_off_label = QLabel("Round off  ·  Rs. 0.00")
+        self.round_off_label.setObjectName("purchaseRoundOff")
+        totals_layout.addWidget(self.round_off_label)
+        totals_layout.addWidget(QLabel("Total discount"))
+        self.total_discount_label = QLabel("Rs. 0.00")
+        self.total_discount_label.setObjectName("purchaseTotalDiscount")
+        self.total_discount_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        totals_layout.addWidget(self.total_discount_label)
+        totals_layout.addWidget(QLabel("Grand total"))
+        self.grand_total_label = QLabel("Rs. 0.00")
+        self.grand_total_label.setObjectName("purchaseGrandTotal")
+        self.grand_total_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        totals_layout.addWidget(self.grand_total_label)
+        bottom_row.addWidget(totals_card, 2)
+        content_layout.addLayout(bottom_row)
 
-        # ---- live totals preview ----
-        totals_row = QHBoxLayout()
-        totals_row.addStretch()
-        self.round_off_label = QLabel("Round Off: 0.00")
-        totals_row.addWidget(self.round_off_label)
-        self.grand_total_label = QLabel("Grand Total: 0.00")
-        self.grand_total_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-        totals_row.addWidget(self.grand_total_label)
-        root.addLayout(totals_row)
-
-        footer_row = QHBoxLayout()
-        footer_row.addStretch()
-        self.save_button = QPushButton("Save")
+        footer = QHBoxLayout()
+        self.footer_total_label = QLabel("Grand total  ·  Rs. 0.00")
+        self.footer_total_label.setObjectName("purchaseFooterTotal")
+        footer.addWidget(self.footer_total_label)
+        footer.addStretch(1)
+        self.save_button = QPushButton("Save invoice")
+        self.save_button.setObjectName("purchasePrimaryButton")
+        self.save_button.setDefault(True)
         self.cancel_button = QPushButton("Cancel")
-        footer_row.addWidget(self.save_button)
-        footer_row.addWidget(self.cancel_button)
-        root.addLayout(footer_row)
+        self.cancel_button.setObjectName("purchaseSecondaryButton")
+        self.cancel_button.setAutoDefault(False)
+        self.save_button.setMinimumWidth(140)
+        self.cancel_button.setMinimumWidth(110)
+        footer.addWidget(self.save_button)
+        footer.addWidget(self.cancel_button)
+        root.addLayout(footer)
 
     def _connect_signals(self) -> None:
         self.add_line_button.clicked.connect(lambda: self._add_line_row())
@@ -333,6 +413,7 @@ class PurchaseInvoiceFormScreen(QDialog):
         self.freight_input.valueChanged.connect(self._recalculate_all_line_previews)
         self.other_charges_input.valueChanged.connect(self._recalculate_all_line_previews)
         self.bill_discount_input.valueChanged.connect(self._update_grand_total_preview)
+        self._update_line_count()
 
     def _populate_supplier_combo(self) -> None:
         suppliers, _ = self._supplier_engine.search_suppliers(page=1, page_size=1000)
@@ -431,7 +512,9 @@ class PurchaseInvoiceFormScreen(QDialog):
 
         self._attached_bill_path = str(dest_path)
         self.attach_bill_label.setText(f"Saved: {dest_path.name}")
-        self.attach_bill_label.setStyleSheet("color: green; font-size: 11px;")
+        self.attach_bill_label.setProperty("attachmentState", "attached")
+        self.attach_bill_label.style().unpolish(self.attach_bill_label)
+        self.attach_bill_label.style().polish(self.attach_bill_label)
 
     # -- Purchase List access ------------------------------------------------
 
@@ -495,6 +578,9 @@ class PurchaseInvoiceFormScreen(QDialog):
         order = self._purchase_order_engine.get_purchase_order(purchase_order_id)
         self.table.setRowCount(0)
         self._row_landing_costs.clear()
+        self._row_pricing_meta.clear()
+        self._row_last_item_id.clear()
+        self._update_line_count()
         for line in order.lines:
             self._add_line_row(item_id=line.item_id, qty=line.ordered_qty, amount=line.ordered_qty * line.rate)
 
@@ -543,7 +629,11 @@ class PurchaseInvoiceFormScreen(QDialog):
             idx = item_combo.findData(item_id)
             if idx >= 0:
                 item_combo.setCurrentIndex(idx)
-        item_combo.currentIndexChanged.connect(lambda _, r=row: self._on_item_or_qty_changed(r))
+        item_combo.currentIndexChanged.connect(
+            lambda _, widget=item_combo: self._on_item_or_qty_changed(
+                self._row_index_for_widget(widget, COL_ITEM)
+            )
+        )
         self.table.setCellWidget(row, COL_ITEM, item_combo)
 
         batch_item = QTableWidgetItem("")
@@ -553,20 +643,33 @@ class PurchaseInvoiceFormScreen(QDialog):
         expiry_edit.setCalendarPopup(True)
         expiry_edit.setDisplayFormat("MM/yyyy")
         expiry_edit.setDate(QDate.currentDate())
+        expiry_edit.setCalendarWidget(PurchaseInvoiceCalendar(expiry_edit))
         self.table.setCellWidget(row, COL_EXPIRY, expiry_edit)
 
         qty_spin = _make_blank_until_typed_spin()
         qty_spin.setValue(qty)
-        qty_spin.valueChanged.connect(lambda _, r=row: self._on_item_or_qty_changed(r))
+        qty_spin.valueChanged.connect(
+            lambda _, widget=qty_spin: self._on_item_or_qty_changed(
+                self._row_index_for_widget(widget, COL_QTY)
+            )
+        )
         self.table.setCellWidget(row, COL_QTY, qty_spin)
 
         free_qty_spin = _make_blank_until_typed_spin()
-        free_qty_spin.valueChanged.connect(lambda _, r=row: self._recalculate_line_preview(r))
+        free_qty_spin.valueChanged.connect(
+            lambda _, widget=free_qty_spin: self._recalculate_line_preview(
+                self._row_index_for_widget(widget, COL_FREE_QTY)
+            )
+        )
         self.table.setCellWidget(row, COL_FREE_QTY, free_qty_spin)
 
         amount_spin = _make_blank_until_typed_spin(maximum=100_000_000)
         amount_spin.setValue(amount)
-        amount_spin.valueChanged.connect(lambda _, r=row: self._recalculate_line_preview(r))
+        amount_spin.valueChanged.connect(
+            lambda _, widget=amount_spin: self._recalculate_line_preview(
+                self._row_index_for_widget(widget, COL_AMOUNT)
+            )
+        )
         self.table.setCellWidget(row, COL_AMOUNT, amount_spin)
 
         stock_item = QTableWidgetItem("")
@@ -578,15 +681,27 @@ class PurchaseInvoiceFormScreen(QDialog):
         self.table.setItem(row, COL_PURCHASE_RATE, rate_item)
 
         discount_spin = _make_blank_until_typed_spin(maximum=100)
-        discount_spin.valueChanged.connect(lambda _, r=row: self._recalculate_line_preview(r))
+        discount_spin.valueChanged.connect(
+            lambda _, widget=discount_spin: self._recalculate_line_preview(
+                self._row_index_for_widget(widget, COL_DISCOUNT_PCT)
+            )
+        )
         self.table.setCellWidget(row, COL_DISCOUNT_PCT, discount_spin)
 
         super_discount_spin = _make_blank_until_typed_spin(maximum=100)
-        super_discount_spin.valueChanged.connect(lambda _, r=row: self._recalculate_line_preview(r))
+        super_discount_spin.valueChanged.connect(
+            lambda _, widget=super_discount_spin: self._recalculate_line_preview(
+                self._row_index_for_widget(widget, COL_SUPER_DISCOUNT_PCT)
+            )
+        )
         self.table.setCellWidget(row, COL_SUPER_DISCOUNT_PCT, super_discount_spin)
 
         mrp_spin = _make_blank_until_typed_spin()
-        mrp_spin.valueChanged.connect(lambda _, r=row: self._recalculate_line_preview(r))
+        mrp_spin.valueChanged.connect(
+            lambda _, widget=mrp_spin: self._recalculate_line_preview(
+                self._row_index_for_widget(widget, COL_MRP)
+            )
+        )
         self.table.setCellWidget(row, COL_MRP, mrp_spin)
 
         sale_rate_spin = _make_blank_until_typed_spin()
@@ -597,6 +712,17 @@ class PurchaseInvoiceFormScreen(QDialog):
         self._set_row_enabled(row, enabled=item_id is not None)
 
         self._on_item_or_qty_changed(row)
+        self._update_line_count()
+
+    def _update_line_count(self) -> None:
+        count = self.table.rowCount()
+        self.line_count_label.setText(f"{count} {'line' if count == 1 else 'lines'}")
+
+    def _row_index_for_widget(self, widget: QWidget, column: int) -> int:
+        for row in range(self.table.rowCount()):
+            if self.table.cellWidget(row, column) is widget:
+                return row
+        return -1
 
     def _set_row_enabled(self, row: int, enabled: bool) -> None:
         batch_item = self.table.item(row, COL_BATCH_NO)
@@ -614,10 +740,19 @@ class PurchaseInvoiceFormScreen(QDialog):
         if not selected_rows:
             QMessageBox.information(self, "No Row Selected", "Click a row first, then Remove Selected Row.")
             return
+        removed_rows = set(selected_rows)
         for row in selected_rows:
             self.table.removeRow(row)
-        self._row_landing_costs.clear()
+        for state in (self._row_landing_costs, self._row_pricing_meta, self._row_last_item_id):
+            shifted_state = {}
+            for old_row, value in state.items():
+                if old_row not in removed_rows:
+                    new_row = old_row - sum(removed_row < old_row for removed_row in removed_rows)
+                    shifted_state[new_row] = value
+            state.clear()
+            state.update(shifted_state)
         self._recalculate_all_line_previews()
+        self._update_line_count()
 
     # -- auto-fill: discount% + free-qty scheme + derived rate ---------------
 
@@ -637,7 +772,7 @@ class PurchaseInvoiceFormScreen(QDialog):
         rest of the row once an item is chosen, and re-resolves the
         per-item discount% and suggested free qty — both stay fully
         editable afterwards."""
-        if row_index >= self.table.rowCount():
+        if row_index < 0 or row_index >= self.table.rowCount():
             return
 
         item_combo = self.table.cellWidget(row_index, COL_ITEM)
@@ -715,7 +850,7 @@ class PurchaseInvoiceFormScreen(QDialog):
         Cost (kept internally for the Grand Total preview, not shown as
         their own columns anymore) — this screen never re-implements
         that math itself."""
-        if row_index >= self.table.rowCount():
+        if row_index < 0 or row_index >= self.table.rowCount():
             return
 
         item_combo = self.table.cellWidget(row_index, COL_ITEM)
@@ -819,19 +954,26 @@ class PurchaseInvoiceFormScreen(QDialog):
         this authoritatively at save time; this is never trusted as the
         value actually persisted."""
         raw_total = 0.0
+        total_discount = self.bill_discount_input.value()
         for row in range(self.table.rowCount()):
             landing_cost = self._row_landing_costs.get(row, 0.0)
             qty = self.table.cellWidget(row, COL_QTY).value()
             free_qty = self.table.cellWidget(row, COL_FREE_QTY).value()
             raw_total += landing_cost * (qty + free_qty)
+            amount = self.table.cellWidget(row, COL_AMOUNT).value()
+            discount_percent = self.table.cellWidget(row, COL_DISCOUNT_PCT).value()
+            purchase_rate = amount / qty if qty > 0 else 0.0
+            total_discount += qty * purchase_rate * (discount_percent / 100.0)
 
         bill_discount = self.bill_discount_input.value()
         after_discount = raw_total - bill_discount
         rounded_total = round(after_discount)
         round_off = round(rounded_total - after_discount, 2)
 
-        self.round_off_label.setText(f"Round Off: {round_off:.2f}")
-        self.grand_total_label.setText(f"Grand Total: {rounded_total:.2f}")
+        self.total_discount_label.setText(f"Rs. {total_discount:,.2f}")
+        self.round_off_label.setText(f"Round off  ·  Rs. {round_off:.2f}")
+        self.grand_total_label.setText(f"Rs. {rounded_total:,.2f}")
+        self.footer_total_label.setText(f"Grand total  ·  Rs. {rounded_total:,.2f}")
 
     # -- save ----------------------------------------------------------------
 
@@ -901,17 +1043,21 @@ class PurchaseInvoiceFormScreen(QDialog):
         # Attach-bill state
         self._attached_bill_path = None
         self.attach_bill_label.setText("No file attached")
-        self.attach_bill_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.attach_bill_label.setProperty("attachmentState", "")
+        self.attach_bill_label.style().unpolish(self.attach_bill_label)
+        self.attach_bill_label.style().polish(self.attach_bill_label)
 
         # Line-items grid -- back to construction-time zero-row state
         self.table.setRowCount(0)
         self._row_landing_costs.clear()
         self._row_pricing_meta.clear()
         self._row_last_item_id.clear()
+        self._update_line_count()
 
         # Live totals preview
-        self.round_off_label.setText("Round Off: 0.00")
-        self.grand_total_label.setText("Grand Total: 0.00")
+        self.round_off_label.setText("Round off  ·  Rs. 0.00")
+        self.grand_total_label.setText("Rs. 0.00")
+        self.footer_total_label.setText("Grand total  ·  Rs. 0.00")
 
         self.invoice_number_input.setFocus()
 

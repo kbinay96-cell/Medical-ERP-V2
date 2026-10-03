@@ -104,6 +104,7 @@ class SaleEngine:
         country_tax_lookup_fn: Callable[[int], float],
         manufacturer_lookup_fn: Callable[[int], dict],
         receipt_engine=None,   # NEW — optional, keeps Sale Module working standalone if Receipt isn't wired
+        accounting_engine=None,
     ) -> None:
         self._model = model
         self._item_engine = item_engine
@@ -111,6 +112,7 @@ class SaleEngine:
         self._country_tax_lookup_fn = country_tax_lookup_fn
         self._manufacturer_lookup_fn = manufacturer_lookup_fn
         self._receipt_engine = receipt_engine   # NEW
+        self._accounting_engine = accounting_engine
         self._validator = SaleInvoiceValidator(
             number_exists_fn=self._model.get_by_invoice_number,
         )
@@ -156,7 +158,12 @@ class SaleEngine:
     # ------------------------------------------------------------------ #
     # LINE COMPUTATION (preview + save both use this)
     # ------------------------------------------------------------------ #
-    def compute_line(self, line_input: dict, is_wholesale: bool) -> dict:
+    def compute_line(
+        self,
+        line_input: dict,
+        is_wholesale: bool,
+        free_scheme_enabled: Optional[bool] = None,
+    ) -> dict:
         """
         Computes a single Sale Invoice line from raw user input. Resolves
         item, batch (read-only auto-pick), rate, free scheme, discount, CC
@@ -189,7 +196,12 @@ class SaleEngine:
         rate = float(line_input.get("rate") if line_input.get("rate") is not None else current_rate)
 
         free_qty = 0.0
-        if is_wholesale:
+        use_free_scheme = (
+            self.is_free_scheme_enabled()
+            if free_scheme_enabled is None
+            else bool(free_scheme_enabled)
+        )
+        if is_wholesale and use_free_scheme:
             scheme = self._item_free_scheme_engine.get_scheme_for_item(item_id)
             if scheme is not None:
                 scheme_qty, scheme_free = scheme
@@ -300,7 +312,7 @@ class SaleEngine:
         check_permission("Sale", "can_add")
 
         is_wholesale = self.is_wholesale_mode()
-        free_scheme_enabled = self.is_free_scheme_enabled()
+        free_scheme_enabled = is_wholesale and self.is_free_scheme_enabled()
 
         header_errors = self._validator.validate_header(payload)
         if not header_errors.is_valid:
@@ -311,7 +323,10 @@ class SaleEngine:
         if not line_errors.is_valid:
             raise ValidationError(line_errors.errors)
 
-        computed_lines = [self.compute_line(line, is_wholesale) for line in raw_lines]
+        computed_lines = [
+            self.compute_line(line, is_wholesale, free_scheme_enabled)
+            for line in raw_lines
+        ]
 
         total_qty = sum(l["qty"] for l in computed_lines)
         total_free_qty = sum(l["free_qty"] for l in computed_lines)
@@ -407,7 +422,18 @@ class SaleEngine:
             dto = self._to_dto(self._model.get_by_id(new_id, include_deleted=False))
             raise EngineErrorWithInvoice(dto, stock_errors)
 
-        return self._to_dto(self._model.get_by_id(new_id, include_deleted=False))
+        saved_invoice = self._model.get_by_id(new_id, include_deleted=False)
+        if self._accounting_engine is not None and header_data["status"] == "Posted":
+            self._accounting_engine.post_sale_invoice_journal(
+                {
+                    **header_data,
+                    "sale_invoice_id": new_id,
+                    "subtotal_amount": round(grand_total - total_tax_amount, 4),
+                    "tax_amount": total_tax_amount,
+                },
+                current_user_id,
+            )
+        return self._to_dto(saved_invoice)
 
     def update_sale_invoice(self, sale_invoice_id: int, payload: dict, current_user_id: int) -> SaleInvoiceDTO:
         """Edit an existing (non-Cancelled) invoice: reverses old lines'
@@ -428,6 +454,7 @@ class SaleEngine:
         old_lines = self._model.get_items_by_invoice(sale_invoice_id)
 
         is_wholesale = self.is_wholesale_mode()
+        free_scheme_enabled = is_wholesale and self.is_free_scheme_enabled()
 
         header_errors = self._validator.validate_header(payload)
         if not header_errors.is_valid:
@@ -438,7 +465,10 @@ class SaleEngine:
         if not line_errors.is_valid:
             raise ValidationError(line_errors.errors)
 
-        computed_lines = [self.compute_line(line, is_wholesale) for line in raw_lines]
+        computed_lines = [
+            self.compute_line(line, is_wholesale, free_scheme_enabled)
+            for line in raw_lines
+        ]
 
         total_qty = sum(l["qty"] for l in computed_lines)
         total_free_qty = sum(l["free_qty"] for l in computed_lines)
@@ -535,8 +565,11 @@ class SaleEngine:
         self,
         search_text: Optional[str] = None,
         customer_id: Optional[int] = None,
+        area_id: Optional[int] = None,
         status: Optional[str] = None,
         sale_mode: Optional[str] = None,
+        date_from_ad: Optional[str] = None,
+        date_to_ad: Optional[str] = None,
         include_deleted: bool = False,
         page: int = 1,
         page_size: int = 50,
@@ -546,8 +579,11 @@ class SaleEngine:
         filters = SaleInvoiceSearchFilters(
             search_text=search_text,
             customer_id=customer_id,
+            area_id=area_id,
             status=status,
             sale_mode=sale_mode,
+            date_from_ad=date_from_ad,
+            date_to_ad=date_to_ad,
             include_deleted=include_deleted,
             page=page,
             page_size=page_size,
@@ -570,6 +606,36 @@ class SaleEngine:
         existing = self._model.get_by_id(sale_invoice_id, include_deleted=False)
         if existing is None:
             raise RecordNotFoundError(f"Sale invoice {sale_invoice_id} not found.")
+        if existing.get("status") != "Posted":
+            raise ValidationError(["Only a Posted Sale Invoice can be cancelled."])
+        if float(existing.get("amount_paid_now", 0) or 0) > 0:
+            raise ValidationError(
+                ["A Sale Invoice with a payment cannot be cancelled; use a Sale Return instead."]
+            )
+        if self._model.has_receipt_allocations(sale_invoice_id):
+            raise ValidationError(
+                ["A Sale Invoice with receipt allocations cannot be cancelled."]
+            )
+
+        returnable_lines = self._model.get_returnable_items(sale_invoice_id)
+        if any(float(line.get("already_returned_qty") or 0) > 0 for line in returnable_lines):
+            raise ValidationError(
+                ["A Sale Invoice with existing Sale Returns cannot be cancelled."]
+            )
+
+        invoice_lines = self._model.get_items_by_invoice(sale_invoice_id)
+        for line in invoice_lines:
+            self._item_engine.get_batch(line["item_batch_id"])
+        for line in invoice_lines:
+            self._item_engine.post_stock_movement(
+                item_batch_id=line["item_batch_id"],
+                transaction_type="ADJUSTMENT",
+                quantity_change=float(line["qty"]) + float(line["free_qty"]),
+                current_user_id=current_user_id,
+                reference_type="sale_invoice_cancel",
+                reference_id=sale_invoice_id,
+            )
+
         now_ad = datetime.now(timezone.utc)
         now_bs = self._now_bs(now_ad)
         self._model.soft_delete(

@@ -11,7 +11,17 @@ everything goes through engines.dashboard_engine.
 from PySide6.QtCore import Qt, QTimer, QTime, QDate, QSize
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon, QFont
 from utils.icon_utils import themed_icon
-from PySide6.QtWidgets import QMainWindow, QTreeWidgetItem, QApplication, QHeaderView
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QTreeWidgetItem,
+    QApplication,
+    QVBoxLayout,
+)
 
 from ui.ui_dashboard import Ui_MainWindow
 from utils.message import show_info, confirm
@@ -104,6 +114,7 @@ SCREEN_ICONS = {
     "Country Tax": "globe",
     "Purchase": "cart",
     "Purchase Order": "cart",
+    "Purchase Invoice List": "list",
     "Purchase Return": "refresh",
     "New Sale": "money",
     "Sale List": "list",
@@ -112,6 +123,11 @@ SCREEN_ICONS = {
     "Stock Master": "box",
     "Payment": "money",
     "Receipt": "money",
+    "Chart of Accounts": "report",
+    "Journal Voucher": "money",
+    "Account Ledger": "report",
+    "Period Lock": "settings",
+    "Bank Reconciliation": "report",
     "Reports": "report",
     "Management Dashboard": "report",
     "Audit Log": "list",
@@ -175,8 +191,44 @@ class DashboardScreen(QMainWindow):
 
             from models.payment_model import PaymentModel
             from engines.payment_engine import PaymentEngine
+            from models.journal_model import JournalModel
+            from models.chart_of_accounts_model import ChartOfAccountsModel
+            from models.auto_accounting_rule_model import AutoAccountingRuleModel
+            from models.accounting_period_model import AccountingPeriodModel
+            from models.bank_reconciliation_model import BankReconciliationModel
+            from models.accounting_role_permission_model import AccountingRolePermissionModel
+            from models.financial_year_model import FinancialYearModel
+            from models.opening_balance_model import OpeningBalanceModel
+            from engines.accounting_engine import AccountingEngine
 
-            self._payment_engine = PaymentEngine(model=PaymentModel())
+            self._coa_model = ChartOfAccountsModel()
+            self._accounting_period_model = AccountingPeriodModel()
+            self._bank_recon_model = BankReconciliationModel()
+            self._accounting_role_permission_model = AccountingRolePermissionModel()
+            self._financial_year_model = FinancialYearModel()
+            from models.user_model import get_user_by_id
+            from models.role_model import get_role_name
+
+            def _accounting_role_for_user(user_id):
+                user = get_user_by_id(user_id)
+                return get_role_name(user["roleid"]) if user else None
+
+            self._accounting_engine = AccountingEngine(
+                journal_model=JournalModel(),
+                coa_model=self._coa_model,
+                rule_model=AutoAccountingRuleModel(),
+                period_model=self._accounting_period_model,
+                bank_recon_model=self._bank_recon_model,
+                financial_year_model=self._financial_year_model,
+                opening_balance_model=OpeningBalanceModel(),
+                role_permission_model=self._accounting_role_permission_model,
+                role_lookup_fn=_accounting_role_for_user,
+            )
+
+            self._payment_engine = PaymentEngine(
+                model=PaymentModel(),
+                accounting_engine=self._accounting_engine,
+            )
 
             self._purchase_order_engine = PurchaseOrderEngine(
                 model=self._po_model,
@@ -192,6 +244,7 @@ class DashboardScreen(QMainWindow):
                 item_engine=self._item_engine,
                 purchase_order_engine=self._purchase_order_engine,
                 payment_engine=self._payment_engine,
+                accounting_engine=self._accounting_engine,
             )
 
             self._item_free_scheme_engine = SaleItemFreeSchemeEngine(model=SaleItemFreeSchemeModel())
@@ -199,7 +252,10 @@ class DashboardScreen(QMainWindow):
             from models.receipt_model import ReceiptModel
             from engines.receipt_engine import ReceiptEngine
 
-            self._receipt_engine = ReceiptEngine(model=ReceiptModel())
+            self._receipt_engine = ReceiptEngine(
+                model=ReceiptModel(),
+                accounting_engine=self._accounting_engine,
+            )
 
             sale_invoice_model = SaleInvoiceModel()
             self._sale_engine = SaleEngine(
@@ -209,6 +265,7 @@ class DashboardScreen(QMainWindow):
                 country_tax_lookup_fn=country_tax_lookup,
                 manufacturer_lookup_fn=manufacturer_lookup,
                 receipt_engine=self._receipt_engine,
+                accounting_engine=self._accounting_engine,
             )
 
             from models.sale_return_model import SaleReturnModel
@@ -218,6 +275,17 @@ class DashboardScreen(QMainWindow):
                 model=SaleReturnModel(),
                 sale_invoice_model=sale_invoice_model,
                 item_engine=self._item_engine,
+                accounting_engine=self._accounting_engine,
+            )
+
+            from models.purchase_return_model import PurchaseReturnModel
+            from engines.purchase_return_engine import PurchaseReturnEngine
+
+            self._purchase_return_engine = PurchaseReturnEngine(
+                model=PurchaseReturnModel(),
+                purchase_invoice_model=self._pi_model,
+                item_engine=self._item_engine,
+                accounting_engine=self._accounting_engine,
             )
         except Exception as e:
             from utils.app_logger import get_logger
@@ -231,6 +299,13 @@ class DashboardScreen(QMainWindow):
             self._receipt_engine = None
             self._payment_engine = None
             self._sale_return_engine = None
+            self._purchase_return_engine = None
+            self._accounting_engine = None
+            self._coa_model = None
+            self._accounting_period_model = None
+            self._bank_recon_model = None
+            self._accounting_role_permission_model = None
+            self._financial_year_model = None
 
     def _init_reports_engine(self):
         """
@@ -490,6 +565,8 @@ class DashboardScreen(QMainWindow):
         self._nav_history = []
 
         self._show_user_context()
+        self._build_dashboard_header()
+        self._style_dashboard_widgets()
         self._apply_icons()
         self._build_sidebar_menu()
 
@@ -551,6 +628,114 @@ class DashboardScreen(QMainWindow):
         self.ui.btnTheme.setIconSize(icon_size)
 
         self.ui.lblCompanyLogoSmall.setPixmap(themed_icon("building").pixmap(QSize(28, 28)))
+        for button, icon_name in (
+            (self.ui.btnNewSale, "money"),
+            (self.ui.btnNewPurchase, "cart"),
+            (self.ui.btnAddCustomer, "customer"),
+            (self.ui.btnAddSupplier, "truck"),
+            (self.ui.btnAddItem, "box"),
+            (self.ui.btnBackupDatabase, "backup"),
+        ):
+            button.setIcon(themed_icon(icon_name))
+            button.setIconSize(icon_size)
+
+    def _build_dashboard_header(self) -> None:
+        header = QFrame(self.ui.scrollAreaContents)
+        header.setObjectName("dashboardWelcomeCard")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(22, 18, 20, 18)
+        layout.setSpacing(16)
+
+        greeting = QVBoxLayout()
+        greeting.setSpacing(3)
+        name = self.login_result.fullname or self.login_result.username
+        self.ui.lblDashboardGreeting = QLabel(f"Welcome back, {name}")
+        self.ui.lblDashboardGreeting.setObjectName("dashboardGreeting")
+        greeting.addWidget(self.ui.lblDashboardGreeting)
+        self.ui.lblDashboardDate = QLabel(
+            QDate.currentDate().toString("dddd, d MMMM yyyy")
+        )
+        self.ui.lblDashboardDate.setObjectName("dashboardDate")
+        greeting.addWidget(self.ui.lblDashboardDate)
+        layout.addLayout(greeting)
+        layout.addStretch(1)
+
+        self.ui.btnRefreshDashboard = QPushButton("Refresh")
+        self.ui.btnRefreshDashboard.setObjectName("dashboardRefreshButton")
+        self.ui.btnRefreshDashboard.setToolTip("Refresh dashboard metrics")
+        self.ui.btnRefreshDashboard.clicked.connect(self.load_dashboard_data)
+        layout.addWidget(self.ui.btnRefreshDashboard)
+
+        self.ui.mainAreaLayout.insertWidget(0, header)
+        header.style().unpolish(header)
+        header.style().polish(header)
+
+    def _style_dashboard_widgets(self) -> None:
+        metric_cards = (
+            (self.ui.cardTodaySales, self.ui.lblTodaySalesTitle, self.ui.lblTodaySalesValue, "sales"),
+            (self.ui.cardTodayPurchase, self.ui.lblTodayPurchaseTitle, self.ui.lblTodayPurchaseValue, "purchase"),
+            (self.ui.cardStockValue, self.ui.lblStockValueTitle, self.ui.lblStockValueValue, "stock"),
+            (self.ui.cardLowStock, self.ui.lblLowStockTitle, self.ui.lblLowStockValue, "warning"),
+            (self.ui.cardExpiring, self.ui.lblExpiringTitle, self.ui.lblExpiringValue, "expiry"),
+            (self.ui.cardPendingPayments, self.ui.lblPendingPaymentsTitle, self.ui.lblPendingPaymentsValue, "payments"),
+            (self.ui.cardPendingReceipts, self.ui.lblPendingReceiptsTitle, self.ui.lblPendingReceiptsValue, "receipts"),
+            (self.ui.cardActiveUsers, self.ui.lblActiveUsersTitle, self.ui.lblActiveUsersValue, "users"),
+        )
+        for card, title, value, tone in metric_cards:
+            card.setProperty("cssClass", "dashboardMetricCard")
+            card.setProperty("metricTone", tone)
+            card.setMinimumHeight(104)
+            card.layout().setContentsMargins(16, 14, 14, 14)
+            card.layout().setSpacing(8)
+            title.setProperty("cssClass", "dashboardMetricTitle")
+            value.setProperty("cssClass", "dashboardMetricValue")
+            for widget in (card, title, value):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+
+        for button in (
+            self.ui.btnNewSale,
+            self.ui.btnNewPurchase,
+            self.ui.btnAddCustomer,
+            self.ui.btnAddSupplier,
+            self.ui.btnAddItem,
+            self.ui.btnBackupDatabase,
+        ):
+            button.setProperty("cssClass", "dashboardActionButton")
+            button.setMinimumHeight(46)
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+        self.ui.btnNewSale.setProperty("actionTone", "primary")
+        self.ui.btnNewPurchase.setProperty("actionTone", "purchase")
+        self.ui.btnBackupDatabase.setProperty("actionTone", "quiet")
+        for button in (self.ui.btnNewSale, self.ui.btnNewPurchase, self.ui.btnBackupDatabase):
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+        self.ui.mainAreaLayout.setContentsMargins(22, 18, 22, 20)
+        self.ui.mainAreaLayout.setSpacing(8)
+        self.ui.kpiGridLayout.setContentsMargins(0, 8, 0, 0)
+        self.ui.kpiGridLayout.setHorizontalSpacing(12)
+        self.ui.kpiGridLayout.setVerticalSpacing(12)
+        self.ui.quickActionsLayout.setContentsMargins(0, 8, 0, 0)
+        self.ui.quickActionsLayout.setSpacing(10)
+        self.ui.activityAreaGridLayout.setContentsMargins(0, 8, 0, 0)
+        self.ui.activityAreaGridLayout.setHorizontalSpacing(12)
+        self.ui.activityAreaGridLayout.setVerticalSpacing(12)
+
+        self.ui.lstAlerts.setObjectName("dashboardAlerts")
+        self.ui.lstRecentActivity.setObjectName("dashboardActivityList")
+        self.ui.lstFavorites.setObjectName("dashboardFavoritesList")
+        self.ui.lstRecentlyOpened.setObjectName("dashboardRecentlyOpenedList")
+        for widget in (
+            self.ui.lstAlerts,
+            self.ui.lstRecentActivity,
+            self.ui.lstFavorites,
+            self.ui.lstRecentlyOpened,
+        ):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     def _apply_tooltips_and_status_tips(self):
         self.ui.btnLogout.setToolTip("Logout (Ctrl+Q)")
@@ -558,10 +743,12 @@ class DashboardScreen(QMainWindow):
         self.ui.txtSearchMenu.setToolTip("Type to search the module menu.")
         self.ui.btnNewSale.setStatusTip("Open a new Sale entry.")
         self.ui.btnNewSale.clicked.connect(self._handle_new_sale_quick_action)
-        self.ui.btnNewPurchase.setStatusTip("Open a new Purchase entry (module not yet built).")
+        self.ui.btnNewPurchase.setStatusTip("Create a new purchase invoice.")
+        self.ui.btnNewPurchase.clicked.connect(self._open_purchase_invoice_form)
         self.ui.btnAddCustomer.setStatusTip("Add a new Customer.")
         self.ui.btnAddSupplier.setStatusTip("Add a new Supplier.")
-        self.ui.btnAddItem.setStatusTip("Add a new Item (module not yet built).")
+        self.ui.btnAddItem.setStatusTip("Add a new item.")
+        self.ui.btnAddItem.clicked.connect(self._open_item_form)
         self.ui.btnBackupDatabase.setStatusTip("Backup the database.")
         self.ui.btnBackupDatabase.clicked.connect(self._handle_backup_database)
 
@@ -794,6 +981,9 @@ class DashboardScreen(QMainWindow):
     # -----------------------------------------------------
 
     def load_dashboard_data(self):
+        self.ui.lblDashboardDate.setText(
+            QDate.currentDate().toString("dddd, d MMMM yyyy")
+        )
         try:
             data = build_dashboard(self.login_result.roleid, self.login_result.is_admin)
         except Exception as e:
@@ -915,19 +1105,20 @@ class DashboardScreen(QMainWindow):
             screen.close_requested.connect(self._navigate_back)
             screen.form_requested.connect(self._open_sale_return_form)
             screen.view_requested.connect(self._view_sale_return_form)
+            screen.edit_requested.connect(self._open_sale_return_form)
             return screen
 
         self._get_or_create_screen("sale_return_list", factory, mode="navigate")
 
     def _open_sale_return_form(self, _unused=None):
-        """Always opens in CREATE mode — sale_return_list only emits form_requested(None)."""
+        """Open a new or existing Draft Sale Return form."""
         from screens.sale_return_form_screen import SaleReturnFormScreen
 
         self.sale_return_form = SaleReturnFormScreen(
             sale_return_engine=self._sale_return_engine,
             sale_engine=self._sale_engine,
             current_user_id=self.login_result.userid,
-            sale_return_id=None,
+            sale_return_id=_unused,
             embedded=True,
             parent=self,
         )
@@ -1629,6 +1820,61 @@ class DashboardScreen(QMainWindow):
             self._get_or_create_screen("purchase_invoice_list", _make_screen, mode="window")
 
         # ---- ACCOUNTS MODULE ----
+        elif module_name in {
+            "chart of accounts",
+            "journal voucher",
+            "account ledger",
+            "period lock",
+            "bank reconciliation",
+        }:
+            if self._accounting_engine is None:
+                from utils.integration_adapters import show_error
+                show_error(
+                    self,
+                    "Accounts",
+                    "Accounting engine not initialized. Apply the Accounts database migration and restart.",
+                )
+                return
+            if module_name == "chart of accounts":
+                def _make_screen():
+                    from screens.chart_of_accounts_screen import ChartOfAccountsScreen
+                    return ChartOfAccountsScreen(
+                        self,
+                        coa_model=self._coa_model,
+                        engine=self._accounting_engine,
+                        financial_year_model=self._financial_year_model,
+                    )
+                self._get_or_create_screen("chart_of_accounts_screen", _make_screen, mode="navigate")
+            elif module_name == "journal voucher":
+                def _make_screen():
+                    from screens.journal_list_screen import JournalListScreen
+                    return JournalListScreen(self, self._accounting_engine, self._coa_model)
+                self._get_or_create_screen("journal_list_screen", _make_screen, mode="navigate")
+            elif module_name == "account ledger":
+                def _make_screen():
+                    from screens.account_ledger_screen import AccountLedgerScreen
+                    return AccountLedgerScreen(self, self._accounting_engine, self._coa_model)
+                self._get_or_create_screen("account_ledger_screen", _make_screen, mode="navigate")
+            elif module_name == "period lock":
+                def _make_screen():
+                    from screens.period_lock_screen import PeriodLockScreen
+                    return PeriodLockScreen(
+                        self,
+                        self._accounting_period_model,
+                        self._accounting_role_permission_model,
+                        role_name=self.login_result.rolename,
+                        current_user_id=self.login_result.userid,
+                        engine=self._accounting_engine,
+                        financial_year_model=self._financial_year_model,
+                        coa_model=self._coa_model,
+                    )
+                self._get_or_create_screen("period_lock_screen", _make_screen, mode="navigate")
+            else:
+                def _make_screen():
+                    from screens.bank_reconciliation_screen import BankReconciliationScreen
+                    return BankReconciliationScreen(self, self._bank_recon_model, self._coa_model)
+                self._get_or_create_screen("bank_reconciliation_screen", _make_screen, mode="navigate")
+
         elif module_name == "receipt":
             if self._receipt_engine is None:
                 from utils.integration_adapters import show_error

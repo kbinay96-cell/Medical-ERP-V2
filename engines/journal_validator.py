@@ -12,6 +12,7 @@ express, so they live here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Callable, Optional
 
 MAX_LEN_REASON = 1000
@@ -65,9 +66,19 @@ class JournalValidator:
             if account is None:
                 result.add(f"{prefix}: Account not found or inactive.")
                 continue
+            if not account.get("is_active", False) or account.get("is_deleted", False):
+                result.add(f"{prefix}: Account is inactive or deleted.")
+                continue
 
-            debit = float(row.get("debit_amount") or 0)
-            credit = float(row.get("credit_amount") or 0)
+            try:
+                debit = float(row.get("debit_amount") or 0)
+                credit = float(row.get("credit_amount") or 0)
+            except (TypeError, ValueError):
+                result.add(f"{prefix}: Debit and Credit must be valid numbers.")
+                continue
+            if not math.isfinite(debit) or not math.isfinite(credit) or debit < 0 or credit < 0:
+                result.add(f"{prefix}: Debit and Credit must be finite, non-negative amounts.")
+                continue
             if (debit > 0) == (credit > 0):
                 result.add(f"{prefix}: Exactly one of Debit or Credit must be greater than zero.")
                 continue
@@ -103,9 +114,9 @@ class JournalValidator:
         period = self._period_lookup_fn(journal_date_ad)
         if period is None:
             result.add(f"No accounting period is defined for date {journal_date_ad}.")
-        elif period["status"] == "Locked":
+        elif period["status"] == "Locked" or period.get("financial_year_status") == "Closed":
             result.add(
-                f"Accounting period '{period['period_label']}' is Locked. "
+                f"Accounting period '{period['period_label']}' is not open for posting. "
                 f"This journal cannot be posted/edited unless the period is explicitly reopened."
             )
         return result

@@ -121,6 +121,7 @@ class SaleReturnEngine:
         item_engine=None,                      # engines.item_engine.ItemEngine -- REQUIRED, injected (shared instance)
         date_engine: Optional[Any] = None,
         validator: Optional[SaleReturnValidator] = None,
+        accounting_engine=None,
     ) -> None:
         if sale_invoice_model is None:
             raise ValueError("SaleReturnEngine requires a sale_invoice_model instance (shared with the Sale module).")
@@ -130,6 +131,7 @@ class SaleReturnEngine:
         self._model = model or SaleReturnModel()
         self._sale_invoice_model = sale_invoice_model
         self._item_engine = item_engine
+        self._accounting_engine = accounting_engine
         self._date_engine = date_engine if date_engine is not None else _load_date_engine()
         self._validator = validator or SaleReturnValidator(
             return_number_exists_fn=self._return_number_exists,
@@ -224,6 +226,8 @@ class SaleReturnEngine:
         invoice = self._sale_invoice_model.get_by_id(sale_invoice_id)
         if invoice is None:
             raise RecordNotFoundError(f"Sale Invoice {sale_invoice_id} not found.")
+        if invoice.get("status") != "Posted":
+            raise ValidationError("Only a posted Sale Invoice can be returned.")
 
         returnable_items = self._sale_invoice_model.get_returnable_items(sale_invoice_id)
         invoice_item_lookup = {row["sale_invoice_item_id"]: row for row in returnable_items}
@@ -298,6 +302,127 @@ class SaleReturnEngine:
                     created_by=created_by,
                 )
 
+            if self._accounting_engine is not None:
+                self._accounting_engine.post_sale_return_journal(
+                    {
+                        **header_data,
+                        "sale_return_id": sale_return_id,
+                        "customer_id": customer_id,
+                    },
+                    created_by,
+                )
+
+        return self.get_by_id(sale_return_id)
+
+    def update_draft_return(
+        self,
+        sale_return_id: int,
+        sale_invoice_id: int,
+        customer_id: int,
+        return_date_ad: date,
+        return_reason: str,
+        refund_mode: str,
+        return_lines: list[dict],
+        updated_by: int,
+        remarks: Optional[str] = None,
+        status: str = "Draft",
+    ) -> SaleReturnDTO:
+        """Update a Draft return, optionally posting it after validation."""
+        existing = self._model.get_by_id(sale_return_id)
+        if existing is None:
+            raise RecordNotFoundError(f"Sale Return {sale_return_id} not found.")
+        if existing["status"] != "Draft":
+            raise ValidationError("Only a Draft Sale Return can be edited.")
+        if status not in ("Draft", "Posted"):
+            raise ValidationError("A Draft Sale Return can only be saved as Draft or Posted.")
+
+        invoice = self._sale_invoice_model.get_by_id(sale_invoice_id)
+        if invoice is None or invoice.get("status") != "Posted":
+            raise ValidationError("A posted Sale Invoice is required for a Sale Return.")
+        if int(invoice["customer_id"]) != int(customer_id):
+            raise ValidationError("The return customer must match the original invoice customer.")
+
+        returnable_items = self._sale_invoice_model.get_returnable_items(
+            sale_invoice_id,
+            exclude_return_id=sale_return_id,
+        )
+        invoice_item_lookup = {
+            row["sale_invoice_item_id"]: row for row in returnable_items
+        }
+        header_data = {
+            "sale_invoice_id": sale_invoice_id,
+            "customer_id": customer_id,
+            "return_date_ad": return_date_ad,
+            "return_date_bs": self._stamp_bs_date(return_date_ad),
+            "return_reason": return_reason,
+            "refund_mode": refund_mode,
+            "status": status,
+            "remarks": remarks,
+        }
+        header_result = self._validator.validate_header(header_data)
+        if not header_result.is_valid:
+            raise ValidationError("; ".join(header_result.errors))
+
+        line_result = self._validator.validate_lines(
+            return_lines,
+            invoice_item_lookup,
+            exclude_return_id=sale_return_id,
+        )
+        if not line_result.is_valid:
+            raise ValidationError("; ".join(line_result.errors))
+
+        computed_lines = [
+            self._build_line_from_original(
+                row,
+                invoice_item_lookup[row["sale_invoice_item_id"]],
+            )
+            for row in return_lines
+        ]
+        total_qty = sum(line["return_qty"] for line in computed_lines)
+        total_gross_amount = round(
+            sum(line["return_qty"] * line["rate"] for line in computed_lines), 2
+        )
+        total_discount_amount = round(
+            sum(line["discount_amount"] for line in computed_lines), 2
+        )
+        total_cc_amount = round(sum(line["cc_amount"] for line in computed_lines), 2)
+        total_tax_amount = round(sum(line["tax_amount"] for line in computed_lines), 2)
+        grand_total = round(
+            total_gross_amount - total_discount_amount + total_cc_amount + total_tax_amount,
+            2,
+        )
+        now_ad = datetime.now(timezone.utc)
+        header_data.update({
+            "total_qty": total_qty,
+            "total_gross_amount": total_gross_amount,
+            "total_discount_amount": total_discount_amount,
+            "total_cc_amount": total_cc_amount,
+            "total_tax_amount": total_tax_amount,
+            "round_off": 0,
+            "grand_total": grand_total,
+            "updated_by": updated_by,
+            "updated_at_ad": now_ad,
+            "updated_at_bs": self._stamp_bs_date(now_ad.date()),
+        })
+
+        updated = self._model.update_draft_with_items(
+            sale_return_id,
+            header_data,
+            computed_lines,
+        )
+        if not updated:
+            raise ValidationError("This Sale Return is no longer an editable Draft.")
+
+        if status == "Posted":
+            for line in computed_lines:
+                self._item_engine.post_stock_movement(
+                    item_batch_id=line["item_batch_id"],
+                    quantity_change=line["return_qty"],
+                    transaction_type="SALE_RETURN",
+                    reference_id=sale_return_id,
+                    created_by=updated_by,
+                )
+
         return self.get_by_id(sale_return_id)
 
     # ------------------------------------------------------------------ #
@@ -315,9 +440,16 @@ class SaleReturnEngine:
         rows = self._model.search(filters)
         return [SaleReturnDTO.from_row(row) for row in rows]
 
-    def get_returnable_lines(self, sale_invoice_id: int) -> list[dict]:
+    def get_returnable_lines(
+        self,
+        sale_invoice_id: int,
+        exclude_return_id: Optional[int] = None,
+    ) -> list[dict]:
         """Convenience pass-through for the Screen -- remaining returnable qty per line."""
-        rows = self._sale_invoice_model.get_returnable_items(sale_invoice_id)
+        rows = self._sale_invoice_model.get_returnable_items(
+            sale_invoice_id,
+            exclude_return_id=exclude_return_id,
+        )
         for row in rows:
             row["remaining_returnable_qty"] = float(row["qty"]) - float(row["already_returned_qty"])
         return rows
